@@ -30,12 +30,17 @@ jobs:
       - id: meta
         shell: bash
         run: |
+          PKG="$(unset SCOUT_VERSION; python scripts/pack_release.py --print-version)"
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF_NAME}"
             VERSION="${TAG#v}"
             PRE=false
+            if [[ "$PKG" != "$VERSION" ]]; then
+              echo "::error::pyproject.toml version ${PKG} does not match tag ${VERSION}"
+              exit 1
+            fi
           else
-            VERSION="$(python scripts/pack_release.py --print-version)"
+            VERSION="$PKG"
             TAG="dev-${GITHUB_SHA:0:7}"
             PRE=true
           fi
@@ -83,7 +88,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        # macos-latest is Apple Silicon (darwin-arm64).
+        # macos-13 (Intel) was retired Dec 2025; macos-15-intel is the GitHub-hosted x64 Mac.
+        os: [macos-latest, macos-15-intel, windows-latest, ubuntu-latest]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6

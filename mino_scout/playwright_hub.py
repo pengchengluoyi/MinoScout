@@ -8,8 +8,10 @@ Playwright 的 sync API 必须在创建它的线程里用。CaseRunner 每个 sn
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 from mino_scout.log import SLog
@@ -31,6 +33,33 @@ _WEB_TLDS = {
 _probe_lock = threading.Lock()
 _probe_cache: tuple[float, str, dict] = (0.0, "", {})
 _PROBE_TTL_SEC = 30.0
+
+
+def browsers_dir() -> Path:
+    frozen = getattr(sys, "frozen", False)
+    if frozen:
+        return Path(sys.executable).resolve().parent / "ms-playwright"
+    try:
+        from mino_scout.config import config_dir
+
+        return config_dir() / "bin" / "ms-playwright"
+    except Exception:
+        return Path.home() / ".cache" / "ms-playwright"
+
+
+def apply_browsers_path() -> Path:
+    """Point Playwright at the onedir copy (or Studio-installed) Chromium."""
+    existing = str(os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or "").strip()
+    if existing:
+        return Path(existing)
+    dest = browsers_dir()
+    try:
+        if dest.is_dir() and any(dest.iterdir()):
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(dest)
+            return dest
+    except OSError:
+        pass
+    return dest
 
 
 def web_slot_sn(scout_id: str) -> str:
@@ -104,6 +133,7 @@ PROBE_OK_STATE = "available"
 def probe_playwright() -> tuple[str, dict]:
     """不长期占浏览器：只确认 Python 包和 Chromium 可执行文件在。"""
     global _probe_cache
+    apply_browsers_path()
     now = time.time()
     with _probe_lock:
         ts, state, meta = _probe_cache

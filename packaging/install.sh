@@ -34,6 +34,11 @@ install_frozen() {
     echo "frozen payload missing mino-scout in $src" >&2
     exit 1
   fi
+  # GitHub zip often drops +x on nested Playwright/adb binaries.
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    xattr -cr "$dest" >/dev/null 2>&1 || true
+  fi
+  find "$dest" -type f -exec chmod u+x {} +
 }
 
 install_source() {
@@ -87,6 +92,15 @@ write_launchd() {
   </array>
   <key>WorkingDirectory</key>
   <string>${PREFIX}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>${HOME}</string>
+    <key>PLAYWRIGHT_BROWSERS_PATH</key>
+    <string>${PREFIX}/bin/ms-playwright</string>
+  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>

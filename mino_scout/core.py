@@ -27,7 +27,7 @@ from mino_scout.schemas import CapturedScreen, EventResult, EventStatus, PlanEve
 
 TAG = "ScoutCore"
 
-SCOUT_VERSION = "0.1.0"
+SCOUT_VERSION = "0.1.4"
 
 # 幂等缓存保留时长。CONVENTIONS.md §5：该 run 结束或 10 分钟，取先到者。
 _IDEMPOTENT_TTL_SEC = 600.0

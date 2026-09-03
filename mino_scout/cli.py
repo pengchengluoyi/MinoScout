@@ -102,8 +102,10 @@ def _install_signals(transport) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     from mino_scout.config import config_path, configure_proxy_bypass, resolve_runtime
+    from mino_scout.playwright_hub import apply_browsers_path
 
     configure_proxy_bypass()
+    apply_browsers_path()
 
     ap = argparse.ArgumentParser(
         prog="mino-scout",

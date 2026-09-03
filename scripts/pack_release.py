@@ -66,11 +66,63 @@ def frozen_exe(dist: Path) -> Path:
     return dist / name
 
 
+def _looks_executable(path: Path) -> bool:
+    """Nested Playwright `node` / Chromium / adb are often 0644 after PyInstaller copy."""
+    if not path.is_file():
+        return False
+    name = path.name.lower()
+    if name in {"mino-scout", "mino-scout.exe", "node", "node.exe", "adb", "adb.exe", "chrome", "chrome.exe", "chromium", "ffmpeg", "ffmpeg.exe"}:
+        return True
+    if path.suffix.lower() in {".sh", ".exe", ".bin", ".command"}:
+        return True
+    try:
+        if os.access(path, os.X_OK):
+            return True
+    except OSError:
+        pass
+    try:
+        magic = path.read_bytes()[:4]
+    except OSError:
+        return False
+    if magic == b"\x7fELF":
+        return True
+    if magic[:2] == b"MZ":
+        return True
+    if magic[:2] == b"#!":
+        return True
+    # Mach-O 64/32 and fat
+    if magic in {
+        b"\xcf\xfa\xed\xfe",
+        b"\xce\xfa\xed\xfe",
+        b"\xfe\xed\xfa\xcf",
+        b"\xfe\xed\xfa\xce",
+        b"\xca\xfe\xba\xbe",
+        b"\xbe\xba\xfe\xca",
+    }:
+        return True
+    return False
+
+
+def chmod_payload(root: Path) -> None:
+    if not root.is_dir():
+        return
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        if _looks_executable(path):
+            try:
+                path.chmod(path.stat().st_mode | 0o111)
+            except OSError:
+                pass
+
+
 def _add_file(zf: zipfile.ZipFile, src: Path, arcname: str, *, executable: bool = False) -> None:
     info = zipfile.ZipInfo(arcname.replace("\\", "/"))
     info.compress_type = zipfile.ZIP_DEFLATED
+    # Unix (3). Default ZipInfo is DOS (0), and macOS unzip then ignores 0755.
+    info.create_system = 3
     mode = 0o755 if executable else 0o644
-    info.external_attr = (mode & 0xFFFF) << 16
+    info.external_attr = ((0o100000 | mode) & 0xFFFF) << 16
     data = src.read_bytes()
     if src.suffix == ".sh" or src.name in ("install.sh",):
         data = data.replace(b"\r\n", b"\n")
@@ -86,10 +138,7 @@ def _add_tree(zf: zipfile.ZipFile, src: Path, prefix: str) -> None:
         if "__pycache__" in path.parts:
             continue
         rel = path.relative_to(src).as_posix()
-        executable = path.is_file() and (os.access(path, os.X_OK) or path.suffix in {".sh", ".exe"})
-        if path.name in ("mino-scout", "mino-scout.exe"):
-            executable = True
-        _add_file(zf, path, f"{prefix}/{rel}", executable=executable)
+        _add_file(zf, path, f"{prefix}/{rel}", executable=_looks_executable(path))
 
 
 def _ensure_binary() -> Path:
@@ -136,6 +185,8 @@ def pack(
 
     if zip_path.exists():
         zip_path.unlink()
+    if use_binary:
+        chmod_payload(frozen)
     with zipfile.ZipFile(zip_path, "w") as zf:
         if use_binary:
             _add_tree(zf, frozen, f"{name}/mino-scout")

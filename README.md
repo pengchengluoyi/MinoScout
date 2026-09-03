@@ -41,7 +41,7 @@ mino-scout --nexus ws://mino.local:10104/node --token <pair-token>
 
 1. 确认 `pyproject.toml` 的 `version`（例如 `0.1.0`）
 2. `git tag v0.1.0 && git push origin v0.1.0`
-3. Actions 工作流 `.github/workflows/release.yml` 在 macOS / Windows / Linux 打 zip、算 sha256、上传 Release，并挂上 `manifest.json`
+3. Actions 工作流 `.github/workflows/release.yml` 打 zip：`darwin-arm64`（macos-latest）、`darwin-x64`（macos-15-intel）、`win32-x64`、`linux-x64`，算 sha256、上传 Release，并挂上 `manifest.json`
 4. 稳定地址（Studio 用这个找最新包）：
 
 ```

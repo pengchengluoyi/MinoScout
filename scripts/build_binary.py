@@ -16,14 +16,15 @@
 
 ## 已知的坑（都来自上游 MiniOrangeServer/build.py 的经验）
 
-1. **Playwright 的浏览器不能打进去。** playwright 这个 Python 包会被打包，但它下载的
-   Chromium（约 298 MB）在 `~/Library/Caches/ms-playwright`，是运行时资源。
-   冻结产物里不含它 —— web 通道要么首次运行时 `playwright install chromium`，
-   要么在没有它时如实上报 `available: false`（Scout 已经这么做了）。
+1. **Playwright 的浏览器要单独装进 onedir。** `collect-all playwright` 只带 Python 包和
+   driver/`node`，不含 Chromium。冻结后执行 `playwright install chromium` 写到
+   `ms-playwright/`，运行时 `PLAYWRIGHT_BROWSERS_PATH` 指向那里。
 2. **动态 import 的模块要显式声明。** Scout 里大量 `def f(): from x import y` 的懒加载
    （executors / engines / probe），PyInstaller 静态分析看不到，必须进 hiddenimports。
    这里用 `find_local_modules()` 把 `mino_scout` 下所有模块全塞进去 —— 上游同款做法。
 3. **adbutils 带二进制资源**（adb.exe 等），需要 collect_all 才能带上。
+4. **zip 必须用 Unix 文件模式。** PyInstaller 拷出来的 `node` 经常是 0644；打包脚本按
+   Mach-O/ELF/PE 魔数写成 0755，否则 macOS 解压后 Playwright 会 Permission denied。
 """
 from __future__ import annotations
 
@@ -118,7 +119,13 @@ def build(*, clean: bool) -> Path:
     entry = BUILD / "_entry.py"
     entry.write_text(
         "# PyInstaller 入口。真正的实现在 mino_scout.cli:main。\n"
+        "import os\n"
         "import sys\n"
+        "from pathlib import Path\n"
+        "if getattr(sys, 'frozen', False):\n"
+        "    _browsers = Path(sys.executable).resolve().parent / 'ms-playwright'\n"
+        "    if _browsers.is_dir():\n"
+        "        os.environ.setdefault('PLAYWRIGHT_BROWSERS_PATH', str(_browsers))\n"
         "for _stream in (sys.stdout, sys.stderr):\n"
         "    _reconfigure = getattr(_stream, 'reconfigure', None)\n"
         "    if not _reconfigure:\n"
@@ -159,7 +166,36 @@ def build(*, clean: bool) -> Path:
     out = DIST / NAME
     if not out.is_dir():
         raise SystemExit(f"产物目录没生成：{out}")
+    install_playwright_chromium(out)
+    chmod_frozen_payload(out)
     return out
+
+
+def browsers_dir(dist_dir: Path) -> Path:
+    return dist_dir / "ms-playwright"
+
+
+def install_playwright_chromium(dist_dir: Path) -> None:
+    dest = browsers_dir(dist_dir)
+    dest.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ)
+    env["PLAYWRIGHT_BROWSERS_PATH"] = str(dest)
+    print(f"→ playwright install chromium → {dest}")
+    proc = subprocess.run(
+        [sys.executable, "-m", "playwright", "install", "chromium"],
+        env=env,
+        cwd=str(ROOT),
+        timeout=15 * 60,
+    )
+    if proc.returncode != 0:
+        raise SystemExit(f"playwright install chromium 失败，rc={proc.returncode}")
+
+
+def chmod_frozen_payload(dist_dir: Path) -> None:
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from pack_release import chmod_payload  # noqa: E402
+
+    chmod_payload(dist_dir)
 
 
 def binary_path(dist_dir: Path) -> Path:
@@ -187,6 +223,9 @@ def check(dist_dir: Path) -> int:
     env["PYTHONUTF8"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUNBUFFERED"] = "1"
+    browsers = browsers_dir(dist_dir)
+    if browsers.is_dir():
+        env["PLAYWRIGHT_BROWSERS_PATH"] = str(browsers)
     proc = subprocess.run(
         [str(exe), "probe"],
         capture_output=True,
