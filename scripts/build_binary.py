@@ -41,6 +41,21 @@ DIST = BUILD / "dist"
 WORK = BUILD / "work"
 NAME = "mino-scout"
 
+
+def _configure_utf8_stdio() -> None:
+    """Windows CI 默认 cp1252，print 中文 / → 会 UnicodeEncodeError。"""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not reconfigure:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+_configure_utf8_stdio()
+
 # 需要连数据文件一起收集的包（光靠静态分析带不全）
 COLLECT_ALL = ["adbutils", "uiautomator2", "playwright", "zeroconf"]
 
@@ -161,7 +176,15 @@ def check(dist_dir: Path) -> int:
     print(f"\n→ 自检：{exe} probe")
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)          # 确保没有偷偷用到源码树
-    proc = subprocess.run([str(exe), "probe"], capture_output=True, text=True, env=env, timeout=180)
+    proc = subprocess.run(
+        [str(exe), "probe"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+        timeout=180,
+    )
     tail = (proc.stdout or "")[-800:]
     print(tail)
     if proc.returncode not in (0, 1):     # 1 = 没有可用 executor，也算跑通了

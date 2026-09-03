@@ -19,6 +19,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def _configure_utf8_stdio() -> None:
+    """Windows CI 默认 cp1252，freeze 日志里的中文会直接把打包打挂。"""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not reconfigure:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+_configure_utf8_stdio()
+
+
 def package_version() -> str:
     env = str(os.environ.get("SCOUT_VERSION") or "").strip()
     if env:
