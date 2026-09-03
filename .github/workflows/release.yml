@@ -23,8 +23,8 @@ jobs:
       tag: ${{ steps.meta.outputs.tag }}
       prerelease: ${{ steps.meta.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - id: meta
@@ -48,11 +48,11 @@ jobs:
     needs: meta
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: Open GitHub Release for this tag
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.meta.outputs.tag }}
           name: Mino Scout ${{ needs.meta.outputs.version }}
@@ -65,8 +65,8 @@ jobs:
   guards:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: verify hard constraints
@@ -85,8 +85,8 @@ jobs:
       matrix:
         os: [macos-latest, windows-latest, ubuntu-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install pack tools
@@ -98,7 +98,7 @@ jobs:
         env:
           SCOUT_VERSION: ${{ needs.meta.outputs.version }}
         run: python scripts/pack_release.py --out dist --binary
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         if: always() && !cancelled()
         with:
           name: scout-${{ matrix.os }}
@@ -110,11 +110,11 @@ jobs:
     if: always() && !cancelled() && needs.meta.result == 'success' && needs.open-release.result == 'success'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         continue-on-error: true
         with:
           path: dist
@@ -127,7 +127,7 @@ jobs:
           SCOUT_RELEASE_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ needs.meta.outputs.tag }}
         run: python scripts/write_manifest.py --dist dist --out dist/manifest.json
       - name: Attach packages to the Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.meta.outputs.tag }}
           name: Mino Scout ${{ needs.meta.outputs.version }}
