@@ -1,0 +1,21 @@
+name: verify
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # 守门脚本刻意零依赖，用裸 python 跑，不装环境
+      - name: verify hard constraints
+        run: python scripts/verify_all.py
+      - name: install
+        run: pip install -e .
+      - name: tests
+        run: python tests/run_all.py

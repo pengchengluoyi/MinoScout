@@ -1,0 +1,30 @@
+{
+  "msg_id": "01J8ZQRESULT000000000004",
+  "payload": {
+    "attempts": [
+      {
+        "elapsed_ms": 900,
+        "error": "",
+        "executor": "remote",
+        "status": "blocked"
+      }
+    ],
+    "elapsed_ms": 900,
+    "error": "",
+    "executor_used": "remote",
+    "extra": {},
+    "height": 0,
+    "image_base64": "",
+    "image_mime": "",
+    "run_id": "run_20260902_153001_R5CT30",
+    "source": "remote",
+    "status": "blocked",
+    "step_idx": 12,
+    "summary": "系统权限弹窗需人工确认",
+    "width": 0
+  },
+  "reply_to": "01J8ZQEXECUTE00000000003",
+  "ts": "2026-09-02T15:31:00.000000+08:00",
+  "type": "RESULT",
+  "v": 1
+}

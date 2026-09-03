@@ -1,0 +1,30 @@
+{
+  "msg_id": "01J8ZQRESULT000000000001",
+  "payload": {
+    "attempts": [
+      {
+        "elapsed_ms": 412,
+        "error": "",
+        "executor": "remote",
+        "status": "pass"
+      }
+    ],
+    "elapsed_ms": 412,
+    "error": "",
+    "executor_used": "remote",
+    "extra": {},
+    "height": 0,
+    "image_base64": "",
+    "image_mime": "",
+    "run_id": "run_20260902_153001_R5CT30",
+    "source": "remote",
+    "status": "pass",
+    "step_idx": 7,
+    "summary": "remote TAP (512,830) -> ok",
+    "width": 0
+  },
+  "reply_to": "01J8ZQEXECUTE00000000001",
+  "ts": "2026-09-02T15:30:04.412000+08:00",
+  "type": "RESULT",
+  "v": 1
+}

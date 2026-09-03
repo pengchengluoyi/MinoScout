@@ -1,0 +1,30 @@
+[project]
+name = "mino-scout"
+version = "0.1.0"
+description = "MinoScout — 执行器：接收 MinoNexus 下发的动作，操作设备，回报结果"
+requires-python = ">=3.12"
+
+# 只放执行侧真正需要的。注意本仓禁止：sqlalchemy / openai / torch / paddle /
+# ultralytics / opencv —— 见 CLAUDE.md §1，由 scripts/verify_*.py 守门。
+dependencies = [
+  "pydantic>=2.12",       # schemas.py
+  "websockets>=15.0",     # transport/node.py：反向 dial Nexus
+  "adbutils>=2.11",       # adb 通道
+  "uiautomator2>=3.5",    # Android UI 层级
+  "facebook-wda>=1.4",    # iOS WDA
+  "playwright>=1.55",     # Web 通道
+  "pillow>=12.0",         # 截图尺寸/格式处理（不做识别）
+  "numpy>=2.2",           # shot_is_blank 的均值/标准差判据（不做识别）
+  "psutil>=7.1",          # 本机 IP / 进程
+  "zeroconf>=0.148",      # mDNS：给 ClawNode 发现用
+]
+
+[project.optional-dependencies]
+ios-appium = ["Appium-Python-Client>=5.2"]   # iOS 的另一个 Engine 实现，非必需
+pc = ["pywinauto>=0.6; sys_platform == 'win32'", "pyobjc-core>=12.1; sys_platform == 'darwin'"]
+
+[project.scripts]
+mino-scout = "mino_scout.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["mino_scout*"]

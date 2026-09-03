@@ -1,0 +1,112 @@
+name: Release Scout
+
+# Packages live on this GitHub Release. Nexus does not host the binaries.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - id: meta
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+            VERSION="${TAG#v}"
+            PRE=false
+          else
+            VERSION="$(python scripts/pack_release.py --print-version)"
+            TAG="dev-${GITHUB_SHA:0:7}"
+            PRE=true
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${PRE}" >> "$GITHUB_OUTPUT"
+          echo "Scout ${VERSION}  tag ${TAG}  prerelease=${PRE}"
+
+  guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: verify hard constraints
+        run: python scripts/verify_all.py
+      - name: install
+        run: pip install -e .
+      - name: tests
+        run: python tests/run_all.py
+
+  build:
+    needs: [meta, guards]
+    name: Pack (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pack tools
+        run: |
+          python -m pip install -U pip
+          python -m pip install pyinstaller
+          python -m pip install .
+      - name: Freeze, probe, pack zip
+        env:
+          SCOUT_VERSION: ${{ needs.meta.outputs.version }}
+        run: python scripts/pack_release.py --out dist --binary
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scout-${{ matrix.os }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Write manifest.json
+        env:
+          SCOUT_VERSION: ${{ needs.meta.outputs.version }}
+          SCOUT_RELEASE_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ needs.meta.outputs.tag }}
+        run: python scripts/write_manifest.py --dist dist --out dist/manifest.json
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.meta.outputs.tag }}
+          name: Mino Scout ${{ needs.meta.outputs.version }}
+          prerelease: ${{ needs.meta.outputs.prerelease == 'true' }}
+          generate_release_notes: ${{ needs.meta.outputs.prerelease != 'true' }}
+          files: |
+            dist/*.zip
+            dist/manifest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

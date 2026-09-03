@@ -1,0 +1,11 @@
+{
+  "msg_id": "01J8ZQNODECMD00000000001",
+  "payload": {
+    "command": "stop",
+    "reason": "studio"
+  },
+  "reply_to": null,
+  "ts": "2026-09-03T13:00:00.000000+08:00",
+  "type": "NODE_COMMAND",
+  "v": 1
+}

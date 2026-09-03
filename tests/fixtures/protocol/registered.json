@@ -1,0 +1,18 @@
+{
+  "msg_id": "01J8ZQREGISTERED00000001",
+  "payload": {
+    "accepted": true,
+    "heartbeat_interval_sec": 15,
+    "nexus_version": "0.1.0",
+    "protocol_version": 1,
+    "reason": "",
+    "session_token": "sess-xyz",
+    "warnings": [
+      "device claw-abc123 未在 Nexus 侧登记，已自动创建"
+    ]
+  },
+  "reply_to": "01J8ZQREGISTER0000000001",
+  "ts": "2026-09-02T15:30:00.180000+08:00",
+  "type": "REGISTERED",
+  "v": 1
+}
