@@ -389,6 +389,91 @@ def has_target(params: dict[str, Any]) -> bool:
                ("resource_id", "resource-id", "id", "text", "content_desc", "content-desc", "desc"))
 
 
+def lift_text_anchor(params: dict[str, Any]) -> dict[str, Any]:
+    """把 selector_text / description 提升为 params.target，供 resolve_target 使用。
+
+    决策模型常只给可见文案，不给 target{}。不提升的话执行侧只能盲点坐标，
+    底栏 Tab 很容易点到系统手势条上 —— 命令成功、界面不动。
+    """
+    p = dict(params or {})
+    if has_target(p):
+        return p
+    target = dict(p.get("target") or {}) if isinstance(p.get("target"), dict) else {}
+    label = ""
+    for key in ("selector_text", "description", "label", "text"):
+        raw = p.get(key)
+        if raw is None and key != "selector_text":
+            raw = target.get(key)
+        s = str(raw or "").strip().strip("「」\"'")
+        if s:
+            label = s
+            break
+    if not label:
+        return p
+    target.setdefault("text", label)
+    target.setdefault("content_desc", label)
+    p["target"] = target
+    return p
+
+
+def snap_point(
+    nodes: list[UiNode],
+    x: int,
+    y: int,
+    *,
+    slop: int = 96,
+) -> Optional[tuple[int, int, dict[str, Any]]]:
+    """把落点吸到真正可点的控件中心。
+
+    模型给的底栏坐标经常偏下（落到手势条），`input tap` 仍返回 0。
+    点在控件内部 → 取面积最小的那个；否则在正下方 slop 像素内找同 x 列的 Tab。
+    """
+    if not nodes:
+        return None
+    inside: list[UiNode] = []
+    near: list[UiNode] = []
+    for n in nodes:
+        if not (n.clickable and n.enabled and n.area > 0):
+            continue
+        l, t, r, b = n.bounds
+        if l <= x <= r and t <= y <= b:
+            inside.append(n)
+            continue
+        if l <= x <= r and t <= y <= (b + slop):
+            near.append(n)
+    pool = inside or near
+    if not pool:
+        return None
+    chosen = min(pool, key=lambda n: n.area)
+    cx, cy = chosen.center
+    how = "inside" if chosen in inside else "near"
+    return cx, cy, {"snap": {**chosen.to_brief(), "how": how, "from": [x, y]}}
+
+
+def click_xy(serial: str, x: int, y: int) -> tuple[bool, str]:
+    """用已复用的 uiautomator2 连接点坐标。
+
+    Android 14+ / 部分 OEM 上 `adb shell input tap` 返回 0 但事件到不了 App。
+    u2 走 AccessibilityService，这是 MiniOrange mAdb 的主路径。
+    """
+    if not serial:
+        return False, "missing serial"
+    try:
+        import uiautomator2 as u2
+    except ImportError as exc:
+        return False, f"uiautomator2 不可用: {exc}"
+    try:
+        dev = _U2_CONNS.get(serial)
+        if dev is None:
+            dev = u2.connect(serial)
+            _U2_CONNS[serial] = dev
+        dev.click(int(x), int(y))
+        return True, "u2"
+    except Exception as exc:
+        SLog.w(TAG, f"u2 click ({x},{y}) failed: {type(exc).__name__}: {exc}")
+        return False, f"{type(exc).__name__}: {exc}"
+
+
 # ---------- 供 prompt / 调试使用的紧凑视图 ----------
 
 

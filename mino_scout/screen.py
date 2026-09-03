@@ -36,6 +36,19 @@ TAG = "ScreenCapture"
 # 这样 Nexus 提前下发 remote/ios_wda 时不会静默变成"抓不到图"。
 _IMPLEMENTED = ("adb", "playwright")
 
+# serial → 最近一次成功截图的像素尺寸。input 坐标空间若与截图不一致（wm override），
+# AdbExecutor 用它来缩放 tap，避免点到屏幕外。
+_LAST_CAPTURE_SIZE: dict[str, tuple[int, int]] = {}
+
+
+def last_capture_size(serial: str) -> tuple[int, int]:
+    return _LAST_CAPTURE_SIZE.get(str(serial or "")) or (0, 0)
+
+
+def remember_capture_size(serial: str, width: int, height: int) -> None:
+    if serial and width > 0 and height > 0:
+        _LAST_CAPTURE_SIZE[str(serial)] = (int(width), int(height))
+
 
 def peek_png_size(data: bytes) -> tuple[int, int]:
     """PNG 文件头里取 width/height。失败返回 (0,0)。
@@ -94,6 +107,7 @@ def capture_via_adb(adb_serial: str, *, timeout_sec: float = 15.0) -> CapturedSc
         os.close(fd)
 
     width, height = peek_png_size(png_bytes)
+    remember_capture_size(adb_serial, width, height)
     return CapturedScreen(
         ok=True,
         source="adb",

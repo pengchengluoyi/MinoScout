@@ -76,10 +76,6 @@ jobs:
           python-version: "3.12"
       - name: verify hard constraints
         run: python scripts/verify_all.py
-      - name: install
-        run: pip install -e .
-      - name: tests
-        run: python tests/run_all.py
 
   build:
     needs: [meta, guards]

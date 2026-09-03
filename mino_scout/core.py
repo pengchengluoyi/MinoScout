@@ -1,37 +1,72 @@
 """ScoutCore：纯本地、零网络、可单测。
 
 `transport/` 负责收发协议消息，把载荷交给这里；`core` 只认
-`Execute → EventResult` / `Observe → CapturedScreen`，**内部不出现任何连接形态的分支**
+`Execute → EventResult`，**内部不出现任何连接形态的分支**
 （CLAUDE.md §2.2）。
 
-三个对外方法对应协议里三类请求：
-    execute(Execute)   ← EXECUTE
-    observe(Observe)   ← OBSERVE
-    manifest()         → REGISTER 的 executors[] / devices[]，也用于 mino-scout probe
+统一入口：`execute(Execute)` 是能力调用与框架指令的唯一 dispatch。
+截图 / 探活 / 节点 stop·restart·update / 取消 run 都走这里。
+`observe()` 是给本地测试用的薄包装，内部仍构造 Execute。
 
-幂等（协议 §4.5 / CONVENTIONS.md §5）也在这一层：`(run_id, step_idx)` 是唯一键，
-重复的 EXECUTE 直接回缓存，不重新操作设备。
+幂等（协议 §4.4 / CONVENTIONS.md §5）也在这一层：`(run_id, step_idx)` 是唯一键，
+重复的 EXECUTE 直接回缓存，不重新操作设备。`step_idx < 0` 不做幂等。
 """
 from __future__ import annotations
 
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from typing import Any, Optional
 
 from mino_scout import protocol as P
 from mino_scout import screen as SCREEN
-from mino_scout.executors.base import DeviceRef, Executor
+from mino_scout.executors.base import DeviceRef, Executor, make_event_result, now_iso
 from mino_scout.log import SLog, current_run_id, current_step_idx
 from mino_scout.router import Router
 from mino_scout.schemas import CapturedScreen, EventResult, EventStatus, PlanEvent
 
 TAG = "ScoutCore"
 
-SCOUT_VERSION = "0.1.4"
+SCOUT_VERSION = "0.1.5"
 
 # 幂等缓存保留时长。CONVENTIONS.md §5：该 run 结束或 10 分钟，取先到者。
 _IDEMPOTENT_TTL_SEC = 600.0
 
+# executor_order 为空时按平台填。Nexus 之后应显式下发；这是 Scout 侧兜底。
+_PLATFORM_EXECUTOR_ORDER: dict[str, tuple[str, ...]] = {
+    "android": ("adb", "remote"),
+    "ios": ("ios_wda",),
+    "web": ("playwright",),
+    "playwright": ("playwright",),
+    "other": ("adb", "remote", "ios_wda", "playwright"),
+}
+
+_PLATFORM_ALIASES = {
+    "android": "android",
+    "ios": "ios",
+    "iphone": "ios",
+    "ipad": "ios",
+    "web": "web",
+    "browser": "web",
+    "playwright": "playwright",
+    "other": "other",
+}
+
+_CAP_ALIASES = {
+    "app_version": "get_app_version",
+    "foreground_app": "get_foreground_app",
+    "probe_device": "probe",
+    "stop": "node.stop",
+    "restart": "node.restart",
+    "update": "node.update",
+}
+
+_NODE_COMMANDS = {
+    "node.stop": "stop",
+    "node.restart": "restart",
+    "node.update": "update",
+}
 
 class ScoutCore:
     def __init__(self, executors: dict[str, Executor], *, node_id: str = ""):
@@ -48,8 +83,9 @@ class ScoutCore:
         self._done: dict[tuple[str, int], tuple[float, EventResult]] = {}
         self._active_runs: set[str] = set()
         self._run_seen: dict[str, float] = {}
+        self._pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="scout-exec")
 
-    # ---------------- EXECUTE ----------------
+    # ---------------- EXECUTE（唯一 dispatch） ----------------
 
     def execute(self, req: P.Execute) -> EventResult:
         key = (req.run_id, req.step_idx)
@@ -58,39 +94,22 @@ class ScoutCore:
             SLog.i(TAG, f"幂等命中 {key}，回缓存不重新执行（status={cached.status.value}）")
             return cached
 
-        token_run = current_run_id.set(req.run_id)
-        token_step = current_step_idx.set(req.step_idx)
-        with self._lock:
-            self._active_runs.add(req.run_id)
-            self._run_seen[req.run_id] = time.time()
-        from mino_scout.power import get_guard
-
-        get_guard().acquire(req.run_id)
+        timeout = float(req.timeout_sec or 0) or 30.0
+        fut = self._pool.submit(self._execute_body, req)
         try:
-            event = _event_from_execute(req)
-            device = _device_from_execute(req)
-            result = self.router.dispatch(
-                event,
-                device,
-                run_id=req.run_id,
-                step_idx=req.step_idx,
-                capture_prefer=_prefer_for(device),
-            )
-        finally:
-            current_run_id.reset(token_run)
-            current_step_idx.reset(token_step)
+            result = fut.result(timeout=timeout)
+        except TimeoutError:
+            result = _timeout_result(req, timeout)
+            SLog.w(TAG, f"execute timeout {timeout}s cap={req.capability_id} key={key}")
+            self._put_cached(key, result)
+            return result
 
         self._put_cached(key, result)
         return result
 
-    # ---------------- OBSERVE ----------------
-
-    def observe(self, req: P.Observe) -> tuple[EventStatus, dict[str, Any]]:
-        """返回 (status, RESULT 的补充字段)。
-
-        `OBSERVE` 没有 step_idx，也**不做幂等** —— 它本来就是"再看一眼"。
-        """
-        token = current_run_id.set(req.run_id)
+    def _execute_body(self, req: P.Execute) -> EventResult:
+        token_run = current_run_id.set(req.run_id)
+        token_step = current_step_idx.set(req.step_idx)
         if req.run_id:
             with self._lock:
                 self._active_runs.add(req.run_id)
@@ -99,29 +118,190 @@ class ScoutCore:
 
             get_guard().acquire(req.run_id)
         try:
-            device = DeviceRef(sn=req.sn, adb_serial=_adb_serial_guess(req.sn))
-            kind = req.kind if isinstance(req.kind, P.ObserveKind) else P.ObserveKind(req.kind)
-
-            if kind is P.ObserveKind.SCREENSHOT:
-                shot = SCREEN.capture(
-                    device,
-                    prefer=tuple(req.prefer or ("adb", "remote")),
-                    timeout_sec=req.timeout_sec,
-                    compress_ratio=req.compress_ratio,
-                )
-                return _screen_to_result(shot)
-
-            if kind is P.ObserveKind.HIERARCHY:
-                return self._observe_hierarchy(device, req)
-
-            if kind in (P.ObserveKind.APP_VERSION, P.ObserveKind.FOREGROUND_APP):
-                return self._observe_via_capability(device, req, kind)
-
-            return EventStatus.FAIL, {"error": f"未知 OBSERVE kind: {kind}", "source": "core"}
+            return self._dispatch(req)
+        except Exception as exc:
+            SLog.e(TAG, f"execute 内部异常 cap={req.capability_id}: {exc!r}")
+            return make_event_result(
+                _event_from_execute(req),
+                status=EventStatus.FAIL,
+                executor_used="core",
+                started_at=now_iso(),
+                elapsed_ms=0,
+                summary=f"scout 内部错误：{type(exc).__name__}",
+                error=f"{type(exc).__name__}: {exc}",
+            )
         finally:
-            current_run_id.reset(token)
+            current_run_id.reset(token_run)
+            current_step_idx.reset(token_step)
 
-    def _observe_hierarchy(self, device: DeviceRef, req: P.Observe):
+    def _dispatch(self, req: P.Execute) -> EventResult:
+        cap = _canonical_cap(req.capability_id)
+        req = replace(req, capability_id=cap)
+
+        if cap == "cancel_run":
+            return self._dispatch_cancel(req)
+        if cap.startswith("node."):
+            if cap in _NODE_COMMANDS:
+                return self._dispatch_node(req, cap)
+            cmd = cap.split(".", 1)[-1] or cap
+            msg = f"不支持的节点指令 {cmd}"
+            return make_event_result(
+                _event_from_execute(req),
+                status=EventStatus.FAIL,
+                executor_used="core",
+                started_at=now_iso(),
+                elapsed_ms=0,
+                summary=msg,
+                error=msg,
+                raw_response={"command": cmd},
+            )
+        if cap == "probe":
+            return self._dispatch_probe(req)
+        if cap == "screenshot":
+            return self._dispatch_screenshot(req)
+        if cap == "hierarchy":
+            return self._dispatch_hierarchy(req)
+
+        device = _device_from_execute(req, node_id=self.node_id)
+        routed = _with_executor_order(req, device, registered=self.executors)
+        event = _event_from_execute(routed)
+        return self.router.dispatch(
+            event,
+            device,
+            run_id=req.run_id,
+            step_idx=req.step_idx,
+            capture_prefer=_prefer_for(device),
+        )
+
+    def _dispatch_cancel(self, req: P.Execute) -> EventResult:
+        dropped = self.cancel_run(req.run_id)
+        return make_event_result(
+            _event_from_execute(req),
+            status=EventStatus.PASS,
+            executor_used="core",
+            started_at=now_iso(),
+            elapsed_ms=0,
+            summary=f"已停止 run（清 {dropped} 条幂等缓存）；已发给设备的动作不回滚",
+        )
+
+    def _dispatch_node(self, req: P.Execute, cap: str) -> EventResult:
+        cmd = _NODE_COMMANDS[cap]
+        event = _event_from_execute(req)
+        started = now_iso()
+        if cmd == "update":
+            msg = "远程更新未实现，请在该节点本机 Studio 更新"
+            return make_event_result(
+                event, status=EventStatus.FAIL, executor_used="core",
+                started_at=started, elapsed_ms=0, summary=msg, error=msg,
+                raw_response={"command": cmd},
+            )
+        extra: dict[str, Any] = {"command": cmd, "_scout_shutdown": True}
+        if cmd == "restart":
+            extra["_scout_reexec"] = True
+        return make_event_result(
+            event, status=EventStatus.PASS, executor_used="core",
+            started_at=started, elapsed_ms=0, summary=f"已接受 {cmd}",
+            raw_response=extra,
+        )
+
+    def _dispatch_probe(self, req: P.Execute) -> EventResult:
+        t0 = time.time()
+        execs, devices = self.manifest()
+        sn = str(req.sn or req.device_id or "").strip()
+        channels: dict[str, str] = {}
+        for d in devices:
+            if d.sn == sn:
+                channels = dict(d.channels)
+                break
+        elapsed = int((time.time() - t0) * 1000)
+        summary = f"probe {sn}: {channels or '未发现该设备'}"
+        payload = {
+            "channels": channels,
+            "executors": {e.id: e.available for e in execs},
+            "extra": {"channels": channels, "executors": {e.id: e.available for e in execs}},
+        }
+        return make_event_result(
+            _event_from_execute(req),
+            status=EventStatus.PASS,
+            executor_used="core",
+            started_at=now_iso(),
+            elapsed_ms=elapsed,
+            summary=summary,
+            raw_response=payload,
+        )
+
+    def _dispatch_screenshot(self, req: P.Execute) -> EventResult:
+        device = _device_from_execute(req, node_id=self.node_id)
+        routed = _with_executor_order(req, device, registered=self.executors)
+        prefer = tuple(routed.executor_order or _prefer_for(device))
+        compress = float((req.params or {}).get("compress_ratio") or 2.0)
+        shot = SCREEN.capture(
+            device,
+            prefer=prefer,
+            timeout_sec=float(req.timeout_sec or 15.0),
+            compress_ratio=compress,
+        )
+        status, fields = _screen_to_result(shot)
+        return make_event_result(
+            _event_from_execute(req),
+            status=status,
+            executor_used=str(fields.get("source") or "screen"),
+            started_at=now_iso(),
+            elapsed_ms=int(fields.get("elapsed_ms") or 0),
+            summary=str(fields.get("summary") or ""),
+            error=str(fields.get("error") or ""),
+            raw_response=fields,
+        )
+
+    def _dispatch_hierarchy(self, req: P.Execute) -> EventResult:
+        device = _device_from_execute(req, node_id=self.node_id)
+        status, fields = self._hierarchy_fields(device)
+        extra = dict(fields.get("extra") or {})
+        raw = dict(fields)
+        if extra:
+            raw.update(extra)
+        return make_event_result(
+            _event_from_execute(req),
+            status=status,
+            executor_used=str(fields.get("source") or "core"),
+            started_at=now_iso(),
+            elapsed_ms=int(fields.get("elapsed_ms") or 0),
+            summary=str(fields.get("summary") or ""),
+            error=str(fields.get("error") or ""),
+            raw_response=raw,
+        )
+
+    def observe(
+        self,
+        *,
+        run_id: str,
+        sn: str,
+        kind: str = "screenshot",
+        prefer: Optional[list[str]] = None,
+        force_fresh: bool = True,
+        timeout_sec: float = 15.0,
+        compress_ratio: float = 2.0,
+        device_id: str = "",
+        platform: str = "",
+    ) -> tuple[EventStatus, dict[str, Any]]:
+        """本地薄包装。内部转 Execute，step_idx=-1，不做幂等。"""
+        cap = P.OBSERVE_CAPS.get(kind, kind)
+        ev = self.execute(
+            P.Execute(
+                run_id=run_id,
+                step_idx=-1,
+                sn=sn,
+                capability_id=cap,
+                params={"force_fresh": force_fresh, "compress_ratio": compress_ratio},
+                executor_order=list(prefer or []),
+                timeout_sec=float(timeout_sec or 15.0),
+                device_id=device_id or sn,
+                platform=platform,
+            )
+        )
+        return ev.status, _event_result_to_observe_fields(ev)
+
+    def _hierarchy_fields(self, device: DeviceRef) -> tuple[EventStatus, dict[str, Any]]:
         from mino_scout import hierarchy as H
 
         if not device.adb_serial or device.adb_serial.startswith("claw-"):
@@ -132,25 +312,13 @@ class ScoutCore:
         dump = H.dump_ui_nodes(device.adb_serial)
         if not dump.ok:
             return EventStatus.FAIL, {"error": dump.error, "source": "adb"}
+        nodes = [n.to_brief() for n in dump.nodes]
         return EventStatus.PASS, {
             "source": "adb",
             "summary": f"UI 层级 {len(dump)} 节点",
-            "extra": {"nodes": [n.to_brief() for n in dump.nodes]},
+            "extra": {"nodes": nodes},
+            "nodes": nodes,
             "elapsed_ms": getattr(dump, "elapsed_ms", 0),
-        }
-
-    def _observe_via_capability(self, device: DeviceRef, req: P.Observe, kind: P.ObserveKind):
-        """app_version / foreground_app 复用 executor 里已有的实现，不另写一套。"""
-        cap = "get_app_version" if kind is P.ObserveKind.APP_VERSION else "get_foreground_app"
-        order = [ex for ex in (req.prefer or ("adb",)) if ex in self.executors] or ["adb"]
-        event = PlanEvent(seq=0, capability_id=cap, params={}, executor_order=order)
-        res = self.router.dispatch(event, device, run_id=req.run_id, step_idx=-1)
-        return res.status, {
-            "source": res.executor_used,
-            "summary": res.summary,
-            "error": res.error,
-            "extra": res.raw_response,
-            "elapsed_ms": res.elapsed_ms,
         }
 
     # ---------------- PROBE / manifest ----------------
@@ -233,7 +401,7 @@ class ScoutCore:
     # ---------------- 幂等缓存 ----------------
 
     def _get_cached(self, key: tuple[str, int]) -> Optional[EventResult]:
-        if key[1] < 0:  # OBSERVE 之类不带 step_idx 的不做幂等
+        if key[1] < 0:  # 截图/探活/框架事件每次都要发生
             return None
         with self._lock:
             self._evict_expired()
@@ -256,6 +424,15 @@ class ScoutCore:
 # ---------------- 载荷 ↔ 内部模型 ----------------
 
 
+def _canonical_cap(capability_id: str) -> str:
+    cap = str(capability_id or "").strip()
+    return _CAP_ALIASES.get(cap, cap)
+
+
+def _normalize_platform(raw: str) -> str:
+    return _PLATFORM_ALIASES.get(str(raw or "").strip().lower(), str(raw or "").strip().lower())
+
+
 def _event_from_execute(req: P.Execute) -> PlanEvent:
     return PlanEvent(
         seq=req.step_idx,
@@ -268,17 +445,65 @@ def _event_from_execute(req: P.Execute) -> PlanEvent:
     )
 
 
-def _device_from_execute(req: P.Execute) -> DeviceRef:
+def _device_from_execute(req: P.Execute, *, node_id: str = "") -> DeviceRef:
     hint = dict(req.device_hint or {})
+    platform = _normalize_platform(str(req.platform or hint.get("platform") or ""))
+    sn = str(req.sn or req.device_id or hint.get("sn") or hint.get("device_id") or "").strip()
+    device_id = str(req.device_id or sn).strip()
+
+    if not platform:
+        platform = _platform_guess(sn)
+
+    if platform in ("web", "playwright") or sn.lower() in ("playwright", "web"):
+        from mino_scout.playwright_hub import is_web_slot, web_slot_sn
+
+        platform = "web"
+        if not is_web_slot(sn, platform):
+            sn = web_slot_sn(node_id) if node_id else (sn or "playwright")
+
+    adb_serial = str(hint.get("adb_serial") or "")
+    if not adb_serial and platform == "android":
+        adb_serial = _adb_serial_guess(device_id or sn)
+
     return DeviceRef(
-        sn=req.sn,
-        platform=str(hint.get("platform") or _platform_guess(req.sn)),
-        adb_serial=str(hint.get("adb_serial") or _adb_serial_guess(req.sn)),
-        udid=str(hint.get("udid") or ""),
+        sn=sn or device_id,
+        platform=platform or "android",
+        adb_serial=adb_serial,
+        udid=str(hint.get("udid") or (device_id if platform == "ios" else "")),
         password=str(hint.get("password") or ""),
         model=str(hint.get("model") or ""),
         extra={k: v for k, v in hint.items()
-               if k not in {"platform", "adb_serial", "udid", "password", "model"}},
+               if k not in {"platform", "adb_serial", "udid", "password", "model", "sn", "device_id"}},
+    )
+
+
+def _with_executor_order(
+    req: P.Execute, device: DeviceRef, *, registered: Optional[dict] = None,
+) -> P.Execute:
+    if req.executor_order:
+        return req
+    plat = _normalize_platform(device.platform or req.platform) or "other"
+    order = list(_PLATFORM_EXECUTOR_ORDER.get(plat) or _PLATFORM_EXECUTOR_ORDER["other"])
+    if registered:
+        present = [ex for ex in order if ex in registered]
+        if present:
+            order = present
+    return replace(req, executor_order=order)
+
+
+def _timeout_result(req: P.Execute, timeout: float) -> EventResult:
+    return make_event_result(
+        _event_from_execute(req),
+        status=EventStatus.FAIL,
+        executor_used="core",
+        started_at=now_iso(),
+        elapsed_ms=int(timeout * 1000),
+        summary=f"timeout after {timeout}s",
+        error=(
+            f"动作超过 timeout_sec={timeout}s 已终止"
+            "（Python 线程无法强杀，底层 adb 可能仍在跑）"
+        ),
+        raw_response={"timeout": True, "timeout_sec": timeout},
     )
 
 
@@ -297,6 +522,21 @@ def _screen_to_result(shot: CapturedScreen) -> tuple[EventStatus, dict[str, Any]
     }
 
 
+def _event_result_to_observe_fields(ev: EventResult) -> dict[str, Any]:
+    raw = dict(ev.raw_response or {})
+    return {
+        "summary": ev.summary or str(raw.get("summary") or ""),
+        "error": ev.error or str(raw.get("error") or ""),
+        "source": ev.executor_used or str(raw.get("source") or ""),
+        "elapsed_ms": ev.elapsed_ms,
+        "image_base64": str(raw.get("image_base64") or ""),
+        "image_mime": str(raw.get("image_mime") or ""),
+        "width": int(raw.get("width") or 0),
+        "height": int(raw.get("height") or 0),
+        "extra": dict(raw.get("extra") or {}),
+    }
+
+
 # ---------------- 小工具 ----------------
 
 
@@ -311,7 +551,7 @@ def _platform_guess(sn: str) -> str:
 def _adb_serial_guess(sn: str) -> str:
     """claw-* 是 ClawNode 伪 serial，adb 认不出来；web 槽不是设备。
 
-    真实映射由 Nexus 在 `EXECUTE.device_hint.adb_serial` 里给。这里只是 OBSERVE
+    真实映射由 Nexus 在 `EXECUTE.device_hint.adb_serial` 里给。这里只是
     没带 hint 时的兜底。
     """
     from mino_scout.playwright_hub import is_web_slot

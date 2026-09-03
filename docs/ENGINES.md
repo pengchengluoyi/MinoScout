@@ -61,8 +61,8 @@ ClawNode 是**被 `remote` executor 驱动的设备**，所以它连 Scout。
 
 | 事件 | 处理 |
 |---|---|
-| 设备掉线 | `EngineFactory.drop(sn)` + 发 `NODE_EVENT {event: "device_lost"}` |
-| 引擎崩溃（WDA 挂了 / u2 agent 死了） | `drop(sn)` + `NODE_EVENT {event: "engine_crashed"}`，下次 `get()` 时重建 |
+| 设备掉线 | `EngineFactory.drop(sn)` + 发 `EXECUTE {capability_id: node.device_lost}` |
+| 引擎崩溃（WDA 挂了 / u2 agent 死了） | `drop(sn)` + `EXECUTE {capability_id: node.engine_crashed}`，下次 `get()` 时重建 |
 | Scout 进程重启 | 全部 engine 重建。**这是可接受的** —— Scout 无持久状态，代价上限是当前那一步重跑 |
 | 长时间空闲 | 可以主动 `drop`，但要在 `HEARTBEAT.device_delta` 里如实反映连通性 |
 

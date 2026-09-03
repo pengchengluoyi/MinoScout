@@ -65,7 +65,7 @@ py = round(y_permille * height / 1000)
 - 完成后写缓存 `(run_id, step_idx) → RESULT`
 - 重复收到同键 `EXECUTE`：**直接回缓存，不重新执行**
 - 缓存生命周期：该 run 结束或 10 分钟，取先到者
-- `CANCEL_RUN` 要清掉该 run 的全部缓存
+- `EXECUTE cancel_run` 要清掉该 run 的全部缓存
 
 ## 6. 守门脚本
 

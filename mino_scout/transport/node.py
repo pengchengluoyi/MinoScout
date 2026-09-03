@@ -18,7 +18,10 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from mino_scout import protocol as P
-from mino_scout.core import SCOUT_VERSION, ScoutCore
+from mino_scout.core import (
+    SCOUT_VERSION,
+    ScoutCore,
+)
 from mino_scout.log import SLog, current_node_id
 from mino_scout.schemas import EventStatus
 
@@ -50,7 +53,7 @@ def changed_devices(
     """对照上一轮发现结果，只返回变化的设备（协议 §4.3 device_delta）。
 
     新出现 / 通道变化用当前 manifest；消失的设备把通道标成 disconnected，
-    这样 NODE_EVENT 丢了也能靠心跳把 Nexus 缓存改过来。
+    这样 node.device_lost 丢了也能靠心跳把 Nexus 缓存改过来。
     """
     current = {d.sn: d for d in now}
     out: list[P.DeviceManifest] = []
@@ -231,20 +234,25 @@ class NodeTransport:
     async def _emit_device_delta(
         self, prev: dict[str, P.DeviceManifest], now: list[P.DeviceManifest],
     ) -> None:
-        """对照上一轮发现结果发 NODE_EVENT。权威状态仍以 HEARTBEAT.device_delta 为准。"""
+        """对照上一轮发现结果发 EXECUTE node.device_*。权威状态仍以 HEARTBEAT.device_delta 为准。"""
         current = {d.sn: d for d in now}
         for sn, old in prev.items():
             if sn not in current:
-                await self._send_node_event("device_lost", "重探后消失", sn=sn)
+                await self._send_framework(
+                    "node.device_lost", sn=sn, platform=old.platform, detail="重探后消失",
+                )
         for sn, dev in current.items():
             if sn not in prev:
-                await self._send_node_event("device_found", "重探后出现", sn=sn)
+                await self._send_framework(
+                    "node.device_found", sn=sn, platform=dev.platform, detail="重探后出现",
+                )
                 continue
             if dict(prev[sn].channels) != dict(dev.channels):
-                await self._send_node_event(
-                    "channel_changed",
-                    f"{prev[sn].channels} → {dev.channels}",
+                await self._send_framework(
+                    "node.channel_changed",
                     sn=sn,
+                    platform=dev.platform,
+                    detail=f"{prev[sn].channels} → {dev.channels}",
                 )
 
     async def _announce_shutdown(self) -> None:
@@ -256,7 +264,7 @@ class NodeTransport:
             pass
         hb = self.core.heartbeat()
         runs = ",".join(hb.active_runs) or "none"
-        await self._send_node_event("shutting_down", f"active_runs={runs}")
+        await self._send_framework("node.shutting_down", detail=f"active_runs={runs}")
 
     async def _heartbeat_loop(self) -> None:
         while not self._stop.is_set():
@@ -325,10 +333,6 @@ class NodeTransport:
 
         handler = {
             P.MsgType.EXECUTE: self._on_execute,
-            P.MsgType.OBSERVE: self._on_observe,
-            P.MsgType.PROBE: self._on_probe,
-            P.MsgType.CANCEL_RUN: self._on_cancel,
-            P.MsgType.NODE_COMMAND: self._on_node_command,
         }.get(env.type)
         if handler is None:
             SLog.w(TAG, f"收到不该由 Scout 处理的消息 {env.type.value}，忽略")
@@ -359,106 +363,25 @@ class NodeTransport:
                 ),
             )
 
-    # ---------------- 四个请求处理 ----------------
+    # ---------------- 请求处理 ----------------
 
     async def _on_execute(self, env: P.Envelope) -> None:
-        req: P.Execute = env.payload
+        await self._run_execute(env, env.payload)
+
+    async def _run_execute(self, env: P.Envelope, req: P.Execute) -> None:
         # core 是同步的（executor 全是阻塞 IO），丢线程池，别卡住事件循环
         result = await asyncio.to_thread(self.core.execute, req)
         await self._reply_result(env, _result_from_event(req, result))
+        self._apply_node_side_effects(result)
 
-    async def _on_observe(self, env: P.Envelope) -> None:
-        req: P.Observe = env.payload
-        status, extra = await asyncio.to_thread(self.core.observe, req)
-        await self._reply_result(
-            env,
-            P.Result(
-                run_id=req.run_id, step_idx=-1, status=status,
-                summary=str(extra.get("summary") or ""),
-                error=str(extra.get("error") or ""),
-                source=str(extra.get("source") or ""),
-                elapsed_ms=int(extra.get("elapsed_ms") or 0),
-                image_base64=str(extra.get("image_base64") or ""),
-                image_mime=str(extra.get("image_mime") or ""),
-                width=int(extra.get("width") or 0),
-                height=int(extra.get("height") or 0),
-                extra=dict(extra.get("extra") or {}),
-            ),
-        )
-
-    async def _on_probe(self, env: P.Envelope) -> None:
-        req: P.Probe = env.payload
-        execs, devices = await asyncio.to_thread(self.core.manifest)
-        channels = {}
-        for d in devices:
-            if d.sn == req.sn:
-                channels = dict(d.channels)
-        await self._reply_result(
-            env,
-            P.Result(
-                run_id="", step_idx=-1, status=EventStatus.PASS,
-                summary=f"probe {req.sn}: {channels or '未发现该设备'}",
-                source="core",
-                extra={
-                    "channels": channels,
-                    "executors": {e.id: e.available for e in execs},
-                },
-            ),
-        )
-
-    async def _on_node_command(self, env: P.Envelope) -> None:
-        req: P.NodeCommand = env.payload
-        cmd = str(req.command or "").strip().lower()
-        if cmd == "update":
-            await self._reply_result(
-                env,
-                P.Result(
-                    run_id="", step_idx=-1, status=EventStatus.FAIL,
-                    summary="远程更新未实现，请在该节点本机 Studio 更新",
-                    error="远程更新未实现，请在该节点本机 Studio 更新",
-                    source="node_command",
-                    extra={"command": cmd},
-                ),
-            )
-            return
-        if cmd not in {"stop", "restart"}:
-            await self._reply_result(
-                env,
-                P.Result(
-                    run_id="", step_idx=-1, status=EventStatus.FAIL,
-                    summary=f"不支持的节点指令 {cmd}",
-                    error=f"不支持的节点指令 {cmd}",
-                    source="node_command",
-                    extra={"command": cmd},
-                ),
-            )
-            return
-        if cmd == "restart":
+    def _apply_node_side_effects(self, ev) -> None:
+        extra = dict(getattr(ev, "raw_response", None) or {})
+        if extra.get("_scout_reexec"):
             from mino_scout.service import schedule_reexec
 
             schedule_reexec()
-        await self._reply_result(
-            env,
-            P.Result(
-                run_id="", step_idx=-1, status=EventStatus.PASS,
-                summary=f"已接受 {cmd}",
-                source="node_command",
-                extra={"command": cmd},
-            ),
-        )
-        self.request_shutdown()
-
-    async def _on_cancel(self, env: P.Envelope) -> None:
-        req: P.CancelRun = env.payload
-        dropped = await asyncio.to_thread(self.core.cancel_run, req.run_id)
-        await self._reply_result(
-            env,
-            P.Result(
-                run_id=req.run_id, step_idx=-1, status=EventStatus.PASS,
-                summary=f"已停止 run（清 {dropped} 条幂等缓存）；已发给设备的动作不回滚",
-                source="core",
-            ),
-        )
+        if extra.get("_scout_shutdown"):
+            self.request_shutdown()
 
     # ---------------- 发送 ----------------
 
@@ -491,18 +414,68 @@ class NodeTransport:
             SLog.w(TAG, f"{mtype.value} 等应答超时 {timeout}s")
             return None
 
-    async def _send_node_event(self, event: str, detail: str = "", *, sn: str = "") -> None:
+    async def _send_framework(
+        self,
+        capability_id: str,
+        *,
+        sn: str = "",
+        platform: str = "",
+        detail: str = "",
+        severity: str = "info",
+    ) -> None:
+        """S→N 框架事件，形状与能力调用相同。等 RESULT；丢了靠心跳收敛。"""
+        event = capability_id.split(".", 1)[-1] if capability_id.startswith("node.") else capability_id
+        req = P.Execute(
+            run_id="",
+            step_idx=-1,
+            sn=sn,
+            capability_id=capability_id,
+            params={
+                "node_id": self.core.node_id,
+                "event": event,
+                "detail": detail,
+                "severity": severity,
+            },
+            timeout_sec=5.0,
+            device_id=sn,
+            platform=platform,
+        )
         try:
-            await self._send(
-                P.MsgType.NODE_EVENT,
-                P.NodeEvent(node_id=self.core.node_id, event=event, detail=detail, sn=sn),
-            )
+            reply = await self._request(P.MsgType.EXECUTE, req, timeout=5.0)
+            if reply is None:
+                SLog.w(TAG, f"{capability_id} 未获 RESULT，等心跳收敛")
         except Exception:
-            pass  # NODE_EVENT 可丢（协议 §4.9）
+            pass
+
+
+_SKIP_EXTRA_KEYS = frozenset(
+    {"image_base64", "image_mime", "width", "height", "summary", "error", "source", "elapsed_ms"}
+)
 
 
 def _result_from_event(req: P.Execute, ev) -> P.Result:
-    """EventResult → 协议的 Result。"""
+    """EventResult → 协议的 Result。截图填现有 image_* 字段，同时放进 data。"""
+    raw = dict(ev.raw_response or {})
+    image_base64 = str(raw.get("image_base64") or "")
+    image_mime = str(raw.get("image_mime") or "")
+    width = int(raw.get("width") or 0)
+    height = int(raw.get("height") or 0)
+
+    if isinstance(raw.get("extra"), dict) and raw["extra"]:
+        extra = {k: v for k, v in dict(raw["extra"]).items() if not str(k).startswith("_")}
+    else:
+        extra = {
+            k: v for k, v in raw.items()
+            if k not in _SKIP_EXTRA_KEYS and k != "extra" and not str(k).startswith("_")
+        }
+
+    data = {k: v for k, v in raw.items() if k != "extra" and not str(k).startswith("_")}
+    if image_base64:
+        data.setdefault("image_base64", image_base64)
+        data.setdefault("image_mime", image_mime)
+        data.setdefault("width", width)
+        data.setdefault("height", height)
+
     return P.Result(
         run_id=req.run_id,
         step_idx=req.step_idx,
@@ -510,7 +483,7 @@ def _result_from_event(req: P.Execute, ev) -> P.Result:
         summary=ev.summary,
         error=ev.error,
         executor_used=ev.executor_used,
-        source=ev.executor_used,
+        source=ev.executor_used or str(raw.get("source") or ""),
         elapsed_ms=ev.elapsed_ms,
         attempts=[
             P.Attempt(
@@ -521,5 +494,10 @@ def _result_from_event(req: P.Execute, ev) -> P.Result:
             )
             for a in (ev.attempts or [])
         ],
-        extra=dict(ev.raw_response or {}),
+        image_base64=image_base64,
+        image_mime=image_mime,
+        width=width,
+        height=height,
+        extra=extra,
+        data=data,
     )

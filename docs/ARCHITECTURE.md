@@ -81,17 +81,17 @@ core.py  ScoutCore          ← execute() / observe() / manifest()
 
 **第 4.6 步的五态语义是本仓的核心契约。** 只有 `blocked` 中断 fallback；`declined` / `fail` / `skipped` 都继续试下一个。见 [CONVENTIONS.md](CONVENTIONS.md) §2。
 
-## 5. 一次 `OBSERVE(screenshot)` 的路径
+## 5. 一次 `EXECUTE screenshot` 的路径
 
 ```
-transport → ScoutCore.observe → screen.py
+transport → ScoutCore.execute → screen.py
   按 prefer 顺序尝试：
     adb        → subprocess `adb -s <serial> exec-out screencap -p`
     remote     → EngineFactory.get(sn) → ClawNode GET_SCREENSHOT
     ios_wda    → WDA session screenshot
     playwright → playwright_hub 里的 page.screenshot()
   空白帧检测（shot_is_blank）→ 判空则换下一个通道
-  → RESULT { image_base64, image_mime, width, height, source }
+  → RESULT { image_base64, image_mime, width, height, source, data }
 ```
 
 **缩略图不在 Scout 侧做。** Scout 回原图，Nexus 负责压缩成 trace 用的 thumb —— 因为 thumb 只服务 UI，而 UI 是 Nexus 的事。

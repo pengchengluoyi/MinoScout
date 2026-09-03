@@ -12,20 +12,15 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
 from typing import Any, Optional, get_args, get_origin
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 
 class MsgType(str, Enum):
     REGISTER = "REGISTER"
     REGISTERED = "REGISTERED"
     HEARTBEAT = "HEARTBEAT"
-    OBSERVE = "OBSERVE"
     EXECUTE = "EXECUTE"
     RESULT = "RESULT"
-    PROBE = "PROBE"
-    CANCEL_RUN = "CANCEL_RUN"
-    NODE_EVENT = "NODE_EVENT"
-    NODE_COMMAND = "NODE_COMMAND"
 
 
 class EventStatus(str, Enum):
@@ -54,11 +49,25 @@ class EventStatus(str, Enum):
     DECLINED = "declined"
 
 
-class ObserveKind(str, Enum):
-    SCREENSHOT = "screenshot"
-    HIERARCHY = "hierarchy"
-    APP_VERSION = "app_version"
-    FOREGROUND_APP = "foreground_app"
+# 框架层 capability_id。N→S 是节点指令，S→N 是节点事件，形状与设备能力相同。
+NODE_COMMAND_CAPS = frozenset({"node.stop", "node.restart", "node.update"})
+NODE_EVENT_CAPS = frozenset({
+    "node.device_lost",
+    "node.device_found",
+    "node.channel_changed",
+    "node.engine_crashed",
+    "node.shutting_down",
+})
+FRAMEWORK_CAPS = NODE_COMMAND_CAPS | NODE_EVENT_CAPS
+
+OBSERVE_CAPS = {
+    "screenshot": "screenshot",
+    "hierarchy": "hierarchy",
+    "app_version": "get_app_version",
+    "foreground_app": "get_foreground_app",
+    "get_app_version": "get_app_version",
+    "get_foreground_app": "get_foreground_app",
+}
 
 
 # ---------------- 载荷 ----------------
@@ -115,21 +124,9 @@ class Heartbeat:
 
 
 @dataclass
-class Observe:
-    run_id: str
-    sn: str
-    kind: ObserveKind
-    prefer: list[str] = field(default_factory=list)
-    force_fresh: bool = False
-    timeout_sec: float = 15.0
-    # 只对 playwright 通道生效：Web 截图缩放比（1.0=不压缩）。
-    # 这是 Nexus 侧设置（按 LLM provider 取值），Scout 不读设置所以随消息下发。
-    # RESULT 的 width/height 始终报原图尺寸，坐标体系不受影响。
-    compress_ratio: float = 2.0
-
-
-@dataclass
 class Execute:
+    """能力调用与框架指令的统一请求。N→S 或 S→N。"""
+
     run_id: str
     step_idx: int
     sn: str
@@ -140,6 +137,8 @@ class Execute:
     selected_impl: dict[str, Any] = field(default_factory=dict)
     device_hint: dict[str, Any] = field(default_factory=dict)
     timeout_sec: float = 30.0
+    device_id: str = ""
+    platform: str = ""  # android | ios | web | playwright | other
 
 
 @dataclass
@@ -152,11 +151,11 @@ class Attempt:
 
 @dataclass
 class Result:
-    """OBSERVE 与 EXECUTE 共用的应答，靠信封的 reply_to 区分。"""
+    """EXECUTE 的应答，靠信封的 reply_to 区分是哪一条。"""
 
     run_id: str
     status: EventStatus
-    step_idx: int = -1  # OBSERVE 不带 step_idx
+    step_idx: int = -1
     summary: str = ""
     error: str = ""
     executor_used: str = ""
@@ -168,58 +167,22 @@ class Result:
     width: int = 0
     height: int = 0
     extra: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class Probe:
-    sn: str
-    channels: list[str] = field(default_factory=list)
-    timeout_sec: float = 20.0
-
-
-@dataclass
-class CancelRun:
-    run_id: str
-    reason: str = ""
-
-
-@dataclass
-class NodeEvent:
-    node_id: str
-    event: str  # device_found|device_lost|channel_changed|engine_crashed|shutting_down
-    detail: str = ""
-    sn: str = ""
-    severity: str = "info"
-
-
-@dataclass
-class NodeCommand:
-    command: str  # stop | restart | update
-    reason: str = ""
+    data: dict[str, Any] = field(default_factory=dict)
 
 
 PAYLOAD_BY_TYPE: dict[MsgType, type] = {
     MsgType.REGISTER: Register,
     MsgType.REGISTERED: Registered,
     MsgType.HEARTBEAT: Heartbeat,
-    MsgType.OBSERVE: Observe,
     MsgType.EXECUTE: Execute,
     MsgType.RESULT: Result,
-    MsgType.PROBE: Probe,
-    MsgType.CANCEL_RUN: CancelRun,
-    MsgType.NODE_EVENT: NodeEvent,
-    MsgType.NODE_COMMAND: NodeCommand,
 }
 
 # ACK 必须的消息（发送方超时未收到应答需按 docs/PROTOCOL.md §6 重试）
 ACK_REQUIRED: frozenset[MsgType] = frozenset(
     {
         MsgType.REGISTER,
-        MsgType.OBSERVE,
         MsgType.EXECUTE,
-        MsgType.PROBE,
-        MsgType.CANCEL_RUN,
-        MsgType.NODE_COMMAND,
     }
 )
 
@@ -241,7 +204,15 @@ def _encode(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value
     if is_dataclass(value) and not isinstance(value, type):
-        return {f.name: _encode(getattr(value, f.name)) for f in fields(value)}
+        out = {}
+        for f in fields(value):
+            raw = getattr(value, f.name)
+            if f.name == "data" and not raw:
+                continue
+            if f.name in ("device_id", "platform") and not raw:
+                continue
+            out[f.name] = _encode(raw)
+        return out
     if isinstance(value, list):
         return [_encode(v) for v in value]
     if isinstance(value, dict):

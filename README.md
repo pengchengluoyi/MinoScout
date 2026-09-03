@@ -65,11 +65,11 @@ Scout 是独立守护进程，关掉 Studio 不停。控制：`mino-scout status
 
 1. 探一遍本机通道（adb / ios_wda / playwright / ClawNode）
 2. `REGISTER` 上报 manifest 与挂载设备
-3. 常驻，等 Nexus 的 `OBSERVE` / `EXECUTE` / `PROBE` / `CANCEL_RUN`
+3. 常驻，等 Nexus 的 `EXECUTE`，回 `RESULT`
 
 ## 怎么和 Nexus 连
 
-九条消息，定义见 [docs/PROTOCOL.md](docs/PROTOCOL.md)。要点：
+五条消息，定义见 [docs/PROTOCOL.md](docs/PROTOCOL.md)。要点：
 
 - **Scout 主动连 Nexus**，不监听端口 —— 穿 NAT、免开防火墙
 - Nexus 下发的 `EXECUTE` **自带全部上下文**（`executor_order` / `low_level` / `device_hint`），Scout 不回查任何东西
@@ -82,7 +82,7 @@ Scout 是独立守护进程，关掉 Studio 不停。控制：`mino-scout status
 |---|---|
 | [CLAUDE.md](CLAUDE.md) | 硬约束、目录与命名约定、改动前必读 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 分层、一次 EXECUTE 的完整路径 |
-| [docs/PROTOCOL.md](docs/PROTOCOL.md) | 九条消息的字段级定义（与 Nexus 同一份） |
+| [docs/PROTOCOL.md](docs/PROTOCOL.md) | 五条消息的字段级定义（与 Nexus 同一份） |
 | [docs/EXECUTORS.md](docs/EXECUTORS.md) | 四个 executor 的能力矩阵、怎么加一个 |
 | [docs/ENGINES.md](docs/ENGINES.md) | `EngineFactory`、Remote / iOS 引擎 |
 | [docs/DEVICE_SETUP.md](docs/DEVICE_SETUP.md) | adb / WDA / Playwright / ClawNode 配对的环境要求 |

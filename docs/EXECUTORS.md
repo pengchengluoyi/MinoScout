@@ -43,7 +43,7 @@ class Executor(Protocol):
 
 五态语义见 [CONVENTIONS.md](CONVENTIONS.md) §2 —— **这是本仓最容易写错的地方**。
 
-`ExecutorContext` 携带：当前屏幕（若 Nexus 已在 `EXECUTE` 前 `OBSERVE` 过并回传）、`capture_prefer` 通道优先序、`selected_impl`（Nexus 从能力目录抄来的 impl 元数据）、`shared` KV（同 run 内 executor 之间传递，如上一次定位结果）。
+`ExecutorContext` 携带：当前屏幕（若 Nexus 已在本步前 `EXECUTE screenshot` 并把帧带下来）、`capture_prefer` 通道优先序、`selected_impl`（Nexus 从能力目录抄来的 impl 元数据）、`shared` KV（同 run 内 executor 之间传递，如上一次定位结果）。
 
 ## 3. `low_level`：不写 Python 就能加能力
 

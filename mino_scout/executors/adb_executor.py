@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import re
 import shlex
 import subprocess
 import time
@@ -26,6 +27,50 @@ from mino_scout.executors.base import (
 )
 
 TAG = "AdbExecutor"
+
+# `adb shell input tap` 在 Android 14+ / 部分 OEM 上常返回 0 但事件到不了 App。
+# 用短 swipe（按下停留）代替零时长 tap，u2 不可用时的主路径。
+_TAP_HOLD_MS = 80
+_TAP_SETTLE_SEC = 0.15
+_WM_SIZE_RE = re.compile(r"(\d+)\s*x\s*(\d+)", re.I)
+_WM_CACHE: dict[str, tuple[float, int, int]] = {}
+_WM_TTL_SEC = 30.0
+
+
+def parse_wm_size(out: str) -> tuple[int, int]:
+    """input 坐标空间：有 Override size 时优先用它，否则 Physical size。"""
+    override: Optional[tuple[int, int]] = None
+    physical: Optional[tuple[int, int]] = None
+    leftover: Optional[tuple[int, int]] = None
+    for line in (out or "").splitlines():
+        m = _WM_SIZE_RE.search(line)
+        if not m:
+            continue
+        size = (int(m.group(1)), int(m.group(2)))
+        low = line.lower()
+        if "override" in low:
+            override = size
+        elif "physical" in low:
+            physical = size
+        else:
+            leftover = leftover or size
+    return override or physical or leftover or (0, 0)
+
+
+def scale_to_display(
+    x: int, y: int, *, shot: tuple[int, int], display: tuple[int, int]
+) -> tuple[int, int]:
+    """截图像素 → wm 坐标。尺寸一致则原样返回。"""
+    sw, sh = shot
+    dw, dh = display
+    if sw > 0 and sh > 0 and dw > 0 and dh > 0 and (sw, sh) != (dw, dh):
+        x = int(round(x * dw / sw))
+        y = int(round(y * dh / sh))
+    if dw > 0:
+        x = max(0, min(dw - 1, x))
+    if dh > 0:
+        y = max(0, min(dh - 1, y))
+    return x, y
 
 # capability_id → 内部处理方法（有专属 Python 实现的）
 _SUPPORTED_CAPS: set[str] = {
@@ -476,18 +521,23 @@ class AdbExecutor:
                 "tap_element 无可用坐标（锚点未命中且未给 x/y）"
                 + (f"：{(audit.get('anchor') or {}).get('reason', '')}" if audit else ""),
             )
-        rc, out, err = self._adb_shell(serial, "input", "tap", str(x), str(y))
+        ok, inject, extra = self._inject_tap(
+            serial, x, y, scale=how in ("xy", "fallback_xy"),
+        )
         elapsed = int((time.time() - t0) * 1000)
         label = self._point_label(how, audit, x, y)
+        audit = {**audit, "inject": inject, **extra}
         self._invalidate_hierarchy(serial)
-        if rc == 0:
+        if ok:
             return make_event_result(
                 event, status=EventStatus.PASS, executor_used=self.id, started_at=started_at,
                 elapsed_ms=elapsed, summary=f"点击 {label}", raw_response=audit,
             )
         return make_event_result(
             event, status=EventStatus.FAIL, executor_used=self.id, started_at=started_at,
-            elapsed_ms=elapsed, summary=f"点击 {label} 失败", error=err or out, raw_response=audit,
+            elapsed_ms=elapsed, summary=f"点击 {label} 失败",
+            error=str(extra.get("error") or extra.get("stderr") or inject),
+            raw_response=audit,
         )
 
     def _multi_tap(self, event, ctx, serial, started_at, t0):
@@ -498,12 +548,13 @@ class AdbExecutor:
             return self._fail(event, started_at, t0, err)
         x, y, count, interval = parsed
         for i in range(count):
-            rc, out, err_s = self._adb_shell(serial, "input", "tap", str(x), str(y))
-            if rc != 0:
+            ok, inject, extra = self._inject_tap(serial, x, y, settle=False)
+            if not ok:
                 self._invalidate_hierarchy(serial)
                 return self._fail(
                     event, started_at, t0,
-                    f"连点 ({x},{y}) 第 {i + 1}/{count} 次失败",
+                    f"连点 ({x},{y}) 第 {i + 1}/{count} 次失败 via {inject}"
+                    f"：{extra.get('error') or extra.get('stderr') or ''}",
                 )
             if i + 1 < count:
                 time.sleep(interval / 1000.0)
@@ -520,6 +571,10 @@ class AdbExecutor:
             a = audit.get("anchor") or {}
             name = a.get("text") or a.get("content_desc") or a.get("resource_id") or "?"
             return f"「{str(name)[:20]}」({x},{y}) via {a.get('matched_by')}"
+        if how == "snap":
+            s = audit.get("snap") or {}
+            name = s.get("text") or s.get("content_desc") or "?"
+            return f"「{str(name)[:20]}」({x},{y})[snap {s.get('how')}]"
         if how == "fallback_xy":
             return f"({x},{y})[锚点未命中，回落坐标]"
         return f"({x},{y})"
@@ -539,6 +594,8 @@ class AdbExecutor:
         if x is None or y is None:
             return self._fail(event, started_at, t0, "long_press_element 无可用坐标")
         duration = int(params.get("duration_ms") or 1000)
+        if how in ("xy", "fallback_xy"):
+            x, y = self._map_to_display(serial, x, y)
         # 长按 = swipe 自己到自己
         rc, out, err = self._adb_shell(serial, "input", "swipe", str(x), str(y), str(x), str(y), str(duration))
         elapsed = int((time.time() - t0) * 1000)
@@ -562,7 +619,7 @@ class AdbExecutor:
         # 若能定出输入框位置（锚点优先），先点它取焦点
         x, y, audit, how = self._point_for(event, serial)
         if x is not None and y is not None:
-            self._adb_shell(serial, "input", "tap", str(x), str(y))
+            self._inject_tap(serial, x, y, scale=how in ("xy", "fallback_xy", "none"))
         # adb input text 不支持中文 / 空格；空格转 %s
         safe_text = str(text).replace(" ", "%s")
         rc, out, err = self._adb_shell(serial, "input", "text", safe_text)
@@ -591,7 +648,7 @@ class AdbExecutor:
         """
         from mino_scout import hierarchy as H
 
-        params = event.params or {}
+        params = H.lift_text_anchor(event.params or {})
         if not H.has_target(params):
             return None, None, {}
         target = dict(params.get("target") or {})
@@ -612,14 +669,86 @@ class AdbExecutor:
 
     def _point_for(self, event, serial: str) -> tuple[Optional[int], Optional[int], dict, str]:
         """统一取坐标：锚点优先，模型坐标兜底。返回 (x, y, audit, how)。"""
-        params = event.params or {}
+        from mino_scout import hierarchy as H
+
+        params = H.lift_text_anchor(event.params or {})
         ax, ay, audit = self._resolve_anchor_xy(event, serial)
         if ax is not None and ay is not None:
             return ax, ay, audit, "anchor"
         x, y = params.get("x"), params.get("y")
         if x is None or y is None:
             return None, None, audit, "none"
-        return int(x), int(y), audit, "fallback_xy" if audit else "xy"
+        x, y = int(x), int(y)
+        dump = H.dump_ui_nodes(serial)
+        if dump.ok:
+            snapped = H.snap_point(dump.nodes, x, y)
+            if snapped is not None:
+                sx, sy, extra = snapped
+                audit = {**audit, **extra}
+                SLog.i(TAG, f"snap tap ({x},{y}) → ({sx},{sy}) {extra.get('snap', {}).get('how')}")
+                return sx, sy, audit, "snap"
+        return x, y, audit, "fallback_xy" if audit else "xy"
+
+    def _wm_size(self, serial: str) -> tuple[int, int]:
+        hit = _WM_CACHE.get(serial)
+        now = time.time()
+        if hit and (now - hit[0]) < _WM_TTL_SEC:
+            return hit[1], hit[2]
+        rc, out, _err = self._adb_shell(serial, "wm", "size")
+        w, h = parse_wm_size(out) if rc == 0 else (0, 0)
+        if w > 0 and h > 0:
+            _WM_CACHE[serial] = (now, w, h)
+        return w, h
+
+    def _map_to_display(self, serial: str, x: int, y: int) -> tuple[int, int]:
+        from mino_scout.screen import last_capture_size
+
+        return scale_to_display(
+            x, y, shot=last_capture_size(serial), display=self._wm_size(serial),
+        )
+
+    def _inject_tap(
+        self, serial: str, x: int, y: int, *, settle: bool = True, scale: bool = True,
+    ) -> tuple[bool, str, dict[str, Any]]:
+        """真正把触控送到设备。优先 u2，其次短 swipe，最后才 input tap。
+
+        不能把 `input tap` rc=0 当成点上了：Android 14+ / vivo / 小米上这是常见假成功。
+        scale=True：坐标来自截图/模型，按 wm size 换算。层级锚点已经是设备坐标，不要再乘。
+        """
+        from mino_scout import hierarchy as H
+
+        if scale:
+            x, y = self._map_to_display(serial, x, y)
+        extra: dict[str, Any] = {"x": x, "y": y, "display": list(self._wm_size(serial))}
+
+        ok, why = H.click_xy(serial, x, y)
+        if ok:
+            SLog.i(TAG, f"inject u2 click ({x},{y})")
+            if settle:
+                time.sleep(_TAP_SETTLE_SEC)
+            return True, "u2", extra
+
+        extra["u2"] = why
+        rc, out, err = self._adb_shell(
+            serial, "input", "swipe", str(x), str(y), str(x), str(y), str(_TAP_HOLD_MS),
+        )
+        if rc == 0:
+            SLog.i(TAG, f"inject adb swipe-tap ({x},{y}) hold={_TAP_HOLD_MS}ms")
+            if settle:
+                time.sleep(_TAP_SETTLE_SEC)
+            return True, "adb_swipe", extra
+
+        rc2, out2, err2 = self._adb_shell(serial, "input", "tap", str(x), str(y))
+        extra["stderr"] = (err2 or err or out2 or out)[:240]
+        extra["rc"] = rc2
+        if rc2 == 0:
+            SLog.w(TAG, f"inject adb tap fallback ({x},{y}) swipe_rc={rc} swipe_err={err or out}")
+            if settle:
+                time.sleep(_TAP_SETTLE_SEC)
+            return True, "adb_tap", extra
+        SLog.e(TAG, f"inject failed ({x},{y}) swipe_rc={rc} tap_rc={rc2} err={extra['stderr']}")
+        extra["error"] = extra["stderr"] or f"swipe_rc={rc} tap_rc={rc2}"
+        return False, "failed", extra
 
     # ---------- 通用 low_level 兜底 ----------
 

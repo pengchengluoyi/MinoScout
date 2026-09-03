@@ -57,7 +57,7 @@ ClawNode 能力受设备授予的运行时权限影响：
 | 真机 | usbmuxd 可用；WDA 已用有效签名安装；设备已信任本机 |
 | 模拟器 | `simctl` 可用；UDID 形态与真机不同，由 `ios_ids` 区分 |
 | Appium | 可选。走的是同一个 `Engine` 协议的另一个实现，**不是 `if backend` 分支**（见 [ENGINES.md](ENGINES.md) §4） |
-| WDA 挂了 | Scout 发 `NODE_EVENT {engine_crashed}`，下次 `get()` 重建 |
+| WDA 挂了 | Scout 发 `EXECUTE {capability_id: node.engine_crashed}`，下次 `get()` 重建 |
 
 `../WebDriverAgent` 是本地的 WDA 工程副本，可用于重新签名与安装。
 

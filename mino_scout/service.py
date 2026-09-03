@@ -2,7 +2,7 @@
 
 Studio 和运维都走这三件事，不要再让人去 `launchctl unload`。
 `run` 写 pid；`status` 看进程在不在；`stop` 发 SIGTERM，Scout 自己发
-`NODE_EVENT shutting_down` 再退出。launchd / systemd 的 KeepAlive 配的是
+`EXECUTE node.shutting_down` 再退出。launchd / systemd 的 KeepAlive 配的是
 Crashed / on-failure，正常退出不会被拉起来。
 """
 from __future__ import annotations
@@ -99,7 +99,7 @@ def collect_status() -> dict[str, Any]:
 
 
 def schedule_reexec(*, delay_sec: float = 1.5) -> dict[str, Any]:
-    """NODE_COMMAND restart：等本进程退出后再拉起同一条命令行。"""
+    """NODE 指令 restart：等本进程退出后再拉起同一条命令行。"""
     if str(os.environ.get("MINO_SCOUT_NO_REEXEC") or "").strip():
         return {"ok": True, "skipped": True}
     import subprocess

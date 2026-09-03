@@ -70,8 +70,13 @@ class PlaywrightExecutor:
         started_at = _now_iso()
         t0 = time.time()
         cap = event.capability_id
-        # 上游取 ctx.run_context.sn（RunContext 归 Nexus）。Web 用例的 sn 是 web{scout_id}。
         sn = str(ctx.device.sn or "")
+        if not ctx.device.is_web:
+            return make_event_result(
+                event, status=EventStatus.DECLINED, executor_used=self.id,
+                started_at=started_at, elapsed_ms=0,
+                summary="playwright 只服务 web 槽，让位给真机通道",
+            )
         hub = get_hub()
         try:
             if cap == "wait_ms":
