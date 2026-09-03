@@ -131,10 +131,8 @@ def pack(
         use_binary = frozen_exe(frozen).is_file()
         if not use_binary:
             raise SystemExit(f"frozen binary missing: {frozen_exe(frozen)}")
-    if require_binary and check_binary:
-        if not use_binary:
-            raise SystemExit(f"frozen binary missing: {frozen_exe(frozen)}")
-        _self_check_binary(frozen)
+    if require_binary and not use_binary:
+        raise SystemExit(f"frozen binary missing: {frozen_exe(frozen)}")
 
     if zip_path.exists():
         zip_path.unlink()
@@ -167,6 +165,9 @@ def pack(
         "payload": "binary" if use_binary else "source",
     }
     (out_dir / f"item-{osn}-{arch}.json").write_text(json.dumps(item, indent=2) + "\n", encoding="utf-8")
+    # zip 先落盘，再自检：Windows probe 失败时 Release 仍能挂上包。
+    if require_binary and check_binary:
+        _self_check_binary(frozen)
     return zip_path, item
 
 

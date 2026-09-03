@@ -61,7 +61,14 @@ def cmd_probe(core: ScoutCore) -> int:
             for d in devices
         ],
     }
-    print(json.dumps(out, ensure_ascii=False, indent=2))
+    # ASCII JSON：Windows 冻结进程即使没切到 UTF-8，print 也不会 UnicodeEncodeError。
+    payload = json.dumps(out, ensure_ascii=True, indent=2)
+    try:
+        sys.stdout.write(payload + "\n")
+        sys.stdout.flush()
+    except Exception:
+        sys.stdout.buffer.write((payload + "\n").encode("ascii"))
+        sys.stdout.buffer.flush()
     if not any(e.available for e in execs):
         print("\n没有任何可用 executor —— 这台机器现在不能作为执行节点。", file=sys.stderr)
         return 1

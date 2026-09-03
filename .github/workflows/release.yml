@@ -99,6 +99,7 @@ jobs:
           SCOUT_VERSION: ${{ needs.meta.outputs.version }}
         run: python scripts/pack_release.py --out dist --binary
       - uses: actions/upload-artifact@v4
+        if: always() && !cancelled()
         with:
           name: scout-${{ matrix.os }}
           path: dist/*

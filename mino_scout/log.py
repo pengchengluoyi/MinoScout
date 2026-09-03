@@ -15,6 +15,7 @@ import contextvars
 import logging
 import os
 import threading
+import sys
 from datetime import datetime
 
 current_run_id = contextvars.ContextVar("run_id", default=None)
@@ -31,6 +32,21 @@ WHITE = "\033[37m"
 LIGHT_WHITE = "\033[97m"
 
 _LEVEL_COLOR = {"D": WHITE, "I": LIGHT_WHITE, "W": YELLOW, "E": RED}
+
+
+def _configure_utf8_stdio() -> None:
+    """Frozen Windows 默认 cp1252：日志/probe 里的中文会把进程打挂，stdout 还是空的。"""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not reconfigure:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+_configure_utf8_stdio()
 
 
 class LogFormatter(logging.Formatter):

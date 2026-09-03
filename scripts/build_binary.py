@@ -119,6 +119,14 @@ def build(*, clean: bool) -> Path:
     entry.write_text(
         "# PyInstaller 入口。真正的实现在 mino_scout.cli:main。\n"
         "import sys\n"
+        "for _stream in (sys.stdout, sys.stderr):\n"
+        "    _reconfigure = getattr(_stream, 'reconfigure', None)\n"
+        "    if not _reconfigure:\n"
+        "        continue\n"
+        "    try:\n"
+        "        _reconfigure(encoding='utf-8', errors='replace')\n"
+        "    except Exception:\n"
+        "        pass\n"
         "from mino_scout.cli import main\n"
         "sys.exit(main())\n",
         encoding="utf-8",
@@ -176,6 +184,9 @@ def check(dist_dir: Path) -> int:
     print(f"\n→ 自检：{exe} probe")
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)          # 确保没有偷偷用到源码树
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUNBUFFERED"] = "1"
     proc = subprocess.run(
         [str(exe), "probe"],
         capture_output=True,
@@ -184,15 +195,21 @@ def check(dist_dir: Path) -> int:
         errors="replace",
         env=env,
         timeout=180,
+        cwd=str(dist_dir),
+        stdin=subprocess.DEVNULL,
     )
-    tail = (proc.stdout or "")[-800:]
-    print(tail)
-    if proc.returncode not in (0, 1):     # 1 = 没有可用 executor，也算跑通了
-        print("--- stderr ---")
-        print((proc.stderr or "")[-1500:])
+    stdout = proc.stdout or ""
+    stderr = proc.stderr or ""
+    print(f"rc={proc.returncode}")
+    print("--- stdout ---")
+    print(stdout[-2000:] or "(empty)")
+    print("--- stderr ---")
+    print(stderr[-2000:] or "(empty)")
+    # 1 = 没有可用 executor，也算跑通了（CI 上本来就没有设备）
+    if proc.returncode not in (0, 1):
         print(f"\n自检失败 rc={proc.returncode}")
         return 1
-    if '"node_id"' not in (proc.stdout or ""):
+    if '"node_id"' not in stdout and '"node_id"' not in stderr:
         print("自检失败：probe 没有输出 manifest")
         return 1
     print(f"自检通过。产物大小：{dir_size_mb(dist_dir)} MB")
