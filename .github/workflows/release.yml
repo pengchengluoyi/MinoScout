@@ -1,6 +1,7 @@
 name: Release Scout
 
-# Packages live on this GitHub Release. Nexus does not host the binaries.
+# A v* tag opens the GitHub Release immediately. Packs attach when ready;
+# one OS failing must not leave the tag without a Release.
 on:
   push:
     tags:
@@ -42,6 +43,24 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "prerelease=${PRE}" >> "$GITHUB_OUTPUT"
           echo "Scout ${VERSION}  tag ${TAG}  prerelease=${PRE}"
+
+  open-release:
+    needs: meta
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Open GitHub Release for this tag
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.meta.outputs.tag }}
+          name: Mino Scout ${{ needs.meta.outputs.version }}
+          prerelease: ${{ needs.meta.outputs.prerelease == 'true' }}
+          generate_release_notes: ${{ needs.meta.outputs.prerelease != 'true' }}
+          make_latest: ${{ needs.meta.outputs.prerelease != 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   guards:
     runs-on: ubuntu-latest
@@ -86,7 +105,8 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [meta, build]
+    needs: [meta, open-release, build]
+    if: always() && !cancelled() && needs.meta.result == 'success' && needs.open-release.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -94,21 +114,24 @@ jobs:
         with:
           python-version: "3.12"
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           path: dist
           merge-multiple: true
+          pattern: scout-*
       - name: Write manifest.json
+        if: hashFiles('dist/item-*.json') != ''
         env:
           SCOUT_VERSION: ${{ needs.meta.outputs.version }}
           SCOUT_RELEASE_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ needs.meta.outputs.tag }}
         run: python scripts/write_manifest.py --dist dist --out dist/manifest.json
-      - name: Publish GitHub Release
+      - name: Attach packages to the Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.meta.outputs.tag }}
           name: Mino Scout ${{ needs.meta.outputs.version }}
           prerelease: ${{ needs.meta.outputs.prerelease == 'true' }}
-          generate_release_notes: ${{ needs.meta.outputs.prerelease != 'true' }}
+          fail_on_unmatched_files: false
           files: |
             dist/*.zip
             dist/manifest.json
