@@ -28,18 +28,18 @@ from mino_scout.schemas import CapturedScreen, EventResult, EventStatus, PlanEve
 
 TAG = "ScoutCore"
 
-SCOUT_VERSION = "0.1.5"
+SCOUT_VERSION = "0.1.6"
 
 # 幂等缓存保留时长。CONVENTIONS.md §5：该 run 结束或 10 分钟，取先到者。
 _IDEMPOTENT_TTL_SEC = 600.0
 
-# executor_order 为空时按平台填。Nexus 之后应显式下发；这是 Scout 侧兜底。
+# executor_order 为空时按 **这台设备的 platform** 填。禁止把 adb 和 playwright 排进同一条链。
 _PLATFORM_EXECUTOR_ORDER: dict[str, tuple[str, ...]] = {
     "android": ("adb", "remote"),
     "ios": ("ios_wda",),
     "web": ("playwright",),
     "playwright": ("playwright",),
-    "other": ("adb", "remote", "ios_wda", "playwright"),
+    "other": ("adb", "remote"),
 }
 
 _PLATFORM_ALIASES = {
@@ -84,6 +84,9 @@ class ScoutCore:
         self._active_runs: set[str] = set()
         self._run_seen: dict[str, float] = {}
         self._pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="scout-exec")
+        # Playwright sync API 必须始终在同一条线程里用。8 路通用池会把
+        # launch_app 和 screenshot 拆到不同 worker，下一帧就是「没有打开的页面」。
+        self._pw_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="scout-pw")
 
     # ---------------- EXECUTE（唯一 dispatch） ----------------
 
@@ -95,7 +98,8 @@ class ScoutCore:
             return cached
 
         timeout = float(req.timeout_sec or 0) or 30.0
-        fut = self._pool.submit(self._execute_body, req)
+        pool = self._pw_pool if _use_playwright_thread(req) else self._pool
+        fut = pool.submit(self._execute_body, req)
         try:
             result = fut.result(timeout=timeout)
         except TimeoutError:
@@ -232,12 +236,9 @@ class ScoutCore:
 
     def _dispatch_screenshot(self, req: P.Execute) -> EventResult:
         device = _device_from_execute(req, node_id=self.node_id)
-        routed = _with_executor_order(req, device, registered=self.executors)
-        prefer = tuple(routed.executor_order or _prefer_for(device))
         compress = float((req.params or {}).get("compress_ratio") or 2.0)
         shot = SCREEN.capture(
             device,
-            prefer=prefer,
             timeout_sec=float(req.timeout_sec or 15.0),
             compress_ratio=compress,
         )
@@ -304,6 +305,11 @@ class ScoutCore:
     def _hierarchy_fields(self, device: DeviceRef) -> tuple[EventStatus, dict[str, Any]]:
         from mino_scout import hierarchy as H
 
+        if device.is_web:
+            return EventStatus.FAIL, {
+                "error": f"sn={device.sn} 是 web 槽，没有安卓 UI hierarchy",
+                "source": "playwright",
+            }
         if not device.adb_serial or device.adb_serial.startswith("claw-"):
             return EventStatus.FAIL, {
                 "error": "hierarchy 目前只支持 adb 通道（remote/ios_wda 待 E3 搬迁）",
@@ -480,10 +486,13 @@ def _device_from_execute(req: P.Execute, *, node_id: str = "") -> DeviceRef:
 def _with_executor_order(
     req: P.Execute, device: DeviceRef, *, registered: Optional[dict] = None,
 ) -> P.Execute:
+    family = _compatible_executors(device)
     if req.executor_order:
-        return req
+        order = [ex for ex in req.executor_order if ex in family]
+        return replace(req, executor_order=order)
     plat = _normalize_platform(device.platform or req.platform) or "other"
     order = list(_PLATFORM_EXECUTOR_ORDER.get(plat) or _PLATFORM_EXECUTOR_ORDER["other"])
+    order = [ex for ex in order if ex in family]
     if registered:
         present = [ex for ex in order if ex in registered]
         if present:
@@ -562,7 +571,25 @@ def _adb_serial_guess(sn: str) -> str:
 
 
 def _prefer_for(device: DeviceRef) -> tuple[str, ...]:
-    return ("playwright",) if device.is_web else ("adb", "remote")
+    return tuple(_compatible_executors(device))
+
+
+def _compatible_executors(device: DeviceRef) -> frozenset[str]:
+    return device.compatible_executors
+
+
+def _use_playwright_thread(req: P.Execute) -> bool:
+    plat = str(req.platform or "").strip().lower()
+    hint = req.device_hint if isinstance(getattr(req, "device_hint", None), dict) else {}
+    hint_plat = str(hint.get("platform") or "").strip().lower()
+    if plat in ("web", "browser", "playwright") or hint_plat in ("web", "browser", "playwright"):
+        return True
+    from mino_scout.playwright_hub import is_web_slot
+
+    return is_web_slot(
+        str(req.sn or req.device_id or hint.get("sn") or ""),
+        plat or hint_plat,
+    )
 
 
 def _probe_executor(ex_id: str, ex: Executor) -> tuple[bool, list[str], str]:

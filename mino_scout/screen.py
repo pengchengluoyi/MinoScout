@@ -32,10 +32,6 @@ from mino_scout.schemas import CapturedScreen
 
 TAG = "ScreenCapture"
 
-# 已实现的通道。prefer 里出现其它值会被跳过并记 warn ——
-# 这样 Nexus 提前下发 remote/ios_wda 时不会静默变成"抓不到图"。
-_IMPLEMENTED = ("adb", "playwright")
-
 # serial → 最近一次成功截图的像素尺寸。input 坐标空间若与截图不一致（wm override），
 # AdbExecutor 用它来缩放 tap，避免点到屏幕外。
 _LAST_CAPTURE_SIZE: dict[str, tuple[int, int]] = {}
@@ -71,8 +67,10 @@ def peek_png_size(data: bytes) -> tuple[int, int]:
 
 def capture_via_adb(adb_serial: str, *, timeout_sec: float = 15.0) -> CapturedScreen:
     """port: 上游 `screen.py::_capture_via_adb`，逻辑逐条对齐。"""
-    if not adb_serial or adb_serial.startswith("claw-"):
-        # claw-* 是 ClawNode 的伪 serial，adb 认不出来 —— 让位给 remote 通道
+    from mino_scout.playwright_hub import is_web_slot
+
+    if not adb_serial or adb_serial.startswith("claw-") or is_web_slot(adb_serial):
+        # claw-* 是 ClawNode 的伪 serial；web 槽也不是 adb 设备
         return CapturedScreen(ok=False, source="adb", error="invalid adb serial")
     started = time.time()
     try:
@@ -199,6 +197,7 @@ def capture_via_playwright(
     *,
     timeout_sec: float = 15.0,
     compress_ratio: float = 2.0,
+    base_url: str = "",
 ) -> CapturedScreen:
     """port: 上游 `screen.py::_capture_via_playwright`。
 
@@ -209,7 +208,9 @@ def capture_via_playwright(
     try:
         from mino_scout.playwright_hub import get_hub
 
-        png_bytes = get_hub().screenshot_png(str(sn or ""), timeout_ms=int(timeout_sec * 1000))
+        png_bytes = get_hub().screenshot_png(
+            str(sn or ""), timeout_ms=int(timeout_sec * 1000), base_url=base_url
+        )
     except Exception as e:
         return CapturedScreen(
             ok=False,
@@ -250,63 +251,50 @@ def capture_via_playwright(
 def capture(
     device: DeviceRef,
     *,
-    prefer: tuple[str, ...] = ("adb", "remote"),
+    prefer: tuple[str, ...] = (),
     timeout_sec: float = 15.0,
     compress_ratio: float = 2.0,
     allow_blank: bool = False,
 ) -> CapturedScreen:
-    """按 prefer 顺序尝试各通道，返回第一张成功的帧。
+    """按这台 sn 的设备类型截图，不跨设备试通道。
 
-    对应协议的 `OBSERVE {kind: screenshot, prefer: [...], compress_ratio: ...}`。
-    实际用了哪个通道在返回值的 `source` 里，Scout 必须如实回报
-    （Nexus 的 trace 依赖它）。
+    Web 槽只走 playwright；安卓 sn 只走该 serial 的 adb。
+    `prefer` 保留签名兼容，不再用来把 adb 和 playwright 串成一条 fallback。
     """
-    tried: list[str] = []
-    errors: list[str] = []
-    blank_shot: Optional[CapturedScreen] = None
+    started = time.time()
+    if device.is_web:
+        from mino_scout.playwright_hub import pick_goto_url
 
-    for channel in prefer or _IMPLEMENTED:
-        if channel not in _IMPLEMENTED:
-            SLog.w(TAG, f"通道 {channel} 尚未搬迁（见 screen.py 模块注释），跳过")
-            errors.append(f"{channel}: 未实现")
-            continue
-        tried.append(channel)
-        if channel == "playwright":
-            shot = capture_via_playwright(
-                device.sn, timeout_sec=timeout_sec, compress_ratio=compress_ratio
+        url = pick_goto_url(
+            device.extra.get("target_package"),
+            device.extra.get("url"),
+        )
+        shot = capture_via_playwright(
+            device.sn,
+            timeout_sec=timeout_sec,
+            compress_ratio=compress_ratio,
+            base_url=url,
+        )
+    else:
+        shot = capture_via_adb(device.adb_serial, timeout_sec=timeout_sec)
+
+    if shot.has_image():
+        if allow_blank or not png_is_blank(base64.b64decode(shot.image_base64)):
+            SLog.i(
+                TAG,
+                f"capture ok via {shot.source} {shot.width}x{shot.height} "
+                f"mime={shot.image_mime} bytes={len(shot.image_base64)} {shot.elapsed_ms}ms",
             )
-        else:
-            shot = capture_via_adb(device.adb_serial, timeout_sec=timeout_sec)
-        if shot.has_image():
-            # 息屏 / 过渡帧：screencap 会返回一张合法但全黑的 PNG。
-            # 判空后换下一个通道；都空白就把最后一张连同 blank 标记回给 Nexus，
-            # 由它决定唤醒还是重试 —— Scout 不自己做决策。
-            if allow_blank or not png_is_blank(base64.b64decode(shot.image_base64)):
-                SLog.i(
-                    TAG,
-                    f"capture ok via {shot.source} {shot.width}x{shot.height} "
-                    f"mime={shot.image_mime} bytes={len(shot.image_base64)} {shot.elapsed_ms}ms",
-                )
-                return shot
-            SLog.w(TAG, f"capture via {channel} 拿到空白帧（息屏或过渡帧），尝试下一个通道")
-            blank_shot = shot
-            errors.append(f"{channel}: 空白帧")
-            continue
-        errors.append(f"{channel}: {shot.error}")
-        SLog.w(TAG, f"capture via {channel} 失败: {shot.error}")
+            return shot
+        shot.remote_detail = {**dict(shot.remote_detail or {}), "blank": True}
+        shot.error = "截到空白帧（设备可能息屏）"
+        SLog.w(TAG, shot.error)
+        return shot
 
-    if blank_shot is not None:
-        # 所有通道都只拿到空白帧：如实回给 Nexus 并标注，让它决定唤醒/重试
-        blank_shot.remote_detail = {**dict(blank_shot.remote_detail or {}), "blank": True}
-        blank_shot.error = "所有通道都只拿到空白帧（设备可能息屏）"
-        SLog.w(TAG, blank_shot.error)
-        return blank_shot
-
-    return CapturedScreen(
-        ok=False,
-        source=",".join(tried) or "none",
-        error="；".join(errors) or f"prefer={list(prefer)} 里没有已实现的通道",
-    )
+    if not shot.elapsed_ms:
+        shot.elapsed_ms = int((time.time() - started) * 1000)
+    SLog.w(TAG, f"capture via {shot.source} 失败: {shot.error}")
+    return shot
 
 
 def cleanup(shot: Optional[CapturedScreen]) -> None:

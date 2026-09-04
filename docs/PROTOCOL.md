@@ -109,7 +109,7 @@
 | `hostname` | 本机主机名，可空。只作展示 |
 | `studio_id` | 写入本机 Scout 配置的工作台 id（`[a-z0-9]{16}`），可空。Nexus 据此记归属 |
 | `executors[].id` | 必须是 `adb` / `remote` / `ios_wda` / `playwright` 之一 |
-| `executors[].provides` | **abstract cap id 列表**。取值域由 `abstract_caps.yaml` 定义（Nexus 侧真源），Scout 只报字符串 |
+| `executors[].provides` | **abstract cap id 列表**。取值域由 `catalog_entries`（`kind=abstract_cap`）定义（Nexus 侧真源），Scout 只报字符串 |
 | `executors[].available` | `false` 时 `provides` 必须为空数组，并给 `reason` |
 | `devices[].channels` | 取值：`connected` / `disconnected` / `unauthorized` / `not_applicable` |
 
@@ -174,7 +174,7 @@ Nexus 收到后：`provides` ∩ 能力目录 → 该节点可执行的 capabili
 | `device_id` | 可选。设备唯一 ID；空则回退 `sn` / `device_hint`。**dumps 时空字符串省略** |
 | `platform` | 可选。`android` \| `ios` \| `web` \| `playwright` \| `other`。空则从 `sn` / `device_hint` 猜测。**dumps 时空字符串省略** |
 | `sn` | 设备串号；web/playwright 可为槽位 sn 或字面 `playwright` |
-| `executor_order` | **由 Nexus 算好**（含 AI 的 `expected_executor` / `fallback_executors` + 连通性过滤）。非空时 Scout 严格按此顺序尝试。**空则按 `platform` 填默认链**：android→`adb,remote`，ios→`ios_wda`，web/playwright→`playwright`，other→四通道 |
+| `executor_order` | **由 Nexus 按这台 `sn` 算好**，只含该设备适用的通道（Web 不得含 `adb`，安卓/iOS 不得含 `playwright`）。同设备内的 fallback（如同一部安卓的 `adb`→`remote`）可以是列表；**禁止把不同类型设备的通道排进同一条链。** 非空时 Scout 只在该 `sn` 上按序尝试，类型不符的 executor **declined，不碰设备**。空则按 **该 sn 的 platform** 填：android→`adb,remote`，ios→`ios_wda`，web/playwright→`playwright`。**禁止** other 四通道混排 |
 | `low_level` | 抄自能力目录 YAML 的 `low_level` 段。`{x}` 这类占位符由 Scout 用 `params` 填充 |
 | `device_hint` | Nexus 注入的设备凭据，避免 Scout 回查。**含敏感字段，不得写入 Scout 的日志** |
 | `timeout_sec` | 本动作上限。超时回 `fail`，见 §6 |
@@ -201,7 +201,7 @@ Nexus 收到后：`provides` ∩ 能力目录 → 该节点可执行的 capabili
 | `node.channel_changed` | S→N | 通道状态变化 |
 | `node.engine_crashed` | S→N | WDA / u2 agent 等崩溃 |
 | `node.shutting_down` | S→N | 人主动停。Nexus 立刻失败该节点在途 run。Scout 会在这条之前再发一帧 HEARTBEAT |
-| `tap_element` 等 | N→S | 仍走 executor；Nexus 给 `executor_order` 或 Scout 按 platform 填 |
+| `tap_element` 等 | N→S | 仍走 executor；Nexus 给该 sn 的 `executor_order`，Scout 按 sn 执行 |
 
 `node.stop` / `node.restart`：Scout core 在 RESULT 的内部 extra 里打标记，transport 回完 RESULT 后再 shutdown。**不能靠 `node.stop` 启动一台已经离线的专机。**
 
@@ -306,7 +306,7 @@ sequenceDiagram
 | Nexus 重启 | Scout 的 `REGISTER` 会重建节点登记。在途 run 由 Nexus 侧判为中断，不尝试续跑 |
 | S→N 框架 `EXECUTE` / `HEARTBEAT` 丢失 | 允许。状态最终由下一次 `HEARTBEAT` 收敛 |
 
-**Scout 侧不做业务重试。** 同一动作换 executor 重试由 `executor_order` 表达（这是 Nexus 的决定）；同一 executor 内的机械重试（如 adb 偶发 `device offline`）允许，但必须记进 `attempts`。
+**Scout 侧不做业务重试。** 同一动作、**同一台 sn** 换 executor（如安卓 `adb`→`remote`）由 `executor_order` 表达；不得用列表把 Web 和安卓通道串起来。同一 executor 内的机械重试（如 adb 偶发 `device offline`）允许，但必须记进 `attempts`。
 
 ---
 
@@ -327,4 +327,4 @@ sequenceDiagram
 fixtures_sha256 = c526991528d382c675e0b33dcfa02b4203ebaabb2314135c03b397591a400894
 ```
 
-`verify_protocol_contract.py` 校验：① 本仓 `protocol.py` 能 round-trip 全部 fixture；② fixture 目录哈希与上面记录一致。
+两仓各自确认：① `protocol.py` 能 round-trip 全部 fixture；② fixture 目录哈希与上面记录一致。

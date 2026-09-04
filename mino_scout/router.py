@@ -64,19 +64,29 @@ class Router:
         run_id: str = "",
         step_idx: int = -1,
         screen: Optional[CapturedScreen] = None,
-        capture_prefer: tuple[str, ...] = ("adb", "remote"),
+        capture_prefer: tuple[str, ...] = (),
         shared: Optional[dict[str, Any]] = None,
     ) -> EventResult:
         started = now_iso()
         t0 = time.time()
 
         ordered = self._resolve_order(event)
-        if not ordered:
-            return self._synthetic_fail(
-                event,
-                self._no_route_reason(event),
-                started_at=started,
+        compatible = device.compatible_executors
+        skipped = [ex for ex in ordered if ex not in compatible]
+        if skipped:
+            SLog.w(
+                TAG,
+                f"忽略与 sn={device.sn} platform={device.platform} 不符的 executor: {skipped}",
             )
+        ordered = [ex for ex in ordered if ex in compatible]
+        if not ordered:
+            reason = (
+                f"router: executor {skipped} 不服务 sn={device.sn} "
+                f"（platform={device.platform}，该设备只接受 {sorted(compatible)}）"
+                if skipped
+                else self._no_route_reason(event)
+            )
+            return self._synthetic_fail(event, reason, started_at=started)
 
         ctx = ExecutorContext(
             device=device,

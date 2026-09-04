@@ -153,6 +153,12 @@ class AdbExecutor:
         # 得来）。Scout 不查库，serial 由 Nexus 在 EXECUTE.device_hint 里注入。
         serial = str(ctx.device.adb_serial or "")
         try:
+            if ctx.device.is_web:
+                return make_event_result(
+                    event, status=EventStatus.DECLINED, executor_used=self.id,
+                    started_at=started_at, elapsed_ms=0,
+                    summary=f"adb 不服务 web 槽 sn={ctx.device.sn}",
+                )
             if not serial:
                 return self._fail(
                     event, started_at, t0,

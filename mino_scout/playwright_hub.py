@@ -247,8 +247,10 @@ class PlaywrightHub:
         except Exception:
             return ""
 
-    def screenshot_png(self, sn: str = "", *, timeout_ms: int = 15_000) -> bytes:
+    def screenshot_png(self, sn: str = "", *, timeout_ms: int = 15_000, base_url: str = "") -> bytes:
         page = self.current_page(sn)
+        if page is None:
+            page = self.open_case(sn, base_url=base_url)
         if page is None:
             raise RuntimeError("playwright 当前没有打开的页面")
         return page.screenshot(

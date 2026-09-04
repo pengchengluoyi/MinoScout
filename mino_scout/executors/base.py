@@ -39,6 +39,16 @@ class DeviceRef:
 
         return is_web_slot(self.sn, self.platform)
 
+    @property
+    def compatible_executors(self) -> frozenset[str]:
+        """这台 sn 允许的通道。Web 只有 playwright，安卓/iOS 没有 playwright。"""
+        if self.is_web:
+            return frozenset({"playwright"})
+        plat = str(self.platform or "").strip().lower()
+        if plat in ("ios", "iphone", "ipad"):
+            return frozenset({"ios_wda", "remote"})
+        return frozenset({"adb", "remote"})
+
 
 @dataclass
 class ExecutorContext:
@@ -52,7 +62,7 @@ class ExecutorContext:
     screen: Optional[CapturedScreen] = None
 
     # 抓图通道优先序。executor 需在派发中途重新抓图时沿用同一优先级
-    capture_prefer: tuple[str, ...] = ("adb", "remote")
+    capture_prefer: tuple[str, ...] = ()
 
     # 可被 executor 之间共享的 KV（如 last_locate_result，下一个事件可复用）
     shared: dict[str, Any] = field(default_factory=dict)
