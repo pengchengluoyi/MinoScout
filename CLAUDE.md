@@ -95,6 +95,7 @@ mino_scout/
 | 改与 Nexus 的通信 | [docs/PROTOCOL.md](docs/PROTOCOL.md) + §5。**协议改动必须两仓同步** |
 | 从上游搬代码 | [docs/MIGRATION.md](docs/MIGRATION.md) |
 | 调 ClawNode 相关 | [docs/DEVICE_SETUP.md](docs/DEVICE_SETUP.md) §ClawNode，以及 [ClawNode 仓库](../ClawNode) |
+| 改打包 / 安装 / 更新逻辑 | [docs/PACKAGING.md](docs/PACKAGING.md)。**发布产物是分层的**，改之前先看那里的层指纹与闸门 |
 
 ---
 

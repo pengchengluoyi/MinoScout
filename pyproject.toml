@@ -15,6 +15,7 @@ dependencies = [
   "playwright>=1.55",     # Web 通道
   "pillow>=12.0",         # 截图尺寸/格式处理（不做识别）
   "numpy>=2.2",           # shot_is_blank 的均值/标准差判据（不做识别）
+  "httpx>=0.28",          # executors/adb_command.py：按 URL 流式下载 APK（非 LLM，见 verify_no_llm.py）
   "psutil>=7.1",          # 本机 IP / 进程
   "zeroconf>=0.148",      # mDNS：给 ClawNode 发现用
 ]

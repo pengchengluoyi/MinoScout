@@ -41,7 +41,7 @@ mino-scout --nexus ws://mino.local:10104/node --token <pair-token>
 
 1. 确认 `pyproject.toml` 的 `version`（例如 `0.1.0`）
 2. `git tag v0.1.0 && git push origin v0.1.0`
-3. Actions 工作流 `.github/workflows/release.yml` 打 zip：`darwin-arm64`（macos-latest）、`darwin-x64`（macos-15-intel）、`win32-x64`、`linux-x64`，算 sha256、上传 Release，并挂上 `manifest.json`
+3. Actions 工作流 `.github/workflows/release.yml` 打 zip、算 sha256、上传 Release，并挂上 `manifest.json`
 4. 稳定地址（Studio 用这个找最新包）：
 
 ```
@@ -53,11 +53,22 @@ https://github.com/<owner>/MinoScout/releases/latest/download/manifest.json
 本机只打当前系统的 zip：
 
 ```bash
-python scripts/build_binary.py --check   # 冻结，目标机器不需要 Python
+python scripts/build_binary.py --check                       # 冻结，目标机器不需要 Python
 python scripts/pack_release.py --out dist --binary
+python scripts/check_layered_install.py --dist dist --probe  # 装全量 → 只装 app → 断言浏览器没动
 ```
 
 装好后由 `install.sh` / `install.ps1` 注册 launchd / Scheduled Task / systemd。
+
+### 产物是分层的
+
+每次发布出 4 个 zip：合并包（全新安装，439 MB）+ `app` / `runtime` / `browser` 三个层包。
+**只改代码的发版，节点只需要下 90 KB 的 app 层**（浏览器占安装体积的 77%，而它几乎从不变）。
+
+`manifest.json` 的顶层字段仍指向合并包，分层前的 Studio 行为不变；新增的 `layers` 带每层
+的指纹与地址，新客户端拿本机 `bin/layers.txt` 逐层比对，只下不一致的层。
+
+细节、层指纹怎么算、以及哪些地方改了会静默破坏分层 —— 见 [docs/PACKAGING.md](docs/PACKAGING.md)。
 专机用 root 装会走 LaunchDaemon / AtStartup；Studio 以当前用户装走 LaunchAgent / AtLogOn。
 Scout 是独立守护进程，关掉 Studio 不停。控制：`mino-scout status` / `mino-scout stop`。
 
