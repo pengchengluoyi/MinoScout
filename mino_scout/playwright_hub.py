@@ -120,8 +120,19 @@ def pick_goto_url(*candidates: Any) -> str:
 
 
 def headed_from_env() -> bool:
+    """仅 probe / 无 EXECUTE 时的本机缺省。跑用例时 headed 由 Nexus device_hint 决定。"""
     raw = str(os.environ.get("MINIORANGE_PLAYWRIGHT_HEADED", "1") or "1").strip().lower()
     return raw not in ("0", "false", "no", "off")
+
+
+def headed_from_hint(hint: dict | None, *, default_headed: bool = False) -> bool:
+    """读 EXECUTE.device_hint：headless=true → 无头；headed=false → 无头。缺省无头。"""
+    extra = hint if isinstance(hint, dict) else {}
+    if "headless" in extra:
+        return not bool(extra.get("headless"))
+    if "headed" in extra:
+        return bool(extra.get("headed"))
+    return default_headed
 
 
 # probe_playwright() 的"可用"状态名。上游用 "available" 而不是 "connected" ——
@@ -189,27 +200,44 @@ class PlaywrightHub:
 
     def _browser(self, sn: str, *, headed: Optional[bool] = None):
         key = _session_key(sn)
+        head = headed_from_env() if headed is None else bool(headed)
         browsers: dict = getattr(self._local, "browsers", None) or {}
+        modes: dict = getattr(self._local, "browser_headed", None) or {}
         browser = browsers.get(key)
         if browser is not None:
-            try:
-                if browser.is_connected():
-                    return browser
-            except Exception:
-                pass
-        head = headed_from_env() if headed is None else bool(headed)
+            if modes.get(key) != head:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+                browsers.pop(key, None)
+                browser = None
+            else:
+                try:
+                    if browser.is_connected():
+                        return browser
+                except Exception:
+                    pass
         pw = self._playwright()
+        launch_args = [
+            "--disable-dev-shm-usage",
+            "--force-device-scale-factor=1",
+        ]
+        if head:
+            launch_args.extend(
+                [
+                    f"--window-size={VIEWPORT_W},{VIEWPORT_H}",
+                    "--window-position=80,40",
+                ]
+            )
         browser = pw.chromium.launch(
             headless=not head,
-            args=[
-                "--disable-dev-shm-usage",
-                "--force-device-scale-factor=1",
-                f"--window-size={VIEWPORT_W},{VIEWPORT_H}",
-                "--window-position=80,40",
-            ],
+            args=launch_args,
         )
         browsers[key] = browser
+        modes[key] = head
         self._local.browsers = browsers
+        self._local.browser_headed = modes
         SLog.i(TAG, f"chromium launched sn={key} headed={head}")
         return browser
 
@@ -247,10 +275,17 @@ class PlaywrightHub:
         except Exception:
             return ""
 
-    def screenshot_png(self, sn: str = "", *, timeout_ms: int = 8_000, base_url: str = "") -> bytes:
+    def screenshot_png(
+        self,
+        sn: str = "",
+        *,
+        timeout_ms: int = 8_000,
+        base_url: str = "",
+        headed: Optional[bool] = None,
+    ) -> bytes:
         page = self.current_page(sn)
         if page is None:
-            page = self.open_case(sn, base_url=base_url)
+            page = self.open_case(sn, base_url=base_url, headed=headed)
         if page is None:
             raise RuntimeError("playwright 当前没有打开的页面")
         try:
@@ -309,6 +344,7 @@ class PlaywrightHub:
             except Exception:
                 pass
         self._local.browsers = {}
+        self._local.browser_headed = {}
         pw = getattr(self._local, "pw", None)
         if pw is not None:
             try:

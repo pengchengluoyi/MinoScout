@@ -14,7 +14,7 @@ from mino_scout.executors.base import (
     _now_iso,
     make_event_result,
 )
-from mino_scout.playwright_hub import get_hub, pick_goto_url
+from mino_scout.playwright_hub import get_hub, headed_from_hint, pick_goto_url
 
 TAG = "PlaywrightExecutor"
 
@@ -78,6 +78,7 @@ class PlaywrightExecutor:
                 summary="playwright 只服务 web 槽，让位给真机通道",
             )
         hub = get_hub()
+        headed = headed_from_hint(ctx.device.extra)
         try:
             if cap == "wait_ms":
                 p = event.params or {}
@@ -93,7 +94,7 @@ class PlaywrightExecutor:
                 )
                 page = hub.current_page(sn)
                 if page is None:
-                    page = hub.open_case(sn, base_url=url)
+                    page = hub.open_case(sn, base_url=url, headed=headed)
                 elif url:
                     page.goto(url, wait_until="domcontentloaded", timeout=30_000)
                 return self._ok(event, started_at, t0, f"打开 {url or page.url}")
@@ -109,6 +110,7 @@ class PlaywrightExecutor:
                 page = hub.open_case(
                     sn,
                     base_url=pick_goto_url(ctx.device.extra.get("target_package")),
+                    headed=headed,
                 )
             if cap == "tap_element":
                 return self._tap(event, page, started_at, t0)

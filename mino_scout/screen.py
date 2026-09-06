@@ -198,6 +198,7 @@ def capture_via_playwright(
     timeout_sec: float = 15.0,
     compress_ratio: float = 2.0,
     base_url: str = "",
+    device_hint: dict | None = None,
 ) -> CapturedScreen:
     """port: 上游 `screen.py::_capture_via_playwright`。
 
@@ -206,10 +207,13 @@ def capture_via_playwright(
     """
     started = time.time()
     try:
-        from mino_scout.playwright_hub import get_hub
+        from mino_scout.playwright_hub import get_hub, headed_from_hint
 
         png_bytes = get_hub().screenshot_png(
-            str(sn or ""), timeout_ms=int(timeout_sec * 1000), base_url=base_url
+            str(sn or ""),
+            timeout_ms=int(timeout_sec * 1000),
+            base_url=base_url,
+            headed=headed_from_hint(device_hint),
         )
     except Exception as e:
         return CapturedScreen(
@@ -274,6 +278,7 @@ def capture(
             timeout_sec=timeout_sec,
             compress_ratio=compress_ratio,
             base_url=url,
+            device_hint=dict(device.extra or {}),
         )
     else:
         shot = capture_via_adb(device.adb_serial, timeout_sec=timeout_sec)
