@@ -152,6 +152,7 @@ class PlaywrightExecutor:
     def _tap(self, event: PlanEvent, page, started_at: str, t0: float) -> EventResult:
         name = _name_from_params(event.params or {})
         if name and self._click_by_name(page, name):
+            self._settle_page(page)
             return self._ok(event, started_at, t0, f"点击「{name[:40]}」")
         try:
             x, y = self._xy(event, page)
@@ -161,6 +162,7 @@ class PlaywrightExecutor:
                 f"未找到可点目标「{name[:40]}」且没有坐标" if name else "未找到可点目标，且没有坐标",
             )
         page.mouse.click(x, y)
+        self._settle_page(page)
         label = f"「{name[:40]}」({x},{y})" if name else f"({x},{y})"
         return self._ok(event, started_at, t0, f"点击 {label}")
 
@@ -290,6 +292,7 @@ class PlaywrightExecutor:
         loc = self._find_input(page, name, text)
         if loc is not None:
             loc.fill(text, timeout=5000)
+            self._settle_page(page)
             return self._ok(event, started_at, t0, f"输入 {text[:24]}")
         try:
             x, y = self._xy(event, page)
@@ -297,7 +300,16 @@ class PlaywrightExecutor:
         except ValueError:
             pass
         page.keyboard.type(text, delay=20)
+        self._settle_page(page)
         return self._ok(event, started_at, t0, f"输入 {text[:24]}")
+
+    @staticmethod
+    def _settle_page(page, ms: int = 300) -> None:
+        """DOM 变更后短等，避免下一帧截图卡在动画/布局抖动上。"""
+        try:
+            page.wait_for_timeout(max(0, int(ms)))
+        except Exception:
+            pass
 
     def _xy(self, event: PlanEvent, page) -> tuple[int, int]:
         p = event.params or {}
