@@ -98,6 +98,10 @@ class PlaywrightExecutor:
                     page.goto(url, wait_until="domcontentloaded", timeout=30_000)
                 return self._ok(event, started_at, t0, f"打开 {url or page.url}")
             if cap == "close_app":
+                p = event.params or {}
+                if p.get("shutdown_browser") or p.get("shutdown"):
+                    hub.shutdown_thread()
+                    return self._ok(event, started_at, t0, "关闭 Chromium")
                 hub.close_case(sn)
                 return self._ok(event, started_at, t0, "关闭页面")
             page = hub.current_page(sn)

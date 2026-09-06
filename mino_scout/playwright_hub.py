@@ -247,17 +247,17 @@ class PlaywrightHub:
         except Exception:
             return ""
 
-    def screenshot_png(self, sn: str = "", *, timeout_ms: int = 12_000, base_url: str = "") -> bytes:
+    def screenshot_png(self, sn: str = "", *, timeout_ms: int = 8_000, base_url: str = "") -> bytes:
         page = self.current_page(sn)
         if page is None:
             page = self.open_case(sn, base_url=base_url)
         if page is None:
             raise RuntimeError("playwright 当前没有打开的页面")
         try:
-            page.wait_for_load_state("domcontentloaded", timeout=2000)
+            page.wait_for_load_state("domcontentloaded", timeout=500)
         except Exception:
             pass
-        cap_ms = max(3000, min(int(timeout_ms or 12_000), 12_000))
+        cap_ms = max(2000, min(int(timeout_ms or 8_000), 10_000))
         return page.screenshot(
             type="png",
             full_page=False,
