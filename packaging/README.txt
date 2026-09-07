@@ -36,11 +36,12 @@ Control:
   mino-scout stop
   mino-scout probe
 
-Sleep: Scout inhibits system sleep while it is trying to stay connected to
-Nexus, including reconnect (caffeinate -i -m / SetThreadExecutionState /
-systemd-inhibit). Display sleep is left alone so the screen can go dark;
-tasks keep running. Dedicated machines can still turn sleep off in OS
-settings. Lid-close sleep is not inhibited.
+Sleep: Scout keeps the machine online while it is trying to stay connected to
+Nexus, including reconnect. macOS uses caffeinate -dims (display, idle,
+disk, lid-on-AC). Windows uses SYSTEM_REQUIRED+DISPLAY_REQUIRED. Linux
+inhibits idle/sleep/lid. Display is kept awake so USB devices do not drop.
+Lid-close sleep on battery is an Apple limit and still happens until AC is
+plugged in.
 
 Playwright Chromium ships inside the browser layer; nothing to install
 by hand. PLAYWRIGHT_BROWSERS_PATH points at <prefix>/bin/ms-playwright.

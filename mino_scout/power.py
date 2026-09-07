@@ -1,33 +1,13 @@
-"""系统睡眠抑制。
+"""系统睡眠抑制 —— Scout 是持续在线节点，机器必须醒着。
 
-## 为什么需要
-
-区分三种状态 —— 这是最容易搞混的地方：
-
-| 状态 | Scout / adb 还能不能工作 |
-|---|---|
-| **显示器熄屏**（display sleep） | **能。** 系统不睡，进程和 USB 通常还在 |
-| **系统睡眠**（system sleep / suspend） | **不能。** WS 断、USB 断、在途任务中断 |
-| 用户注销 / 未登录 | 取决于守护形态（LaunchDaemon 能，LaunchAgent 不能） |
-
-所以"熄屏了怎么办"的答案是：**允许熄屏，但不允许系统睡。** 熄屏后任务照常跑。
-
-## 铁律：连着 Nexus（含重连）就抑制
-
-挂在 `NodeTransport.run_forever` 上：进程开始接 Nexus 就 acquire，退出才
-release。断线重连窗口也要压住 —— 否则空闲 1 分钟机器睡过去，再也连不上。
-
-不绑 `active_runs`。待命接单和跑批一样需要机器醒着。
-
-合盖睡眠（`caffeinate -s`）不在这里处理，那要插电，且是用户的选择。
-
-## 各平台手段
+挂在 `NodeTransport.run_forever` 上：开始接 Nexus 就 acquire，进程退出才
+release。重连窗口也压住。不绑 `active_runs`。
 
 | 平台 | 手段 | 说明 |
 |---|---|---|
-| macOS | `caffeinate -i -m -w <我们的 pid>` | `-i` 防系统 idle sleep，`-m` 防磁盘 idle sleep（熄屏后还要读写）；**不加 `-d`**，屏幕可熄；`-w` 随我们退出，kill -9 不留孤儿 |
-| Windows | SetThreadExecutionState(ES_CONTINUOUS \\| ES_SYSTEM_REQUIRED) | 不带 ES_DISPLAY_REQUIRED；心跳里在长寿线程上重申，避免线程池 worker 退出把断言带走 |
-| Linux | `systemd-inhibit --what=idle:sleep` | 无 systemd 时降级为不抑制并记一条 warn |
+| macOS | `caffeinate -dims -w <pid>` | `-d` 屏幕不熄（否则不少 Mac USB 掉电）；`-i` 系统 idle；`-m` 磁盘 idle；`-s` 合盖（**仅插电有效**，Apple 限制）；电池合盖仍会睡 |
+| Windows | ES_CONTINUOUS \\| SYSTEM_REQUIRED \\| DISPLAY_REQUIRED | 心跳在长寿线程上重申 |
+| Linux | `idle:sleep:handle-lid-switch` | 无 systemd 时记 warn，不抑制 |
 
 `sync()` / `keepalive()` 发现子进程死了会重新拉起。
 """
@@ -51,6 +31,29 @@ HOLDER_NEXUS = "nexus"
 # Windows SetThreadExecutionState 标志
 _ES_CONTINUOUS = 0x80000000
 _ES_SYSTEM_REQUIRED = 0x00000001
+_ES_DISPLAY_REQUIRED = 0x00000002
+
+
+def macos_caffeinate_args(pid: int) -> list[str]:
+    """持续在线：屏幕、系统、磁盘、合盖（插电）一起压。"""
+    return ["-d", "-i", "-m", "-s", "-w", str(int(pid))]
+
+
+def macos_on_ac_power() -> bool:
+    """合盖断言只在 AC 上生效。查不到时按插电处理，仍然传 `-s`。"""
+    try:
+        out = subprocess.run(
+            ["pmset", "-g", "batt"],
+            capture_output=True, text=True, timeout=2,
+        )
+        blob = (out.stdout or "") + (out.stderr or "")
+        if "Battery Power" in blob:
+            return False
+        if "AC Power" in blob:
+            return True
+    except Exception:
+        pass
+    return True
 
 
 class PowerGuard:
@@ -216,19 +219,18 @@ class PowerGuard:
             self._unavailable_reason = "caffeinate 不在 PATH"
             SLog.w(TAG, self._unavailable_reason)
             return
-        # -i 防系统 idle sleep；-m 防磁盘 idle sleep（熄屏后任务还要读写）
-        # 不加 -d：允许熄屏。系统不睡，进程 / USB / Playwright 继续跑。
-        # -w <pid> 绑定我们的生命周期：被 kill -9 也不会留下孤儿 caffeinate
+        if not macos_on_ac_power():
+            SLog.w(TAG, "当前用电池：合盖仍会睡（caffeinate -s 只在插电时有效），USB/屏幕抑制照常")
         self._proc = subprocess.Popen(
-            [exe, "-i", "-m", "-w", str(os.getpid())],
+            [exe, *macos_caffeinate_args(os.getpid())],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         self._unavailable_reason = ""
-        SLog.i(TAG, f"已抑制系统睡眠（caffeinate -i -m，pid={self._proc.pid}；屏幕仍可熄）")
+        SLog.i(TAG, f"已抑制睡眠（caffeinate -dims，pid={self._proc.pid}；屏幕不熄、插电合盖不睡）")
 
     def _engage_windows(self, *, refresh: bool = False) -> None:
         rc = ctypes.windll.kernel32.SetThreadExecutionState(  # type: ignore[attr-defined]
-            _ES_CONTINUOUS | _ES_SYSTEM_REQUIRED
+            _ES_CONTINUOUS | _ES_SYSTEM_REQUIRED | _ES_DISPLAY_REQUIRED
         )
         if rc == 0:
             self._unavailable_reason = "SetThreadExecutionState 返回 0"
@@ -237,7 +239,7 @@ class PowerGuard:
         self._win_active = True
         self._unavailable_reason = ""
         if not refresh:
-            SLog.i(TAG, "已抑制系统睡眠（ES_SYSTEM_REQUIRED；屏幕仍可熄）")
+            SLog.i(TAG, "已抑制睡眠（ES_SYSTEM_REQUIRED|ES_DISPLAY_REQUIRED）")
 
     def _engage_linux(self) -> None:
         exe = shutil.which("systemd-inhibit")
@@ -245,14 +247,13 @@ class PowerGuard:
             self._unavailable_reason = "systemd-inhibit 不在 PATH"
             SLog.w(TAG, f"{self._unavailable_reason}，不抑制睡眠")
             return
-        # 抱一个长睡的子进程，它活着期间抑制生效
         self._proc = subprocess.Popen(
-            [exe, "--what=idle:sleep", "--who=MinoScout", "--why=keeping node online",
-             "--mode=block", "sleep", "infinity"],
+            [exe, "--what=idle:sleep:handle-lid-switch", "--who=MinoScout",
+             "--why=keeping node online", "--mode=block", "sleep", "infinity"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         self._unavailable_reason = ""
-        SLog.i(TAG, f"已抑制系统睡眠（systemd-inhibit，pid={self._proc.pid}）")
+        SLog.i(TAG, f"已抑制睡眠（systemd-inhibit idle:sleep:handle-lid-switch，pid={self._proc.pid}）")
 
 
 _guard: Optional[PowerGuard] = None

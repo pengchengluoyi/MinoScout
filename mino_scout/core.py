@@ -28,7 +28,7 @@ from mino_scout.schemas import CapturedScreen, EventResult, EventStatus, PlanEve
 
 TAG = "ScoutCore"
 
-SCOUT_VERSION = "0.1.13"
+SCOUT_VERSION = "0.1.14"
 
 # 幂等缓存保留时长。CONVENTIONS.md §5：该 run 结束或 10 分钟，取先到者。
 _IDEMPOTENT_TTL_SEC = 600.0
@@ -367,6 +367,17 @@ class ScoutCore:
         SLog.i(TAG, f"cancel run={run_id}，清掉 {len(keys)} 条幂等缓存")
         return len(keys)
 
+    def shutdown(self) -> None:
+        """进程退出：必须在 playwright 那条线程上停 Chromium。
+
+        Hub 用 thread-local，主线程调 shutdown_thread 关不到浏览器，
+        进程一死就会刷 TargetClosedError。
+        """
+        try:
+            self._pw_pool.submit(_stop_playwright_hub).result(timeout=8.0)
+        except Exception as exc:
+            SLog.w(TAG, f"playwright 退出清理: {exc}")
+
     # ---------------- 状态 ----------------
 
     def heartbeat(self) -> P.Heartbeat:
@@ -532,6 +543,12 @@ def _event_result_to_observe_fields(ev: EventResult) -> dict[str, Any]:
 
 
 # ---------------- 小工具 ----------------
+
+
+def _stop_playwright_hub() -> None:
+    from mino_scout.playwright_hub import get_hub
+
+    get_hub().shutdown_thread()
 
 
 def _platform_guess(sn: str) -> str:

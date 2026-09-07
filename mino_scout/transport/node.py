@@ -130,6 +130,10 @@ class NodeTransport:
                 guard.keepalive()
                 backoff = min(backoff * 2, _BACKOFF_MAX)
         finally:
+            try:
+                self.core.shutdown()
+            except Exception as exc:
+                SLog.w(TAG, f"playwright 退出清理: {exc}")
             guard.release(HOLDER_NEXUS)
 
     def stop(self) -> None:

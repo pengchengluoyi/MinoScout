@@ -102,10 +102,11 @@ def _install_signals(transport) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     from mino_scout.config import config_path, configure_proxy_bypass, resolve_runtime
-    from mino_scout.playwright_hub import apply_browsers_path
+    from mino_scout.playwright_hub import apply_browsers_path, install_playwright_closed_quiet
 
     configure_proxy_bypass()
     apply_browsers_path()
+    install_playwright_closed_quiet()
 
     ap = argparse.ArgumentParser(
         prog="mino-scout",
@@ -144,6 +145,10 @@ def main(argv: list[str] | None = None) -> int:
         transport.request_shutdown()
         SLog.i(TAG, "收到 Ctrl-C，退出")
     finally:
+        try:
+            core.shutdown()
+        except Exception:
+            pass
         from mino_scout.power import get_guard
 
         get_guard().sync([])

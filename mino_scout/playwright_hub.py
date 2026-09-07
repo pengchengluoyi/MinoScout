@@ -7,10 +7,12 @@ Playwright 的 sync API 必须在创建它的线程里用。CaseRunner 每个 sn
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Optional
 
@@ -140,10 +142,52 @@ def headed_from_hint(hint: dict | None, *, default_headed: bool = False) -> bool
 # 导成常量，避免调用方各写一遍字面量再写错（已经踩过一次）。
 PROBE_OK_STATE = "available"
 
+_QUIET_INSTALLED = False
+
+
+def is_playwright_closed_noise(message: str, *, extra: str = "", exc_name: str = "") -> bool:
+    """Playwright 关 page/browser 时 asyncio 会甩 TargetClosedError，不是业务故障。"""
+    if exc_name == "TargetClosedError":
+        return True
+    text = f"{message} {extra}"
+    if "TargetClosedError" in text or "Target page, context or browser has been closed" in text:
+        return True
+    if "Task was destroyed but it is pending" in message and (
+        "playwright" in extra or "Connection.run" in extra
+    ):
+        return True
+    return False
+
+
+class _PlaywrightClosedFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        extra_parts: list[str] = []
+        if record.args:
+            extra_parts.append(str(record.args))
+        if record.exc_text:
+            extra_parts.append(record.exc_text)
+        exc_name = ""
+        if record.exc_info and record.exc_info[1] is not None:
+            extra_parts.append(repr(record.exc_info[1]))
+            extra_parts.append("".join(traceback.format_exception(*record.exc_info)))
+            exc_name = type(record.exc_info[1]).__name__
+        extra = " ".join(extra_parts)
+        return not is_playwright_closed_noise(record.getMessage(), extra=extra, exc_name=exc_name)
+
+
+def install_playwright_closed_quiet() -> None:
+    """进程级只滤 Playwright 关连接的噪音，不影响 transport 的 ConnectionClosedError。"""
+    global _QUIET_INSTALLED
+    if _QUIET_INSTALLED:
+        return
+    _QUIET_INSTALLED = True
+    logging.getLogger("asyncio").addFilter(_PlaywrightClosedFilter())
+
 
 def probe_playwright() -> tuple[str, dict]:
     """不长期占浏览器：只确认 Python 包和 Chromium 可执行文件在。"""
     global _probe_cache
+    install_playwright_closed_quiet()
     apply_browsers_path()
     now = time.time()
     with _probe_lock:
@@ -183,6 +227,7 @@ def probe_playwright() -> tuple[str, dict]:
 
 class PlaywrightHub:
     def __init__(self) -> None:
+        install_playwright_closed_quiet()
         self._local = threading.local()
         self._sessions: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
@@ -192,11 +237,33 @@ class PlaywrightHub:
         if pw is None:
             from playwright.sync_api import sync_playwright
 
+            install_playwright_closed_quiet()
             pw = sync_playwright().start()
+            self._quiet_thread_loop()
             self._local.pw = pw
             self._local.browsers = {}
             SLog.i(TAG, f"playwright started thread={threading.get_ident()}")
         return pw
+
+    @staticmethod
+    def _quiet_thread_loop() -> None:
+        """能挂到正在跑的 loop 就挂；挂不到就靠 asyncio logger filter。"""
+        import asyncio
+
+        def handler(loop, context):
+            exc = context.get("exception")
+            name = type(exc).__name__ if exc is not None else ""
+            msg = str(context.get("message") or "")
+            extra = f"{msg} {exc!r}"
+            if is_playwright_closed_noise(msg, extra=extra, exc_name=name):
+                return
+            loop.default_exception_handler(context)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.set_exception_handler(handler)
 
     def _browser(self, sn: str, *, headed: Optional[bool] = None):
         key = _session_key(sn)
@@ -324,13 +391,16 @@ class PlaywrightHub:
             row = self._sessions.pop(key, None)
         if not row:
             return
+        page = row.get("page")
         ctx = row.get("context")
-        if ctx is None:
-            return
-        try:
-            ctx.close()
-        except Exception as exc:
-            SLog.w(TAG, f"close context sn={key}: {exc}")
+        # 先关 page 再关 context，减少 Connection.run 被直接掐掉时的 TargetClosedError。
+        for obj in (page, ctx):
+            if obj is None:
+                continue
+            try:
+                obj.close()
+            except Exception:
+                pass
 
     def shutdown_thread(self) -> None:
         with self._lock:
