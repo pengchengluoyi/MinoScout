@@ -6,29 +6,30 @@
 
 | 状态 | Scout / adb 还能不能工作 |
 |---|---|
-| **显示器熄屏**（display sleep） | **能。** 最常见的情况，其实不用管 |
+| **显示器熄屏**（display sleep） | **能。** 系统不睡，进程和 USB 通常还在 |
 | **系统睡眠**（system sleep / suspend） | **不能。** WS 断、USB 断、在途任务中断 |
 | 用户注销 / 未登录 | 取决于守护形态（LaunchDaemon 能，LaunchAgent 不能） |
 
-所以"熄屏了怎么办"的答案是：**熄屏本身不是问题，系统睡眠才是。**
+所以"熄屏了怎么办"的答案是：**允许熄屏，但不允许系统睡。** 熄屏后任务照常跑。
 
-## 铁律：只在有在途任务时抑制
+## 铁律：连着 Nexus（含重连）就抑制
 
-一直抑制会让笔记本永不休眠、发烫掉电，一定被投诉。所以挂在
-`ScoutCore.heartbeat().active_runs` 上：有 run 就 acquire，跑完就 release。
+挂在 `NodeTransport.run_forever` 上：进程开始接 Nexus 就 acquire，退出才
+release。断线重连窗口也要压住 —— 否则空闲 1 分钟机器睡过去，再也连不上。
 
-专机（机房常插电）通常在系统设置里就关掉了睡眠，这个模块对它是冗余的兜底；
-真正需要它的是"用户日常笔记本兼作执行节点"的场景。
+不绑 `active_runs`。待命接单和跑批一样需要机器醒着。
+
+合盖睡眠（`caffeinate -s`）不在这里处理，那要插电，且是用户的选择。
 
 ## 各平台手段
 
 | 平台 | 手段 | 说明 |
 |---|---|---|
-| macOS | `caffeinate -i -w <我们的 pid>` | `-i` 只防系统 idle sleep，**不阻止显示器熄屏**（那是用户的事）；`-w` 让它随我们退出而退出，进程被 kill -9 也不会留下孤儿 |
-| Windows | SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) | 同样不带 ES_DISPLAY_REQUIRED |
+| macOS | `caffeinate -i -m -w <我们的 pid>` | `-i` 防系统 idle sleep，`-m` 防磁盘 idle sleep（熄屏后还要读写）；**不加 `-d`**，屏幕可熄；`-w` 随我们退出，kill -9 不留孤儿 |
+| Windows | SetThreadExecutionState(ES_CONTINUOUS \\| ES_SYSTEM_REQUIRED) | 不带 ES_DISPLAY_REQUIRED；心跳里在长寿线程上重申，避免线程池 worker 退出把断言带走 |
 | Linux | `systemd-inhibit --what=idle:sleep` | 无 systemd 时降级为不抑制并记一条 warn |
 
-**都刻意不阻止显示器熄屏** —— 屏幕黑掉不影响 adb，没有理由让用户的屏幕一直亮着。
+`sync()` / `keepalive()` 发现子进程死了会重新拉起。
 """
 from __future__ import annotations
 
@@ -44,6 +45,9 @@ from mino_scout.log import SLog
 
 TAG = "PowerGuard"
 
+# transport 生命周期持有。名称稳定，测试和 status 都认它。
+HOLDER_NEXUS = "nexus"
+
 # Windows SetThreadExecutionState 标志
 _ES_CONTINUOUS = 0x80000000
 _ES_SYSTEM_REQUIRED = 0x00000001
@@ -55,11 +59,9 @@ class PowerGuard:
     用法：
 
         guard = PowerGuard()
-        guard.acquire("run-123")      # 有任务了
+        guard.acquire(HOLDER_NEXUS)   # 开始接 Nexus
         ...
-        guard.release("run-123")      # 跑完了
-
-    同一个 run 重复 acquire 只算一次（协议允许重发，幂等命中时不该多计数）。
+        guard.release(HOLDER_NEXUS)   # 进程退出
     """
 
     def __init__(self, *, noop: bool = False) -> None:
@@ -88,6 +90,8 @@ class PowerGuard:
             self._holders.add(holder)
             if first:
                 self._engage()
+            else:
+                self._ensure_alive()
 
     def release(self, holder: str) -> None:
         with self._lock:
@@ -96,20 +100,28 @@ class PowerGuard:
                 self._disengage()
 
     def sync(self, holders: list[str]) -> None:
-        """按当前在途 run 列表对齐 —— 给心跳循环用，比手工配对 acquire/release 稳。
+        """对齐 holder 集合；有 holder 时若子进程已死则重新拉起。
 
-        进程被 kill 后重启、或某条 run 的 release 丢了，都靠这个收敛。
+        holder 集合没变也要做存活检查 —— 旧实现在这里直接 return，
+        caffeinate 被杀之后会静默失去抑制。
         """
         with self._lock:
             want = set(holders or [])
-            if want == self._holders:
-                return
             had = bool(self._holders)
             self._holders = want
-            if want and not had:
-                self._engage()
-            elif not want and had:
+            if want:
+                if not self._inhibition_alive():
+                    self._clear_dead_child()
+                    self._engage()
+            elif had or self._proc is not None or self._win_active:
                 self._disengage()
+
+    def keepalive(self) -> None:
+        """心跳 / 重连循环调用：有 holder 就保证抑制还在。"""
+        with self._lock:
+            if not self._holders:
+                return
+            self._ensure_alive()
 
     def status(self) -> dict:
         with self._lock:
@@ -118,13 +130,52 @@ class PowerGuard:
                 "holders": sorted(self._holders),
                 "platform": platform.system().lower(),
                 "unavailable_reason": self._unavailable_reason,
+                "child_alive": self._inhibition_alive(),
             }
+
+    # ---------------- 存活 ----------------
+
+    def _inhibition_alive(self) -> bool:
+        if self._noop:
+            return bool(self._holders)
+        if self._proc is not None:
+            return self._proc.poll() is None
+        return self._win_active
+
+    def _clear_dead_child(self) -> None:
+        if self._proc is None:
+            return
+        try:
+            if self._proc.poll() is None:
+                return
+        except Exception:
+            pass
+        self._proc = None
+
+    def _ensure_alive(self) -> None:
+        if self._noop:
+            return
+        system = platform.system()
+        if system == "Windows":
+            # 断言跟线程走。心跳在 asyncio 长寿线程上重申，避免 worker 退出带走。
+            try:
+                self._engage_windows(refresh=True)
+            except Exception as exc:
+                self._unavailable_reason = f"{type(exc).__name__}: {exc}"
+                SLog.w(TAG, f"刷新睡眠抑制失败: {self._unavailable_reason}")
+            return
+        if self._inhibition_alive():
+            return
+        SLog.w(TAG, "睡眠抑制子进程已退出，重新拉起")
+        self._clear_dead_child()
+        self._engage()
 
     # ---------------- 各平台实现 ----------------
 
     def _engage(self) -> None:
         if self._noop:
             return
+        self._clear_dead_child()
         system = platform.system()
         try:
             if system == "Darwin":
@@ -139,14 +190,17 @@ class PowerGuard:
 
     def _disengage(self) -> None:
         if self._noop:
+            self._proc = None
+            self._win_active = False
             return
         try:
             if self._proc is not None:
-                self._proc.terminate()
-                try:
-                    self._proc.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    self._proc.kill()
+                if self._proc.poll() is None:
+                    self._proc.terminate()
+                    try:
+                        self._proc.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        self._proc.kill()
                 self._proc = None
                 SLog.i(TAG, "已释放睡眠抑制")
             if self._win_active:
@@ -157,20 +211,22 @@ class PowerGuard:
             SLog.w(TAG, f"释放睡眠抑制失败: {exc}")
 
     def _engage_macos(self) -> None:
-        exe = shutil.which("caffeinate")
-        if not exe:
+        exe = shutil.which("caffeinate") or "/usr/bin/caffeinate"
+        if not os.path.isfile(exe):
             self._unavailable_reason = "caffeinate 不在 PATH"
             SLog.w(TAG, self._unavailable_reason)
             return
-        # -i 只防系统 idle sleep，不阻止显示器熄屏
+        # -i 防系统 idle sleep；-m 防磁盘 idle sleep（熄屏后任务还要读写）
+        # 不加 -d：允许熄屏。系统不睡，进程 / USB / Playwright 继续跑。
         # -w <pid> 绑定我们的生命周期：被 kill -9 也不会留下孤儿 caffeinate
         self._proc = subprocess.Popen(
-            [exe, "-i", "-w", str(os.getpid())],
+            [exe, "-i", "-m", "-w", str(os.getpid())],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        SLog.i(TAG, f"已抑制系统睡眠（caffeinate -i，pid={self._proc.pid}；屏幕仍可熄）")
+        self._unavailable_reason = ""
+        SLog.i(TAG, f"已抑制系统睡眠（caffeinate -i -m，pid={self._proc.pid}；屏幕仍可熄）")
 
-    def _engage_windows(self) -> None:
+    def _engage_windows(self, *, refresh: bool = False) -> None:
         rc = ctypes.windll.kernel32.SetThreadExecutionState(  # type: ignore[attr-defined]
             _ES_CONTINUOUS | _ES_SYSTEM_REQUIRED
         )
@@ -179,7 +235,9 @@ class PowerGuard:
             SLog.w(TAG, self._unavailable_reason)
             return
         self._win_active = True
-        SLog.i(TAG, "已抑制系统睡眠（ES_SYSTEM_REQUIRED；屏幕仍可熄）")
+        self._unavailable_reason = ""
+        if not refresh:
+            SLog.i(TAG, "已抑制系统睡眠（ES_SYSTEM_REQUIRED；屏幕仍可熄）")
 
     def _engage_linux(self) -> None:
         exe = shutil.which("systemd-inhibit")
@@ -189,10 +247,11 @@ class PowerGuard:
             return
         # 抱一个长睡的子进程，它活着期间抑制生效
         self._proc = subprocess.Popen(
-            [exe, "--what=idle:sleep", "--who=MinoScout", "--why=running a test",
+            [exe, "--what=idle:sleep", "--who=MinoScout", "--why=keeping node online",
              "--mode=block", "sleep", "infinity"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+        self._unavailable_reason = ""
         SLog.i(TAG, f"已抑制系统睡眠（systemd-inhibit，pid={self._proc.pid}）")
 
 

@@ -36,9 +36,11 @@ Control:
   mino-scout stop
   mino-scout probe
 
-Sleep: Scout only inhibits system sleep while a run is in flight
-(caffeinate / SetThreadExecutionState / systemd-inhibit). Display sleep is
-left alone. Dedicated machines should also turn sleep off in OS settings.
+Sleep: Scout inhibits system sleep while it is trying to stay connected to
+Nexus, including reconnect (caffeinate -i -m / SetThreadExecutionState /
+systemd-inhibit). Display sleep is left alone so the screen can go dark;
+tasks keep running. Dedicated machines can still turn sleep off in OS
+settings. Lid-close sleep is not inhibited.
 
 Playwright Chromium ships inside the browser layer; nothing to install
 by hand. PLAYWRIGHT_BROWSERS_PATH points at <prefix>/bin/ms-playwright.

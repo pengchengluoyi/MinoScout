@@ -28,7 +28,7 @@ from mino_scout.schemas import CapturedScreen, EventResult, EventStatus, PlanEve
 
 TAG = "ScoutCore"
 
-SCOUT_VERSION = "0.1.12"
+SCOUT_VERSION = "0.1.13"
 
 # 幂等缓存保留时长。CONVENTIONS.md §5：该 run 结束或 10 分钟，取先到者。
 _IDEMPOTENT_TTL_SEC = 600.0
@@ -118,9 +118,6 @@ class ScoutCore:
             with self._lock:
                 self._active_runs.add(req.run_id)
                 self._run_seen[req.run_id] = time.time()
-            from mino_scout.power import get_guard
-
-            get_guard().acquire(req.run_id)
         try:
             return self._dispatch(req)
         except Exception as exc:
@@ -367,9 +364,6 @@ class ScoutCore:
                 self._done.pop(k, None)
             self._active_runs.discard(run_id)
             self._run_seen.pop(run_id, None)
-        from mino_scout.power import get_guard
-
-        get_guard().release(run_id)
         SLog.i(TAG, f"cancel run={run_id}，清掉 {len(keys)} 条幂等缓存")
         return len(keys)
 
@@ -379,9 +373,6 @@ class ScoutCore:
         self._evict_idle_runs()
         with self._lock:
             active = sorted(self._active_runs)
-        from mino_scout.power import get_guard
-
-        get_guard().sync(active)
         return P.Heartbeat(
             node_id=self.node_id,
             uptime_sec=int(time.time() - self._started),
@@ -392,17 +383,11 @@ class ScoutCore:
     def _evict_idle_runs(self) -> None:
         """Nexus 不会发 RUN_DONE。超过幂等 TTL 没再来 EXECUTE 的 run 视为结束。"""
         cutoff = time.time() - _IDEMPOTENT_TTL_SEC
-        from mino_scout.power import get_guard
-
-        dropped: list[str] = []
         with self._lock:
             for rid, ts in list(self._run_seen.items()):
                 if ts < cutoff:
                     self._active_runs.discard(rid)
                     self._run_seen.pop(rid, None)
-                    dropped.append(rid)
-        for rid in dropped:
-            get_guard().release(rid)
 
     # ---------------- 幂等缓存 ----------------
 

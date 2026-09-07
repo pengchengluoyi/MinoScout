@@ -103,25 +103,34 @@ class NodeTransport:
     async def run_forever(self) -> None:
         """连不上就退避重连，无限重试（协议 §1）。"""
         current_node_id.set(self.core.node_id)
-        backoff = _BACKOFF_START
-        while not self._stop.is_set():
-            try:
-                await self._connect_once()
-                backoff = _BACKOFF_START  # 成功连过一次就重置
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                SLog.w(TAG, f"连接断开/失败: {type(exc).__name__}: {exc}")
-            if self._stop.is_set():
-                break
-            # 加抖动，避免多节点同时重连打爆 Nexus
-            wait = min(backoff, _BACKOFF_MAX) * (0.8 + 0.4 * random.random())
-            SLog.i(TAG, f"{wait:.1f}s 后重连 {self.nexus_url}")
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=wait)
-            except asyncio.TimeoutError:
-                pass
-            backoff = min(backoff * 2, _BACKOFF_MAX)
+        from mino_scout.power import HOLDER_NEXUS, get_guard
+
+        guard = get_guard()
+        # 重连窗口也要压住：release 只在进程退出。绑 active_runs 会让待命时睡着。
+        guard.acquire(HOLDER_NEXUS)
+        try:
+            backoff = _BACKOFF_START
+            while not self._stop.is_set():
+                try:
+                    await self._connect_once()
+                    backoff = _BACKOFF_START  # 成功连过一次就重置
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    SLog.w(TAG, f"连接断开/失败: {type(exc).__name__}: {exc}")
+                if self._stop.is_set():
+                    break
+                # 加抖动，避免多节点同时重连打爆 Nexus
+                wait = min(backoff, _BACKOFF_MAX) * (0.8 + 0.4 * random.random())
+                SLog.i(TAG, f"{wait:.1f}s 后重连 {self.nexus_url}")
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=wait)
+                except asyncio.TimeoutError:
+                    pass
+                guard.keepalive()
+                backoff = min(backoff * 2, _BACKOFF_MAX)
+        finally:
+            guard.release(HOLDER_NEXUS)
 
     def stop(self) -> None:
         self.request_shutdown()
@@ -281,6 +290,9 @@ class NodeTransport:
 
     async def _tick_heartbeat(self) -> None:
         """心跳时重探 adb / 本机设备，把热插拔放进 device_delta。"""
+        from mino_scout.power import get_guard
+
+        get_guard().keepalive()
         devices: Optional[list[P.DeviceManifest]]
         try:
             devices = await asyncio.to_thread(self.core.discover_devices)
