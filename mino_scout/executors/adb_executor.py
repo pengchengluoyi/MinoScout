@@ -72,6 +72,39 @@ def scale_to_display(
         y = max(0, min(dh - 1, y))
     return x, y
 
+
+_MILLI_MAX = 1000
+
+
+def _looks_like_milli(x: int, y: int) -> bool:
+    return 0 <= x <= _MILLI_MAX and 0 <= y <= _MILLI_MAX
+
+
+def milli_to_shot_pixels(
+    x: int,
+    y: int,
+    *,
+    shot: tuple[int, int],
+    display: tuple[int, int] = (0, 0),
+) -> tuple[int, int]:
+    """EXECUTE 协议 0–1000 千分比 → 截图像素（对齐 PlaywrightExecutor._xy）。"""
+    if not _looks_like_milli(x, y):
+        return x, y
+    sw, sh = shot
+    if sw <= 0 or sh <= 0:
+        sw, sh = display
+    if sw <= 0 or sh <= 0 or max(sw, sh) <= _MILLI_MAX:
+        return x, y
+    return int(round(x / _MILLI_MAX * sw)), int(round(y / _MILLI_MAX * sh))
+
+
+def map_protocol_xy_to_display(
+    x: int, y: int, *, shot: tuple[int, int], display: tuple[int, int]
+) -> tuple[int, int]:
+    """千分比或截图像素 → wm/input 坐标。"""
+    px, py = milli_to_shot_pixels(x, y, shot=shot, display=display)
+    return scale_to_display(px, py, shot=shot, display=display)
+
 # capability_id → 内部处理方法（有专属 Python 实现的）
 _SUPPORTED_CAPS: set[str] = {
     "launch_app",
@@ -685,15 +718,25 @@ class AdbExecutor:
         if x is None or y is None:
             return None, None, audit, "none"
         x, y = int(x), int(y)
+        from mino_scout.screen import last_capture_size
+
+        shot = last_capture_size(serial)
+        display = self._wm_size(serial)
+        px, py = milli_to_shot_pixels(x, y, shot=shot, display=display)
+        snap_x, snap_y = scale_to_display(px, py, shot=shot, display=display)
         dump = H.dump_ui_nodes(serial)
         if dump.ok:
-            snapped = H.snap_point(dump.nodes, x, y)
+            snapped = H.snap_point(dump.nodes, snap_x, snap_y)
             if snapped is not None:
                 sx, sy, extra = snapped
                 audit = {**audit, **extra}
-                SLog.i(TAG, f"snap tap ({x},{y}) → ({sx},{sy}) {extra.get('snap', {}).get('how')}")
+                SLog.i(
+                    TAG,
+                    f"snap tap ({x},{y}) milli→({snap_x},{snap_y}) → ({sx},{sy}) "
+                    f"{extra.get('snap', {}).get('how')}",
+                )
                 return sx, sy, audit, "snap"
-        return x, y, audit, "fallback_xy" if audit else "xy"
+        return px, py, audit, "fallback_xy" if audit else "xy"
 
     def _wm_size(self, serial: str) -> tuple[int, int]:
         hit = _WM_CACHE.get(serial)
@@ -709,8 +752,9 @@ class AdbExecutor:
     def _map_to_display(self, serial: str, x: int, y: int) -> tuple[int, int]:
         from mino_scout.screen import last_capture_size
 
-        return scale_to_display(
-            x, y, shot=last_capture_size(serial), display=self._wm_size(serial),
+        display = self._wm_size(serial)
+        return map_protocol_xy_to_display(
+            x, y, shot=last_capture_size(serial), display=display,
         )
 
     def _inject_tap(
