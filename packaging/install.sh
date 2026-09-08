@@ -203,8 +203,31 @@ install_source() {
 # 刻意在动载荷**之前**停：替换正在运行的可执行文件与 _internal 会让当前进程
 # 崩在半路（分层前的脚本也有这个问题，顺手修掉）。
 stop_running() {
+  local candidate=""
+  if [[ -x "$DEST/mino-scout" ]]; then
+    candidate="$DEST/mino-scout"
+  elif [[ -x "$PREFIX/venv/bin/mino-scout" ]]; then
+    candidate="$PREFIX/venv/bin/mino-scout"
+  fi
+  if [[ -n "$candidate" ]]; then
+    "$candidate" stop >/dev/null 2>&1 || true
+    local pid_file="$PREFIX/scout.pid"
+    if [[ -f "$pid_file" ]]; then
+      local pid
+      pid="$(tr -d '[:space:]' < "$pid_file" 2>/dev/null || true)"
+      if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" >/dev/null 2>&1; then
+        kill -TERM "$pid" >/dev/null 2>&1 || true
+        sleep 0.5
+        kill -0 "$pid" >/dev/null 2>&1 && kill -KILL "$pid" >/dev/null 2>&1 || true
+      fi
+    fi
+  fi
   if [[ "$(uname -s)" == "Darwin" ]]; then
-    local plist
+    local uid target plist
+    uid="$(id -u)"
+    target="gui/${uid}/com.mino.scout"
+    launchctl kill SIGTERM "$target" >/dev/null 2>&1 || true
+    launchctl bootout "$target" >/dev/null 2>&1 || true
     for plist in "$HOME/Library/LaunchAgents/com.mino.scout.plist" \
                  "/Library/LaunchDaemons/com.mino.scout.plist"; do
       [[ -f "$plist" ]] || continue
@@ -284,8 +307,14 @@ elif [[ "$(uname -s)" == "Darwin" ]]; then
   else
     PLIST="$HOME/Library/LaunchAgents/com.mino.scout.plist"
     write_launchd "$PLIST"
+    uid="$(id -u)"
+    target="gui/${uid}/com.mino.scout"
+    launchctl bootout "$target" >/dev/null 2>&1 || true
     launchctl unload "$PLIST" >/dev/null 2>&1 || true
-    launchctl load "$PLIST"
+    launchctl bootstrap "gui/${uid}" "$PLIST" >/dev/null 2>&1 \
+      || launchctl load "$PLIST"
+    launchctl kickstart -k "$target" >/dev/null 2>&1 \
+      || launchctl load "$PLIST"
     echo "Registered LaunchAgent: $PLIST"
   fi
 elif command -v systemctl >/dev/null 2>&1; then

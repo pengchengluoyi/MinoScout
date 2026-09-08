@@ -195,6 +195,13 @@ function Install-Source {
 
 # 刻意在动载荷**之前**停：替换正在运行的 exe 与 _internal 会让当前进程崩在半路，
 # Windows 上更直接 —— 文件被占用时改名会失败。
+$candidateBin = @(
+  (Join-Path $Prefix "bin\mino-scout.exe"),
+  (Join-Path $Prefix "venv\Scripts\mino-scout.exe")
+) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if ($candidateBin) {
+  try { & $candidateBin stop 2>$null | Out-Null } catch { }
+}
 try {
   Stop-ScheduledTask -TaskName "Mino Scout" -ErrorAction SilentlyContinue | Out-Null
 } catch { }
