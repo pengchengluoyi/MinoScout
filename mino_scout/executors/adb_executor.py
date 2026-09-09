@@ -457,15 +457,27 @@ class AdbExecutor:
             error=res.get("stderr") or "", raw_response={"stdout": (res.get("stdout") or "")[:2000]},
         )
 
+    def _getprop(self, serial: str, prop: str) -> str:
+        rc, out, _err = self._adb_shell(serial, "getprop", prop)
+        if rc == 0:
+            return (out or "").strip()
+        return ""
+
     def _read_device_data(self, event, ctx, serial, started_at, t0):
-        key = (event.params or {}).get("key") or "model"
-        # 简单映射几个常用 getprop
+        key = str((event.params or {}).get("key") or "sim").strip().lower()
+        if key in ("sim", "sim_card", "sim_status", "sim_state"):
+            return self._read_sim_bundle(event, serial, started_at, t0)
+        if key in ("esim", "e_sim", "euicc"):
+            return self._read_esim_info(event, serial, started_at, t0)
         prop_map = {
             "model": "ro.product.model",
             "brand": "ro.product.brand",
             "android_version": "ro.build.version.release",
             "sdk": "ro.build.version.sdk",
             "abi": "ro.product.cpu.abi",
+            "sim_state": "gsm.sim.state",
+            "operator": "gsm.operator.alpha",
+            "phone_number": "gsm.line1.number",
         }
         prop = prop_map.get(key, key)
         rc, out, err = self._adb_shell(serial, "getprop", prop)
@@ -475,11 +487,110 @@ class AdbExecutor:
             return make_event_result(
                 event, status=EventStatus.PASS, executor_used=self.id, started_at=started_at,
                 elapsed_ms=elapsed, summary=f"{key}={value}",
-                raw_response={"key": key, "value": value},
+                raw_response={"key": key, "value": value, "prop": prop},
             )
         return make_event_result(
             event, status=EventStatus.FAIL, executor_used=self.id, started_at=started_at,
             elapsed_ms=elapsed, summary=f"读取 {key} 失败", error=err or out,
+        )
+
+    def _read_sim_bundle(self, event, serial, started_at, t0) -> EventResult:
+        fields: dict[str, str] = {}
+        for label, prop in (
+            ("sim_state", "gsm.sim.state"),
+            ("operator", "gsm.operator.alpha"),
+            ("sim_operator", "gsm.sim.operator.alpha"),
+            ("operator_numeric", "gsm.operator.numeric"),
+            ("phone_number", "gsm.line1.number"),
+        ):
+            val = self._getprop(serial, prop)
+            if val:
+                fields[label] = val
+
+        sub_count = 0
+        rc, out, _err = self._adb_shell(serial, "dumpsys", "telephony.registry")
+        if rc == 0 and out:
+            slots = set(re.findall(r"mSlotId=(\d+)", out))
+            if slots:
+                sub_count = len(slots)
+            elif "mCallState" in out:
+                sub_count = max(1, out.count("mCallState="))
+
+        states = [
+            s.strip().upper()
+            for s in re.split(r"[,;]", fields.get("sim_state", ""))
+            if s.strip()
+        ]
+        ready = any(s in ("READY", "LOADED", "PIN_REQUIRED", "PUK_REQUIRED", "NETWORK_LOCKED") for s in states)
+        absent = not states or all(s == "ABSENT" for s in states)
+
+        parts: list[str] = []
+        if ready:
+            parts.append("sim=READY")
+        elif absent:
+            parts.append("sim=ABSENT")
+        else:
+            parts.append(f"sim={fields.get('sim_state', 'UNKNOWN')}")
+        op = fields.get("sim_operator") or fields.get("operator")
+        if op:
+            parts.append(f"operator={op}")
+        phone = fields.get("phone_number")
+        if phone:
+            parts.append(f"phone={phone}")
+        if sub_count:
+            parts.append(f"slots={sub_count}")
+
+        elapsed = int((time.time() - t0) * 1000)
+        return make_event_result(
+            event, status=EventStatus.PASS, executor_used=self.id, started_at=started_at,
+            elapsed_ms=elapsed, summary="; ".join(parts) if parts else "sim=unknown",
+            raw_response={
+                "key": "sim",
+                "fields": fields,
+                "ready": ready,
+                "absent": absent,
+                "sub_count": sub_count,
+            },
+        )
+
+    def _read_esim_info(self, event, serial, started_at, t0) -> EventResult:
+        fields: dict[str, str] = {}
+        for label, prop in (
+            ("euicc", "ro.boot.euicc"),
+            ("euicc_enabled", "persist.sys.euicc.enabled"),
+        ):
+            val = self._getprop(serial, prop)
+            if val:
+                fields[label] = val
+
+        profiles: list[str] = []
+        rc, out, _err = self._adb_shell(serial, "dumpsys", "euicc")
+        if rc == 0 and out:
+            for m in re.finditer(r"(?:Profile nickname|Nickname):\s*(.+)", out):
+                name = m.group(1).strip()
+                if name:
+                    profiles.append(name)
+            if not profiles and "EuiccService" in out:
+                fields["euicc_service"] = "present"
+
+        parts: list[str] = []
+        if profiles:
+            parts.append(f"esim_profiles={len(profiles)}")
+            parts.append(f"names={','.join(profiles[:3])}")
+        elif fields.get("euicc") or fields.get("euicc_service"):
+            parts.append("esim=supported")
+        else:
+            parts.append("esim=none")
+
+        sim_state = self._getprop(serial, "gsm.sim.state")
+        if sim_state:
+            parts.append(f"sim_state={sim_state}")
+
+        elapsed = int((time.time() - t0) * 1000)
+        return make_event_result(
+            event, status=EventStatus.PASS, executor_used=self.id, started_at=started_at,
+            elapsed_ms=elapsed, summary="; ".join(parts),
+            raw_response={"key": "esim", "fields": fields, "profiles": profiles, "sim_state": sim_state},
         )
 
     def _get_app_version(self, event, ctx, serial, started_at, t0):
