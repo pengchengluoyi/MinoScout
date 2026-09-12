@@ -176,7 +176,7 @@ Nexus 收到后：`provides` ∩ 能力目录 → 该节点可执行的 capabili
 | `sn` | 设备串号；web/playwright 可为槽位 sn 或字面 `playwright` |
 | `executor_order` | **由 Nexus 按这台 `sn` 算好**，只含该设备适用的通道（Web 不得含 `adb`，安卓/iOS 不得含 `playwright`）。同设备内的 fallback（如同一部安卓的 `adb`→`remote`）可以是列表；**禁止把不同类型设备的通道排进同一条链。** 非空时 Scout 只在该 `sn` 上按序尝试，类型不符的 executor **declined，不碰设备**。空则按 **该 sn 的 platform** 填：android→`adb,remote`，ios→`ios_wda`，web/playwright→`playwright`。**禁止** other 四通道混排 |
 | `low_level` | 抄自能力目录 YAML 的 `low_level` 段。`{x}` 这类占位符由 Scout 用 `params` 填充 |
-| `device_hint` | Nexus 注入的设备凭据，避免 Scout 回查。**含敏感字段，不得写入 Scout 的日志** |
+| `device_hint` | Nexus 注入的设备凭据，避免 Scout 回查。Web 可含 `headless: true`（Chromium 无头）。**含敏感字段，不得写入 Scout 的日志** |
 | `timeout_sec` | 本动作上限。超时回 `fail`，见 §6 |
 
 **幂等**：`(run_id, step_idx)` 是唯一键。Scout 必须缓存已完成的 `(run_id, step_idx) → RESULT`（建议保留至该 run 结束或 10 分钟），重复收到时**直接返回缓存结果，不重新执行**。`step_idx < 0` 不做幂等（截图/探活/框架事件每次都要发生）。
@@ -206,6 +206,67 @@ Nexus 收到后：`provides` ∩ 能力目录 → 该节点可执行的 capabili
 `node.stop` / `node.restart`：Scout core 在 RESULT 的内部 extra 里打标记，transport 回完 RESULT 后再 shutdown。**不能靠 `node.stop` 启动一台已经离线的专机。**
 
 S→N 的框架事件可丢（超时未等到 RESULT 时 Scout 只记 warn）；权威状态以 `HEARTBEAT.device_delta` 为准。
+
+#### 4.4.2 `hierarchy` 的 RESULT 形状（NavFSM 依赖，两仓钉死）
+
+`hierarchy` 是**结构化**的，不是一坨文本。`RESULT.data["nodes"]` 是节点数组，
+`RESULT.extra["nodes"]` 是同一份数据的镜像（Scout 侧 `_result_from_event` 同时填两处），
+接收方读任一即可，**不要**假设只有其中一个存在。
+
+```json
+{
+  "status": "pass",
+  "summary": "UI 层级 128 节点",
+  "executor_used": "adb",
+  "data": {
+    "source": "adb",
+    "elapsed_ms": 41,
+    "nodes": [
+      {
+        "resource_id": "com.example.app:id/tab_feed",
+        "text": "Tab A",
+        "content_desc": "",
+        "class": "android.widget.TextView",
+        "clickable": true,
+        "bounds": [0, 1848, 270, 1968],
+        "center": [135, 1908]
+      }
+    ]
+  },
+  "extra": {"nodes": [/* 同上 */]}
+}
+```
+
+| 字段 | 规定 |
+|---|---|
+| `hierarchy_format` | **`accessibility_json`**。这是本协议唯一的 hierarchy 形态；`flat_text` / `xml_dump` 不是协议形态，只能是接收方自己派生的展示文本 |
+| `nodes[].resource_id` | 完整 id，含被测应用包名前缀（`{package}:id/...`）。可能为空串 |
+| `nodes[].text` / `content_desc` | 可见文本 / 无障碍描述。可能为空串 |
+| `nodes[].class` | 控件类名全称 |
+| `nodes[].clickable` | 布尔 |
+| `nodes[].bounds` | `[left, top, right, bottom]` |
+| `nodes[].center` | `[x, y]` |
+| `data.source` | 采集**通道** id，当前恒为 `adb`（与 `executor_used` 同值）。Scout 内部的 dump 来源（u2 / exec-out / 落盘）只进 Scout 日志，不上协议 |
+| `data.elapsed_ms` | 本次 dump 耗时 |
+
+> **坐标体系警告**：`bounds` / `center` 是**设备像素**，与 §4.4 里 `params` 的 **0–1000 千分比**
+> **不是同一个体系**。拿 hierarchy 的坐标直接塞进 `tap_element.params` 会点偏。要换算的一方自己按
+> `RESULT.width` / `height`（截图报的原图尺寸）折算。
+
+**通道限制与失败语义**：
+
+| 场景 | 行为 |
+|---|---|
+| web / playwright 槽 | `status=fail`，`error` 说明没有安卓 UI hierarchy |
+| 非 adb 序列号（如远程 `claw-` 设备） | `status=fail`；`remote` / `ios_wda` 通道待后续版本 |
+| dump 失败（设备忙 / agent 挂） | `status=fail`，`error` 汇总各来源的失败原因 |
+
+`hierarchy` 是观察类能力，`step_idx=-1`，**不做幂等缓存**。Scout 侧有 1.5s 的 TTL dump 缓存，
+动作执行后会主动失效；调用方要最新一帧就跟在动作之后取。
+
+Nexus 侧收到 `fail` 时**不得**让本 turn 失败：按 `docs/NAVIGATION_ATLAS.md` §10.0.2 降级
+（`hierarchy_text` 置空、localize 退回 session + history、GuardGate 本 turn 不 block）。
+
 
 ### 4.5 `RESULT`（双向）
 
@@ -324,7 +385,7 @@ sequenceDiagram
 契约真源：`tests/fixtures/protocol/`。两仓必须一致。
 
 ```
-fixtures_sha256 = c526991528d382c675e0b33dcfa02b4203ebaabb2314135c03b397591a400894
+fixtures_sha256 = cc5068f5ac2c9f777479bd88ee548c4822045212bd11608c43cd5848d4526d42
 ```
 
 两仓各自确认：① `protocol.py` 能 round-trip 全部 fixture；② fixture 目录哈希与上面记录一致。
