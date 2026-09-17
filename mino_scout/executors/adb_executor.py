@@ -123,6 +123,7 @@ _SUPPORTED_CAPS: set[str] = {
     "long_press_element",
     "input_text",
     "exec_script",
+    "set_input_method",
 }
 
 
@@ -230,6 +231,8 @@ class AdbExecutor:
                 return self._input_text(event, ctx, serial, started_at, t0)
             if cap == "exec_script":
                 return self._exec_script(event, ctx, serial, started_at, t0)
+            if cap == "set_input_method":
+                return self._set_input_method(event, ctx, serial, started_at, t0)
             # 兜底：capability 未写 Python 分支时，按 yaml 里的 low_level 声明执行。
             # 这条分支让"只加 yaml 就多一个能力"成真（见 docs/plan-skill-packs-and-console.md §3.1）。
             return self._run_declared_low_level(event, ctx, serial, started_at, t0)
@@ -759,6 +762,33 @@ class AdbExecutor:
         return make_event_result(
             event, status=EventStatus.FAIL, executor_used=self.id, started_at=started_at,
             elapsed_ms=elapsed, summary="长按失败", error=err or out, raw_response=audit,
+        )
+
+    def _set_input_method(self, event, ctx, serial, started_at, t0):
+        from mino_scout.adb_ime import ensure_adb_keyboard, resolve_target_ime
+
+        target = resolve_target_ime(event.params or {})
+        outcome = ensure_adb_keyboard(serial, target_ime=target)
+        elapsed = int((time.time() - t0) * 1000)
+        if outcome.get("ok"):
+            return make_event_result(
+                event,
+                status=EventStatus.PASS,
+                executor_used=self.id,
+                started_at=started_at,
+                elapsed_ms=elapsed,
+                summary=str(outcome.get("summary") or "输入法已切换"),
+                raw_response=outcome,
+            )
+        return make_event_result(
+            event,
+            status=EventStatus.FAIL,
+            executor_used=self.id,
+            started_at=started_at,
+            elapsed_ms=elapsed,
+            summary="切换输入法失败",
+            error=str(outcome.get("error") or "unknown"),
+            raw_response=outcome,
         )
 
     def _input_text(self, event, ctx, serial, started_at, t0):

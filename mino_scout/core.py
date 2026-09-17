@@ -28,7 +28,7 @@ from mino_scout.schemas import CapturedScreen, EventResult, EventStatus, PlanEve
 
 TAG = "ScoutCore"
 
-SCOUT_VERSION = "0.1.18"
+SCOUT_VERSION = "0.1.19"
 
 # 幂等缓存保留时长。CONVENTIONS.md §5：该 run 结束或 10 分钟，取先到者。
 _IDEMPOTENT_TTL_SEC = 600.0
@@ -350,6 +350,28 @@ class ScoutCore:
     def discover_devices(self) -> list[P.DeviceManifest]:
         """只重探设备，不重跑 executor probe。心跳热插拔走这里。"""
         return _discover_devices(self.executors, scout_id=self.node_id)
+
+    def ensure_android_adb_keyboard_on_startup(self) -> list[dict[str, Any]]:
+        """进程启动后（REGISTER 前）检查已连接的 Android 设备默认输入法。"""
+        from mino_scout.adb_ime import ensure_adb_keyboard
+
+        if "adb" not in self.executors:
+            return []
+        outcomes: list[dict[str, Any]] = []
+        for dev in self.discover_devices():
+            if str(dev.platform or "").lower() != "android":
+                continue
+            ch = dict(dev.channels or {})
+            if str(ch.get("adb") or "") != "connected":
+                continue
+            serial = str(dev.sn or "").strip()
+            if not serial:
+                continue
+            outcome = ensure_adb_keyboard(serial)
+            outcomes.append(outcome)
+            if not outcome.get("ok"):
+                SLog.w(TAG, f"启动输入法检查 {serial}: {outcome.get('error')}")
+        return outcomes
 
     # ---------------- CANCEL ----------------
 

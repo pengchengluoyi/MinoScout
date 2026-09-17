@@ -203,6 +203,8 @@ class NodeTransport:
         # manifest() 会跑连通性探测，里面有阻塞调用；playwright 的 sync API
         # 更是**明确拒绝在事件循环里被调用**（"Please use the Async API instead"）。
         # 必须丢线程池 —— 直接 await 会让 playwright 永远上报不可用。
+        if not self._seen_register:
+            await asyncio.to_thread(self.core.ensure_android_adb_keyboard_on_startup)
         execs, devices = await asyncio.to_thread(self.core.manifest)
         from mino_scout.config import resolve_hostname, resolve_studio_id
 
