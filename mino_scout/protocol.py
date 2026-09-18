@@ -112,6 +112,8 @@ class Registered:
     heartbeat_interval_sec: int = 15
     reason: str = ""
     warnings: list[str] = field(default_factory=list)
+    node_id: str = ""
+    node_token: str = ""
 
 
 @dataclass
@@ -209,7 +211,7 @@ def _encode(value: Any) -> Any:
             raw = getattr(value, f.name)
             if f.name == "data" and not raw:
                 continue
-            if f.name in ("device_id", "platform") and not raw:
+            if f.name in ("device_id", "platform", "node_id", "node_token") and not raw:
                 continue
             out[f.name] = _encode(raw)
         return out

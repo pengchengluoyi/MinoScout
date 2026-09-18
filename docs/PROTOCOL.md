@@ -124,9 +124,16 @@ Nexus 收到后：`provides` ∩ 能力目录 → 该节点可执行的 capabili
   "heartbeat_interval_sec": 15,
   "nexus_version": "0.1.0",
   "protocol_version": 2,
-  "warnings": ["device claw-abc123 未在 Nexus 侧登记，已自动创建"]
+  "warnings": ["device claw-abc123 未在 Nexus 侧登记，已自动创建"],
+  "node_id": "3f8a1c0e9b2d4f71",
+  "node_token": "<long-lived>"
 }
 ```
+
+| 字段 | 说明 |
+|---|---|
+| `node_id` | 可选。Nexus 重分配 id 时下发；Scout 写入 `config.scout_id` |
+| `node_token` | 可选。首次用安装凭证 REGISTER 成功后换发的长期 token；Scout 写入 `config.token` 并替换安装凭证 |
 
 `accepted: false` 时必须给 `reason`，Scout 记录后按退避重连（不要立刻重试，避免打爆）。
 

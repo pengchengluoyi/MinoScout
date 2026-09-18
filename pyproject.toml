@@ -1,6 +1,6 @@
 [project]
 name = "mino-scout"
-version = "0.1.19"
+version = "0.1.20"
 description = "MinoScout — 执行器：接收 MinoNexus 下发的动作，操作设备，回报结果"
 requires-python = ">=3.12"
 
@@ -12,7 +12,7 @@ dependencies = [
   "adbutils>=2.11",       # adb 通道
   "uiautomator2>=3.5",    # Android UI 层级
   "facebook-wda>=1.4",    # iOS WDA
-  "playwright>=1.55",     # Web 通道
+  "playwright==1.49.1",   # 锁定 Chromium revision，避免 CI 日漂导致 browser/runtime 不一致
   "pillow>=12.0",         # 截图尺寸/格式处理（不做识别）
   "numpy>=2.2",           # shot_is_blank 的均值/标准差判据（不做识别）
   "httpx>=0.28",          # executors/adb_command.py：按 URL 流式下载 APK（非 LLM，见 verify_no_llm.py）

@@ -50,6 +50,12 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def set_nexus_url(url: str, path: Path | None = None) -> Path:
+    cfg = load_config(path)
+    cfg["nexus_url"] = str(url or "").strip()
+    return save_config(cfg, path)
+
+
 def save_config(data: dict[str, Any], path: Path | None = None) -> Path:
     target = path or config_path()
     target.parent.mkdir(parents=True, exist_ok=True)

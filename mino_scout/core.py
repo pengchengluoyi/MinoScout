@@ -28,10 +28,13 @@ from mino_scout.schemas import CapturedScreen, EventResult, EventStatus, PlanEve
 
 TAG = "ScoutCore"
 
-SCOUT_VERSION = "0.1.19"
+SCOUT_VERSION = "0.1.20"
 
 # 幂等缓存保留时长。CONVENTIONS.md §5：该 run 结束或 10 分钟，取先到者。
 _IDEMPOTENT_TTL_SEC = 600.0
+
+# adb 已连接但默认输入法被改回系统键盘时，心跳里复检（手机重启后常见）。
+_ADB_IME_DRIFT_CHECK_SEC = 300.0
 
 # executor_order 为空时按 **这台设备的 platform** 填。禁止把 adb 和 playwright 排进同一条链。
 _PLATFORM_EXECUTOR_ORDER: dict[str, tuple[str, ...]] = {
@@ -68,6 +71,42 @@ _NODE_COMMANDS = {
     "node.update": "update",
 }
 
+
+def _adb_channel_state(dev: P.DeviceManifest) -> str:
+    return str(dict(dev.channels or {}).get("adb") or "").strip().lower()
+
+
+def connected_android_adb_serials(devices: list[P.DeviceManifest]) -> list[str]:
+    out: list[str] = []
+    for dev in devices:
+        if str(dev.platform or "").lower() != "android":
+            continue
+        if _adb_channel_state(dev) != "connected":
+            continue
+        sn = str(dev.sn or "").strip()
+        if sn:
+            out.append(sn)
+    return out
+
+
+def serials_adb_just_connected(
+    prev: dict[str, P.DeviceManifest],
+    now: list[P.DeviceManifest],
+) -> list[str]:
+    """adb 从非 connected → connected（含重连后出现的新 serial）。"""
+    current = {d.sn: d for d in now if str(d.sn or "").strip()}
+    serials: list[str] = []
+    for sn, dev in current.items():
+        if str(dev.platform or "").lower() != "android":
+            continue
+        if _adb_channel_state(dev) != "connected":
+            continue
+        old = prev.get(sn)
+        if old is None or _adb_channel_state(old) != "connected":
+            serials.append(sn)
+    return serials
+
+
 class ScoutCore:
     def __init__(self, executors: dict[str, Executor], *, node_id: str = ""):
         from mino_scout.config import resolve_scout_id, sanitize_scout_id
@@ -87,6 +126,7 @@ class ScoutCore:
         # Playwright sync API 必须始终在同一条线程里用。8 路通用池会把
         # launch_app 和 screenshot 拆到不同 worker，下一帧就是「没有打开的页面」。
         self._pw_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="scout-pw")
+        self._adb_ime_last_check: dict[str, float] = {}
 
     # ---------------- EXECUTE（唯一 dispatch） ----------------
 
@@ -353,24 +393,61 @@ class ScoutCore:
 
     def ensure_android_adb_keyboard_on_startup(self) -> list[dict[str, Any]]:
         """进程启动后（REGISTER 前）检查已连接的 Android 设备默认输入法。"""
+        if "adb" not in self.executors:
+            return []
+        serials = connected_android_adb_serials(self.discover_devices())
+        return self.ensure_adb_keyboard_for_serials(serials, reason="startup")
+
+    def ensure_adb_keyboard_for_serials(
+        self,
+        serials: list[str],
+        *,
+        reason: str = "",
+    ) -> list[dict[str, Any]]:
         from mino_scout.adb_ime import ensure_adb_keyboard
 
         if "adb" not in self.executors:
             return []
         outcomes: list[dict[str, Any]] = []
-        for dev in self.discover_devices():
-            if str(dev.platform or "").lower() != "android":
+        tag = f"{reason} " if reason else ""
+        now = time.time()
+        for serial in serials:
+            sid = str(serial or "").strip()
+            if not sid:
                 continue
-            ch = dict(dev.channels or {})
-            if str(ch.get("adb") or "") != "connected":
-                continue
-            serial = str(dev.sn or "").strip()
-            if not serial:
-                continue
-            outcome = ensure_adb_keyboard(serial)
+            self._adb_ime_last_check[sid] = now
+            outcome = ensure_adb_keyboard(sid)
             outcomes.append(outcome)
             if not outcome.get("ok"):
-                SLog.w(TAG, f"启动输入法检查 {serial}: {outcome.get('error')}")
+                SLog.w(TAG, f"{tag}输入法检查 {sid}: {outcome.get('error')}")
+        return outcomes
+
+    def ensure_adb_keyboard_drift_check(self, devices: list[P.DeviceManifest]) -> list[dict[str, Any]]:
+        """adb 仍在线但 default IME 被改走时拉回 ADB Keyboard（节流）。"""
+        from mino_scout.adb_ime import ADB_KEYBOARD_IME_ID, current_default_ime, ensure_adb_keyboard
+
+        if "adb" not in self.executors:
+            return []
+        now = time.time()
+        outcomes: list[dict[str, Any]] = []
+        for sid in connected_android_adb_serials(devices):
+            last = self._adb_ime_last_check.get(sid, 0.0)
+            if now - last < _ADB_IME_DRIFT_CHECK_SEC:
+                continue
+            self._adb_ime_last_check[sid] = now
+            try:
+                current = current_default_ime(sid)
+            except Exception as exc:
+                SLog.w(TAG, f"读取默认输入法 {sid}: {exc}")
+                continue
+            if current == ADB_KEYBOARD_IME_ID:
+                continue
+            outcome = ensure_adb_keyboard(sid)
+            outcomes.append(outcome)
+            if outcome.get("ok"):
+                SLog.i(TAG, f"心跳复检输入法 {sid}: {outcome.get('summary') or '已校正'}")
+            elif not outcome.get("ok"):
+                SLog.w(TAG, f"心跳复检输入法 {sid}: {outcome.get('error')}")
         return outcomes
 
     # ---------------- CANCEL ----------------

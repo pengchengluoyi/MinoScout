@@ -266,6 +266,7 @@ write_launchd() {
   <key>ProgramArguments</key>
   <array>
     <string>${BIN}</string>
+    <string>run</string>
   </array>
   <key>WorkingDirectory</key>
   <string>${PREFIX}</string>
@@ -332,7 +333,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${BIN}
+ExecStart=${BIN} run
 WorkingDirectory=${PREFIX}
 Restart=on-failure
 RestartSec=5

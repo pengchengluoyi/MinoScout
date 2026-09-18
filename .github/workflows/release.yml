@@ -145,5 +145,6 @@ jobs:
           files: |
             dist/*.zip
             dist/manifest.json
+            packaging/bootstrap.sh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

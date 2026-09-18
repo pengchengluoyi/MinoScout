@@ -7,6 +7,7 @@ Crashed / on-failure，正常退出不会被拉起来。
 """
 from __future__ import annotations
 
+import json
 import os
 import signal
 import time
@@ -71,6 +72,75 @@ def pid_alive(pid: int) -> bool:
             except OSError:
                 pass
     return True
+
+
+def public_status() -> dict[str, Any]:
+    """不含 token 明文，供裸 `mino-scout` 默认输出。"""
+    st = collect_status()
+    st.pop("has_token", None)
+    return st
+
+
+def cmd_public_status() -> int:
+    print(json.dumps(public_status(), ensure_ascii=False, indent=2))
+    return 0
+
+
+def try_start_service(*, wait_sec: float = 4.0) -> int:
+    """拉起 launchd / systemd；未注册服务时在后台 exec `mino-scout run`。"""
+    import subprocess
+    import sys
+
+    if pid_alive(read_pid()):
+        return cmd_public_status()
+
+    started = False
+    if sys.platform == "darwin":
+        uid = os.getuid()
+        target = f"gui/{uid}/com.mino.scout"
+        for cmd in (
+            ["launchctl", "kickstart", "-k", target],
+            ["launchctl", "bootstrap", f"gui/{uid}", str(Path.home() / "Library/LaunchAgents/com.mino.scout.plist")],
+        ):
+            try:
+                subprocess.run(cmd, capture_output=True, timeout=15)
+                started = True
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+    elif sys.platform.startswith("linux"):
+        for cmd in (
+            ["systemctl", "--user", "start", "mino-scout.service"],
+            ["systemctl", "start", "mino-scout.service"],
+        ):
+            try:
+                r = subprocess.run(cmd, capture_output=True, timeout=15)
+                if r.returncode == 0:
+                    started = True
+                    break
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+
+    deadline = time.time() + max(0.5, wait_sec)
+    while time.time() < deadline:
+        if pid_alive(read_pid()):
+            return cmd_public_status()
+        time.sleep(0.25)
+
+    if not started:
+        SLog.i(TAG, "未找到系统服务，后台启动 mino-scout run")
+        subprocess.Popen(
+            [sys.executable, "-m", "mino_scout", "run"],
+            start_new_session=True,
+            close_fds=True,
+        )
+        while time.time() < deadline:
+            if pid_alive(read_pid()):
+                return cmd_public_status()
+            time.sleep(0.25)
+
+    st = public_status()
+    print(json.dumps(st, ensure_ascii=False, indent=2))
+    return 0 if st.get("running") else 1
 
 
 def collect_status() -> dict[str, Any]:

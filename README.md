@@ -13,7 +13,7 @@ MinoScout 是 [MiniOrangeServer](../MiniOrangeServer) 拆分出的「手脚」�
 | 按 Nexus 给的 `executor_order` 依次尝试执行 | 不碰数据库 —— 没有 ORM、没有落库 |
 | 主动 dial Nexus 的常驻节点（反向连接） | 不读能力目录 YAML —— 能力声明在 Nexus |
 | 上报「我这台机器能干什么、挂了哪些设备」 | 不监听对外端口 |
-| Android：进程启动时自检默认输入法，必要时**下载并安装** ADB Keyboard 再切换 | 安装需设备允许 adb 侧载（`-t`）；可用环境变量改 APK 源或关闭自动安装 |
+| Android：启动与 **adb 重连**（含手机重启后）自检默认输入法，必要时**下载并安装** ADB Keyboard 再切换；已连接设备约每 5 分钟复检是否被系统键盘改回 | 安装需设备允许 adb 侧载（`-t`）；可用环境变量改 APK 源或关闭自动安装 |
 
 **一句话边界：MinoScout 只回答两个问题 —— 「屏幕现在是什么样」和「这个动作做完了没有」。**
 
@@ -26,6 +26,8 @@ ADB Keyboard 默认从 GitHub 拉取并缓存在 Scout 配置目录的 `cache/AD
 | `MINO_SCOUT_ADB_KEYBOARD_AUTO_INSTALL` | 默认 `1`；设为 `0` 则未安装时只报错不下载 |
 | `MINO_SCOUT_ADB_KEYBOARD_APK_URL` | 覆盖下载 URL |
 | `MINO_SCOUT_ADB_KEYBOARD_APK_PATH` | 使用本机已有 APK，跳过下载 |
+
+远程专机安装（不装 Studio）：在 [Mino Studio](https://github.com/pengchengluoyi/MinoStudio) Scout 节点页 **复制远程安装命令**，在执行机粘贴；脚本来自 GitHub Release 的 `bootstrap.sh`（同 tag），Nexus 只发安装凭证。
 
 ## 快速开始
 

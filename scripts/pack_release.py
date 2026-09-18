@@ -185,7 +185,7 @@ def _self_check_binary(dist: Path) -> None:
 def layer_keys(frozen: Path, ver: str, osn: str, arch: str) -> dict[str, str]:
     return {
         "app": ver,
-        "runtime": L.runtime_key(osn, arch),
+        "runtime": L.runtime_key(osn, arch, frozen=frozen),
         "browser": L.browser_key(frozen / "ms-playwright"),
     }
 

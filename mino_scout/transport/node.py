@@ -47,6 +47,27 @@ def _msg_id() -> str:
     return f"{int(time.time() * 1000):013d}{_seq:06d}"
 
 
+def _apply_registered_credentials(reg: P.Registered, core: ScoutCore, transport: NodeTransport) -> None:
+    from mino_scout.config import load_config, sanitize_scout_id, save_config
+
+    cfg = load_config()
+    changed = False
+    new_id = sanitize_scout_id(str(getattr(reg, "node_id", "") or ""))
+    if new_id and new_id != core.node_id:
+        core.node_id = new_id
+        core.scout_id = new_id
+        cfg["scout_id"] = new_id
+        changed = True
+        current_node_id.set(new_id)
+    new_tok = str(getattr(reg, "node_token", "") or "").strip()
+    if new_tok:
+        cfg["token"] = new_tok
+        transport.token = new_tok
+        changed = True
+    if changed:
+        save_config(cfg)
+
+
 def changed_devices(
     prev: dict[str, P.DeviceManifest], now: list[P.DeviceManifest],
 ) -> list[P.DeviceManifest]:
@@ -241,6 +262,7 @@ class NodeTransport:
         )
         for w in reg.warnings or []:
             SLog.w(TAG, f"Nexus: {w}")
+        _apply_registered_credentials(reg, self.core, self)
         if self._seen_register:
             await self._emit_device_delta(self._last_devices, devices)
         self._seen_register = True
@@ -313,6 +335,17 @@ class NodeTransport:
         await self._send(P.MsgType.HEARTBEAT, hb)
         if devices is None:
             return
+        from mino_scout.core import serials_adb_just_connected
+
+        reconnect = serials_adb_just_connected(self._last_devices, devices)
+        if reconnect:
+            SLog.i(TAG, f"adb 重连，检查输入法 {reconnect}")
+            await asyncio.to_thread(
+                self.core.ensure_adb_keyboard_for_serials,
+                reconnect,
+                reason="adb_reconnect",
+            )
+        await asyncio.to_thread(self.core.ensure_adb_keyboard_drift_check, devices)
         if delta:
             SLog.i(TAG, f"心跳设备变化 {[d.sn for d in delta]}")
             await self._emit_device_delta(self._last_devices, devices)

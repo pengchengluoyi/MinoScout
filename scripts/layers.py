@@ -49,7 +49,7 @@ _BROWSER_DIR = "ms-playwright"
 # 冻结配方的世代号。**改了 build_binary.py 的 COLLECT_ALL / EXTRA_HIDDEN /
 # EXCLUDES / 入口脚本，就要 +1** —— 否则依赖清单没变、但产物变了，
 # runtime 指纹却不动，老客户端会以为自己的 runtime 还能用。
-RUNTIME_ABI = 1
+RUNTIME_ABI = 2
 
 
 def package_version() -> str:
@@ -77,14 +77,46 @@ def declared_dependencies() -> list[str]:
     return sorted(str(d).replace(" ", "") for d in deps)
 
 
-def runtime_key(os_name: str, arch: str, *, python_tag: str = "") -> str:
-    """runtime 层指纹。依赖声明 + Python 次版本 + 冻结世代 + 平台。"""
+def chromium_revision_from_frozen(frozen: Path) -> str:
+    """Playwright driver 内嵌的 Chromium revision（与 ms-playwright/ 目录必须一致）。"""
+    candidates = [
+        frozen / "_internal" / "playwright" / "driver" / "package" / "browsers.json",
+        frozen / "playwright" / "driver" / "package" / "browsers.json",
+    ]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            import json
+
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for row in data.get("browsers") or []:
+            if str(row.get("name") or "") == "chromium":
+                return str(row.get("revision") or "")
+    return ""
+
+
+def runtime_key(
+    os_name: str,
+    arch: str,
+    *,
+    python_tag: str = "",
+    chromium_revision: str = "",
+    frozen: Path | None = None,
+) -> str:
+    """runtime 层指纹。依赖声明 + Python 次版本 + 冻结世代 + Chromium revision + 平台。"""
     tag = python_tag or f"{sys.version_info.major}.{sys.version_info.minor}"
+    rev = str(chromium_revision or "").strip()
+    if not rev and frozen is not None:
+        rev = chromium_revision_from_frozen(frozen)
     material = "\n".join([
         f"abi={RUNTIME_ABI}",
         f"python={tag}",
         f"os={os_name}",
         f"arch={arch}",
+        f"chromium_rev={rev or 'unknown'}",
         *declared_dependencies(),
     ])
     return "rt-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:10]
