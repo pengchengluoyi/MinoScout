@@ -230,11 +230,29 @@ class ScoutCore:
         event = _event_from_execute(req)
         started = now_iso()
         if cmd == "update":
-            msg = "远程更新未实现，请在该节点本机 Studio 更新"
+            try:
+                from mino_scout.self_update import run_update
+
+                out = run_update()
+            except Exception as exc:
+                msg = f"更新失败: {exc}"
+                return make_event_result(
+                    event, status=EventStatus.FAIL, executor_used="core",
+                    started_at=started, elapsed_ms=0, summary=msg, error=msg,
+                    raw_response={"command": cmd},
+                )
+            mode = str(out.get("mode") or "")
+            layers = out.get("layers") or []
+            summary = "已是最新" if mode == "up-to-date" else f"已更新 ({mode})"
+            if layers:
+                summary = f"已更新层: {', '.join(str(x) for x in layers)}"
+            extra: dict[str, Any] = {"command": cmd, "update": out}
+            if mode != "up-to-date":
+                extra["_scout_reexec"] = True
             return make_event_result(
-                event, status=EventStatus.FAIL, executor_used="core",
-                started_at=started, elapsed_ms=0, summary=msg, error=msg,
-                raw_response={"command": cmd},
+                event, status=EventStatus.PASS, executor_used="core",
+                started_at=started, elapsed_ms=0, summary=summary,
+                raw_response=extra,
             )
         extra: dict[str, Any] = {"command": cmd, "_scout_shutdown": True}
         if cmd == "restart":
