@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import platform
 import shutil
@@ -11,9 +10,9 @@ import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any
-from urllib.request import Request, urlopen
 
 from mino_scout.config import config_dir, load_config, save_config
+from mino_scout.http_fetch import download_file, fetch_json
 from mino_scout.install_plan import parse_layers_txt, plan_scout_update
 from mino_scout.log import SLog
 
@@ -29,13 +28,6 @@ def _scout_os_arch() -> tuple[str, str]:
     machine = platform.machine().lower()
     arch = "arm64" if machine in ("arm64", "aarch64") else "x64"
     return os_name, arch
-
-
-def fetch_json(url: str) -> dict[str, Any]:
-    req = Request(url, headers={"Accept": "application/json", "User-Agent": "MinoScout"})
-    with urlopen(req, timeout=120) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    return data if isinstance(data, dict) else {}
 
 
 def pick_manifest_item(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -73,12 +65,6 @@ def manifest_url_from_config() -> str:
     return url or DEFAULT_MANIFEST
 
 
-def _download(url: str, dest: Path) -> None:
-    req = Request(url, headers={"User-Agent": "MinoScout"})
-    with urlopen(req, timeout=600) as resp, dest.open("wb") as out:
-        shutil.copyfileobj(resp, out, length=1024 * 1024)
-
-
 def _verify_sha256(path: Path, expected: str) -> None:
     digest = hashlib.sha256()
     with path.open("rb") as f:
@@ -114,7 +100,7 @@ def apply_plan_step(step: dict[str, Any]) -> None:
     tmp = Path(tempfile.mktemp(suffix=".zip"))
     try:
         SLog.i(TAG, f"下载 {step.get('filename') or url}")
-        _download(url, tmp)
+        download_file(url, tmp)
         if sha:
             _verify_sha256(tmp, sha)
         _install_zip(tmp)

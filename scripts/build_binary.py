@@ -80,7 +80,7 @@ def _configure_utf8_stdio() -> None:
 _configure_utf8_stdio()
 
 # 需要连数据文件一起收集的包（光靠静态分析带不全）
-COLLECT_ALL = ["adbutils", "uiautomator2", "playwright", "zeroconf"]
+COLLECT_ALL = ["adbutils", "uiautomator2", "playwright", "zeroconf", "certifi"]
 
 # 静态分析看不到、但运行时会 import 的
 EXTRA_HIDDEN = [
