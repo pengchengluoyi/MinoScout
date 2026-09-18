@@ -380,6 +380,99 @@ def resolve_target(
     return None
 
 
+def _bottom_tab_nodes(nodes: list[UiNode], *, floor_ratio: float = 0.72) -> list[UiNode]:
+    usable = [n for n in nodes if n.enabled and n.area > 0]
+    if not usable:
+        return []
+    max_y = max(n.bounds[3] for n in usable)
+    floor = max_y * floor_ratio if max_y > 0 else 0
+    return [n for n in usable if n.bounds[1] >= floor]
+
+
+def resolve_bottom_tab_text(nodes: list[UiNode], label: str) -> Optional[AnchorMatch]:
+    """底栏区域：精确未命中时用 contains 匹配 Tab 文案（Nexus 已映射真实 Tab 名）。"""
+    text = _norm(label)
+    if not text or not nodes:
+        return None
+    pool = _bottom_tab_nodes(nodes)
+    if not pool:
+        return None
+
+    def pick(cands: list[UiNode], how: str) -> Optional[AnchorMatch]:
+        actionable = [(c, _clickable_target(c)) for c in cands]
+        actionable = [(c, t) for c, t in actionable if t is not None]
+        if not actionable:
+            return None
+        _, chosen = min(actionable, key=lambda pair: pair[1].area)
+        return AnchorMatch(
+            node=chosen,
+            matched_by=how,
+            candidates=len(cands),
+            clickable_candidates=len(actionable),
+        )
+
+    exact = [n for n in pool if _norm(n.text) == text or _norm(n.content_desc) == text]
+    got = pick(exact, "bottom_tab_text")
+    if got is not None:
+        return got
+    contains = [
+        n
+        for n in pool
+        if text in _norm(n.text) or text in _norm(n.content_desc)
+    ]
+    return pick(contains, "bottom_tab_text_contains")
+
+
+def resolve_anchor_between(
+    nodes: list[UiNode],
+    left: str,
+    right: str,
+) -> Optional[AnchorMatch]:
+    """双锚点之间的槽位（无文案图标 Tab）。left/right 可为空表示贴边。"""
+    if not nodes:
+        return None
+    left_n = str(left or "").strip()
+    right_n = str(right or "").strip()
+    pool = _bottom_tab_nodes(nodes)
+    if len(pool) < 2:
+        return None
+    ordered = sorted(pool, key=lambda n: n.bounds[0])
+
+    def fold(s: str) -> str:
+        return _norm(s)
+
+    def find_idx(label: str) -> int | None:
+        if not label:
+            return None
+        f = fold(label)
+        for i, n in enumerate(ordered):
+            if f and (f == fold(n.text) or f == fold(n.content_desc)):
+                return i
+        return None
+
+    li, ri = find_idx(left_n), find_idx(right_n)
+    if li is None and left_n:
+        return None
+    if ri is None and right_n:
+        return None
+    if li is not None and ri is not None:
+        if ri <= li + 1:
+            mid_idx = li + 1 if li + 1 < len(ordered) else li
+        else:
+            mid_idx = li + 1
+    elif li is not None:
+        mid_idx = min(li + 1, len(ordered) - 1)
+    elif ri is not None:
+        mid_idx = max(ri - 1, 0)
+    else:
+        return None
+    if mid_idx < 0 or mid_idx >= len(ordered):
+        return None
+    node = ordered[mid_idx]
+    target = _clickable_target(node) or node
+    return AnchorMatch(node=target, matched_by="anchor_between", candidates=len(ordered))
+
+
 def has_target(params: dict[str, Any]) -> bool:
     """params 里是否带了可用的语义锚点。"""
     t = (params or {}).get("target")

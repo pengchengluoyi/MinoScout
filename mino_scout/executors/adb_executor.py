@@ -829,14 +829,27 @@ class AdbExecutor:
         from mino_scout import hierarchy as H
 
         params = H.lift_text_anchor(event.params or {})
+        dump = H.dump_ui_nodes(serial)
+        if not dump.ok:
+            return None, None, {"anchor": {"ok": False, "reason": f"层级采集失败: {dump.error[:120]}"}}
+        anchor = params.get("anchor_between")
+        if isinstance(anchor, (list, tuple)) and len(anchor) >= 2:
+            match = H.resolve_anchor_between(
+                dump.nodes, str(anchor[0] or ""), str(anchor[1] or "")
+            )
+            if match is not None:
+                x, y = match.node.center
+                audit = {"anchor": {"ok": True, "nodes": len(dump), "dump_ms": dump.elapsed_ms,
+                                    **match.to_brief()}}
+                return x, y, audit
         if not H.has_target(params):
             return None, None, {}
         target = dict(params.get("target") or {})
-        dump = H.dump_ui_nodes(serial)
-        if not dump.ok:
-            return None, None, {"anchor": {"ok": False, "reason": f"层级采集失败: {dump.error[:120]}",
-                                           "target": target}}
         match = H.resolve_target(dump.nodes, target)
+        if match is None:
+            label = str(target.get("text") or target.get("content_desc") or "").strip()
+            if label:
+                match = H.resolve_bottom_tab_text(dump.nodes, label)
         if match is None:
             return None, None, {"anchor": {"ok": False, "reason": "锚点未命中任何节点",
                                            "target": target, "nodes": len(dump)}}
@@ -855,6 +868,14 @@ class AdbExecutor:
         ax, ay, audit = self._resolve_anchor_xy(event, serial)
         if ax is not None and ay is not None:
             return ax, ay, audit, "anchor"
+        fb = params.get("fallback_xy")
+        if isinstance(fb, (list, tuple)) and len(fb) >= 2:
+            try:
+                fx, fy = int(fb[0]), int(fb[1])
+            except (TypeError, ValueError):
+                fx, fy = None, None
+            if fx is not None and fy is not None and (fx > 1000 or fy > 1000):
+                return fx, fy, audit, "fallback_xy"
         x, y = params.get("x"), params.get("y")
         if x is None or y is None:
             return None, None, audit, "none"
