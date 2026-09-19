@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Any
 
 SCOUT_LAYERS = ("runtime", "app", "browser")
+BOOTSTRAP_LAYERS = ("runtime", "app")
+HEAVY_LAYERS = ("browser",)
 
 
 def parse_layers_txt(text: str) -> dict[str, str] | None:
@@ -114,6 +116,59 @@ def _refine_browser_steps(
     return steps
 
 
+def _steps_for_layers(
+    layers: dict[str, Any],
+    names: tuple[str, ...],
+    installed: dict[str, str] | None,
+) -> list[dict[str, Any]]:
+    steps: list[dict[str, Any]] = []
+    for name in names:
+        layer = layers.get(name)
+        if not isinstance(layer, dict) or not layer.get("url"):
+            continue
+        if installed and installed.get(name) == str(layer.get("key") or ""):
+            continue
+        steps.append(_layer_step(name, layer))
+    return steps
+
+
+def plan_scout_bootstrap(
+    item: dict[str, Any],
+    installed: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    layers = item.get("layers") if isinstance(item.get("layers"), dict) else None
+    if not layers:
+        return _combined_plan(item, "manifest 没有分层字段（旧版发布）")
+    steps = _steps_for_layers(layers, BOOTSTRAP_LAYERS, installed)
+    if not steps:
+        return {"mode": "up-to-date", "reason": "runtime+app 已就绪", "bytes": 0, "steps": []}
+    bytes_total = sum(int(s.get("bytes") or 0) for s in steps)
+    return {
+        "mode": "layers",
+        "reason": "首次安装：仅 runtime+app，Chromium/ADB 由 Scout 启动后自动安装",
+        "bytes": bytes_total,
+        "steps": steps,
+    }
+
+
+def plan_heavy_deps(
+    item: dict[str, Any],
+    installed: dict[str, str] | None,
+    *,
+    bin_dir: Path | None = None,
+) -> dict[str, Any]:
+    layers = item.get("layers") if isinstance(item.get("layers"), dict) else None
+    if not layers:
+        return {"mode": "skip", "reason": "无 manifest 分层", "bytes": 0, "steps": []}
+    steps = _steps_for_layers(layers, HEAVY_LAYERS, installed)
+    if bin_dir is not None:
+        steps = _refine_browser_steps(steps, manifest_layers=layers, installed=installed or {}, bin_dir=bin_dir)
+    if not steps:
+        return {"mode": "up-to-date", "reason": "Chromium 已就绪", "bytes": 0, "steps": []}
+    bytes_total = sum(int(s.get("bytes") or 0) for s in steps)
+    return {"mode": "layers", "reason": "后台安装 Chromium", "bytes": bytes_total, "steps": steps}
+
+
 def plan_scout_update(
     item: dict[str, Any],
     installed: dict[str, str] | None,
@@ -125,7 +180,7 @@ def plan_scout_update(
     if not layers:
         return _combined_plan(item, "manifest 没有分层字段（旧版发布）")
     if not installed or not installed.get("runtime"):
-        return _combined_plan(item, "本机没有分层安装记录，需要全量")
+        return plan_scout_bootstrap(item, installed)
 
     steps: list[dict[str, Any]] = []
     for name in SCOUT_LAYERS:

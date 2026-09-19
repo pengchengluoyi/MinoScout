@@ -201,4 +201,4 @@ if [[ -x "$SCOUT_BIN" ]]; then
 fi
 
 echo "→ 执行 ${SCOUT_BIN} status 查看服务状态"
-echo "Mino Scout ${APP_VER} 安装完成。"
+echo "Mino Scout ${APP_VER} 安装完成（runtime+app）。Chromium / ADB Keyboard 将在 Scout 首次连上 Nexus 后自动下载。"

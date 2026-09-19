@@ -33,6 +33,9 @@ ROOT = Path(__file__).resolve().parent.parent
 # 层名。顺序即安装顺序：runtime 先落地，app 后落地（app 依赖 runtime 存在）。
 LAYERS = ("runtime", "app", "browser")
 
+# 首次安装 / 合并包：只带 runtime+app，快速上线；browser 由 Scout 启动后拉取。
+BOOTSTRAP_LAYERS = ("runtime", "app")
+
 # zip 内的载荷目录名就是层名：<zip 根>/runtime/、<zip 根>/app/、<zip 根>/browser/。
 # 这里是它们 → 安装到 bin/ 下的相对路径。runtime 平铺到 bin/ 根，所以值是 ""。
 # **install.sh / install.ps1 里同一份映射是硬编码的** —— 改这里要同步改那两处。

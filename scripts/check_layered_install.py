@@ -127,6 +127,7 @@ def main() -> int:
     dist = Path(args.dist).expanduser().resolve()
     combined = find_zip(dist, "combined")
     app_zip = find_zip(dist, "app")
+    browser_zip = find_zip(dist, "browser")
     if not combined or not app_zip:
         print(f"dist 里缺 zip：combined={combined} app={app_zip}", file=sys.stderr)
         print("先跑 build_binary.py 再跑 pack_release.py --out dist", file=sys.stderr)
@@ -135,24 +136,39 @@ def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="scout-layered-"))
     home = tmp / "home"
     try:
-        print(f"\n[1/4] 全量安装：{combined.name}  ({combined.stat().st_size / 1e6:.1f} MB)")
+        print(f"\n[1/5] bootstrap 安装：{combined.name}  ({combined.stat().st_size / 1e6:.1f} MB)")
         root1 = extract(combined, tmp / "pkg-combined")
         proc = run_installer(root1, home)
         if proc.returncode != 0:
             print(proc.stdout[-3000:]); print(proc.stderr[-3000:], file=sys.stderr)
-            print(f"全量安装失败 rc={proc.returncode}", file=sys.stderr)
+            print(f"bootstrap 安装失败 rc={proc.returncode}", file=sys.stderr)
             return 1
         installed = read_installed(home)
-        check("三层都记进了 bin/layers.txt", set(installed) == set(L.LAYERS), str(installed))
+        check(
+            "runtime+app 记进了 bin/layers.txt",
+            {"runtime", "app"}.issubset(set(installed)),
+            str(installed),
+        )
         check(f"bin/{EXE} 存在", (home / "bin" / EXE).is_file())
         check("bin/app/mino_scout/cli.py 存在", (home / "bin" / "app" / "mino_scout" / "cli.py").is_file())
 
+        if browser_zip:
+            print(f"\n[2/5] 补装 browser 层：{browser_zip.name}  ({browser_zip.stat().st_size / 1e6:.1f} MB)")
+            root_b = extract(browser_zip, tmp / "pkg-browser")
+            proc = run_installer(root_b, home)
+            if proc.returncode != 0:
+                print(proc.stdout[-3000:]); print(proc.stderr[-3000:], file=sys.stderr)
+                print(f"browser 层安装失败 rc={proc.returncode}", file=sys.stderr)
+                return 1
+        else:
+            print("\n[2/5] 无 browser 层 zip，跳过")
+
         browsers = home / "bin" / L.PAYLOAD_DIRS["browser"]
-        before = tree_signature(browsers)
+        before = tree_signature(browsers) if browsers.is_dir() else (0, 0, 0.0)
         rt_before = (home / "bin" / EXE).stat().st_mtime
         print(f"      浏览器层基线：{before[0]} 个文件 / {before[1] / 1e6:.0f} MB")
 
-        print(f"\n[2/4] 只装 app 层：{app_zip.name}  ({app_zip.stat().st_size / 1024:.0f} KB)")
+        print(f"\n[3/5] 只装 app 层：{app_zip.name}  ({app_zip.stat().st_size / 1024:.0f} KB)")
         root2 = extract(app_zip, tmp / "pkg-app")
         proc = run_installer(root2, home)
         if proc.returncode != 0:
@@ -160,13 +176,14 @@ def main() -> int:
             print(f"app 层安装失败 rc={proc.returncode}", file=sys.stderr)
             return 1
         after = tree_signature(browsers)
-        check("浏览器层一个字节没动", before == after, f"{before} vs {after}")
+        if before[0] > 0:
+            check("浏览器层一个字节没动", before == after, f"{before} vs {after}")
         check("runtime 可执行文件没被重写", (home / "bin" / EXE).stat().st_mtime == rt_before)
-        check("三层记录仍完整", set(read_installed(home)) == set(L.LAYERS))
+        check("runtime+app 记录仍在", {"runtime", "app"}.issubset(set(read_installed(home))))
         ratio = combined.stat().st_size / max(app_zip.stat().st_size, 1)
         print(f"      增量 / 全量 = 1 : {ratio:,.0f}")
 
-        print("\n[3/4] 闸门：runtime 指纹不匹配的 app 层必须被拒")
+        print("\n[4/5] 闸门：runtime 指纹不匹配的 app 层必须被拒")
         manifest = root2 / "layers.txt"
         text = manifest.read_text(encoding="utf-8")
         manifest.write_text(text.replace(

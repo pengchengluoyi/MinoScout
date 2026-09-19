@@ -102,6 +102,7 @@ jobs:
       - name: Freeze, probe, pack zips
         env:
           SCOUT_VERSION: ${{ needs.meta.outputs.version }}
+          MINO_SCOUT_SKIP_BROWSER: "1"
         run: python scripts/pack_release.py --out dist --binary
       # 分层的收益全靠"增量更新时不重铺浏览器层"。这一步真装一遍再只装 app 层，
       # 断言浏览器一个字节没动 —— 只要有人在 install 脚本里恢复整体删除，这里就红。

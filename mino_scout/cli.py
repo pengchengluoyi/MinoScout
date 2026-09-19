@@ -90,6 +90,19 @@ def cmd_stop() -> int:
     return 0 if st.get("ok") else 1
 
 
+def cmd_heavy_deps() -> int:
+    from mino_scout.heavy_deps import install_heavy_deps
+
+    core = build_core()
+    try:
+        out = install_heavy_deps(adb_hook=core.ensure_android_adb_keyboard_on_startup)
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        return 1
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0 if out.get("ok") else 1
+
+
 def cmd_update(argv: list[str]) -> int:
     from mino_scout.self_update import run_update
 
@@ -207,12 +220,14 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_stop()
     if sub == "update":
         return cmd_update(raw[1:])
+    if sub == "heavy-deps":
+        return cmd_heavy_deps()
     if sub == "run":
         return cmd_run()
     if sub == "probe":
         return cmd_probe(build_core())
 
-    print(f"未知命令: {sub}（可用: run probe status stop update configure）", file=sys.stderr)
+    print(f"未知命令: {sub}（可用: run probe status stop update heavy-deps configure）", file=sys.stderr)
     return 2
 
 

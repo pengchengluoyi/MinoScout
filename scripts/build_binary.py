@@ -241,7 +241,10 @@ def build(*, clean: bool) -> Path:
         raise SystemExit(f"产物目录没生成：{out}")
     _assert_pkg_not_frozen(out)
     materialize_app(out)
-    install_playwright_chromium(out)
+    if not str(os.environ.get("MINO_SCOUT_SKIP_BROWSER") or "").strip():
+        install_playwright_chromium(out)
+    else:
+        print("→ MINO_SCOUT_SKIP_BROWSER：跳过打包 Chromium（首次安装后由 Scout 拉 browser 层）")
     chmod_frozen_payload(out)
     return out
 

@@ -11,7 +11,7 @@ this still packs the source tree (dev / unit tests).
 
 | zip | 内容 | 用途 |
 |---|---|---|
-| `MinoScout-<ver>-<os>-<arch>.zip` | 三层齐全 | 全新安装。**名字刻意不变** —— 老 Studio 只认这一个 |
+| `MinoScout-<ver>-<os>-<arch>.zip` | runtime+app | 全新安装（快速上线）。**名字刻意不变** —— 老 Studio 只认这一个 |
 | `MinoScout-app-<ver>-<os>-<arch>.zip` | 只有 app 层 | 只改了代码的更新，实测 zip 后约 85 KB |
 | `MinoScout-runtime-<rtkey>-<os>-<arch>.zip` | 只有 runtime 层 | 依赖 / Python / 冻结配方变了 |
 | `MinoScout-browser-<bwkey>-<os>-<arch>.zip` | 只有 browser 层 | playwright 换 browser revision |
@@ -182,6 +182,17 @@ def _self_check_binary(dist: Path) -> None:
         raise SystemExit("frozen binary self-check failed (probe)")
 
 
+def _ensure_browser_payload(frozen: Path) -> None:
+    """browser 层 zip 仍要发；冻结树里可以不带 Chromium（bootstrap 合并包不含 browser）。"""
+    root = frozen / "ms-playwright"
+    if L.browser_dir_names(root):
+        return
+    from build_binary import install_playwright_chromium  # noqa: E402
+
+    print("→ 打包前安装 Chromium（仅用于 browser 层 zip，不进 bootstrap 合并包）")
+    install_playwright_chromium(frozen)
+
+
 def layer_keys(frozen: Path, ver: str, osn: str, arch: str) -> dict[str, str]:
     return {
         "app": ver,
@@ -326,6 +337,7 @@ def pack(
         return zip_path, item
 
     chmod_payload(frozen)
+    _ensure_browser_payload(frozen)
     buckets = L.split_frozen(frozen)
     if not buckets["app"]:
         raise SystemExit(
@@ -335,8 +347,8 @@ def pack(
         )
     keys = layer_keys(frozen, ver, osn, arch)
 
-    # 合并包：三层齐全，全新安装用。名字刻意与分层前一致，老 Studio 不受影响。
-    combined = _write_zip(zip_path, name, frozen, buckets, L.LAYERS,
+    # 合并包：仅 runtime+app，快速首次安装。名字与旧版一致，体积显著变小。
+    combined = _write_zip(zip_path, name, frozen, buckets, L.BOOTSTRAP_LAYERS,
                           ver=ver, osn=osn, arch=arch, keys=keys)
 
     # 层包：增量更新用。
