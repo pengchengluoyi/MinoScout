@@ -126,21 +126,32 @@ class PlaywrightExecutor:
                 page.keyboard.press(mapped)
                 return self._ok(event, started_at, t0, f"按键 {mapped}")
             if cap == "swipe_direction":
-                direction = str((event.params or {}).get("direction") or "down").lower()
+                p = event.params or {}
+                direction = str(p.get("direction") or "down").lower()
                 box = page.viewport_size or {"width": 1280, "height": 800}
                 w, h = int(box["width"]), int(box["height"])
-                cx, cy = w // 2, h // 2
-                delta = {
-                    "up": (cx, int(h * 0.75), cx, int(h * 0.25)),
-                    "down": (cx, int(h * 0.25), cx, int(h * 0.75)),
-                    "left": (int(w * 0.75), cy, int(w * 0.25), cy),
-                    "right": (cx, cy, int(w * 0.75), cy),
-                }.get(direction, (cx, int(h * 0.75), cx, int(h * 0.25)))
+                fx, fy, tx, ty = p.get("from_x"), p.get("from_y"), p.get("to_x"), p.get("to_y")
+                if None not in (fx, fy, tx, ty):
+                    def _m(v: int, dim: int) -> int:
+                        vi = int(v)
+                        return int(round(vi / 1000.0 * dim)) if 0 <= vi <= 1000 else vi
+
+                    delta = (_m(int(fx), w), _m(int(fy), h), _m(int(tx), w), _m(int(ty), h))
+                    summary = f"滑动 ({fx},{fy})→({tx},{ty})"
+                else:
+                    cx, cy = w // 2, h // 2
+                    delta = {
+                        "up": (cx, int(h * 0.75), cx, int(h * 0.25)),
+                        "down": (cx, int(h * 0.25), cx, int(h * 0.75)),
+                        "left": (int(w * 0.75), cy, int(w * 0.25), cy),
+                        "right": (cx, cy, int(w * 0.75), cy),
+                    }.get(direction, (cx, int(h * 0.75), cx, int(h * 0.25)))
+                    summary = f"滑动 {direction}"
                 page.mouse.move(delta[0], delta[1])
                 page.mouse.down()
                 page.mouse.move(delta[2], delta[3], steps=12)
                 page.mouse.up()
-                return self._ok(event, started_at, t0, f"滑动 {direction}")
+                return self._ok(event, started_at, t0, summary)
             if cap == "swipe_element_to_element":
                 p = event.params or {}
                 x1, y1 = int(p.get("from_x") or 0), int(p.get("from_y") or 0)

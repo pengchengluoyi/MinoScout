@@ -350,38 +350,53 @@ class AdbExecutor:
     def _swipe_direction(self, event, ctx, serial, started_at, t0):
         params = event.params or {}
         direction = str(params.get("direction") or "up").lower()
-        # 通过 wm size 拿屏幕尺寸然后按方向算坐标
-        rc, out, _err = self._adb_shell(serial, "wm", "size")
-        w, h = 1080, 1920  # 兜底
-        if rc == 0 and "Physical size:" in out:
+        fx, fy, tx, ty = (
+            params.get("from_x"),
+            params.get("from_y"),
+            params.get("to_x"),
+            params.get("to_y"),
+        )
+        if None not in (fx, fy, tx, ty):
             try:
-                size_str = out.rsplit(":", 1)[-1].strip()
-                wp, hp = size_str.split("x")
-                w, h = int(wp), int(hp)
-            except Exception:
-                pass
-        cx = w // 2
-        steps = {
-            "up": (cx, int(h * 0.75), cx, int(h * 0.25)),
-            "down": (cx, int(h * 0.25), cx, int(h * 0.75)),
-            "left": (int(w * 0.85), h // 2, int(w * 0.15), h // 2),
-            "right": (int(w * 0.15), h // 2, int(w * 0.85), h // 2),
-        }
-        if direction not in steps:
-            return self._fail(event, started_at, t0, f"unsupported direction={direction}")
-        x1, y1, x2, y2 = steps[direction]
+                x1, y1 = self._map_to_display(serial, int(fx), int(fy))
+                x2, y2 = self._map_to_display(serial, int(tx), int(ty))
+            except (TypeError, ValueError):
+                return self._fail(event, started_at, t0, "swipe_direction 起止坐标无效")
+            summary = f"滑动 ({fx},{fy})→({tx},{ty})"
+        else:
+            rc, out, _err = self._adb_shell(serial, "wm", "size")
+            w, h = 1080, 1920
+            if rc == 0 and "Physical size:" in out:
+                try:
+                    size_str = out.rsplit(":", 1)[-1].strip()
+                    wp, hp = size_str.split("x")
+                    w, h = int(wp), int(hp)
+                except Exception:
+                    pass
+            cx = w // 2
+            cy = h // 2
+            steps = {
+                "up": (cx, int(h * 0.75), cx, int(h * 0.25)),
+                "down": (cx, int(h * 0.25), cx, int(h * 0.75)),
+                "left": (int(w * 0.85), cy, int(w * 0.15), cy),
+                "right": (int(w * 0.15), cy, int(w * 0.85), cy),
+            }
+            if direction not in steps:
+                return self._fail(event, started_at, t0, f"unsupported direction={direction}")
+            x1, y1, x2, y2 = steps[direction]
+            summary = f"滑动 {direction}"
         duration = int(params.get("duration_ms") or 300)
         rc, out, err = self._adb_shell(serial, "input", "swipe", str(x1), str(y1), str(x2), str(y2), str(duration))
         elapsed = int((time.time() - t0) * 1000)
         if rc == 0:
             return make_event_result(
                 event, status=EventStatus.PASS, executor_used=self.id, started_at=started_at,
-                elapsed_ms=elapsed, summary=f"滑动 {direction}",
+                elapsed_ms=elapsed, summary=summary,
                 raw_response={"from": (x1, y1), "to": (x2, y2)},
             )
         return make_event_result(
             event, status=EventStatus.FAIL, executor_used=self.id, started_at=started_at,
-            elapsed_ms=elapsed, summary=f"滑动 {direction} 失败", error=err or out,
+            elapsed_ms=elapsed, summary=f"{summary} 失败", error=err or out,
         )
 
     def _swipe_element_to_element(self, event, ctx, serial, started_at, t0):
