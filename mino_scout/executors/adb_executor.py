@@ -780,10 +780,17 @@ class AdbExecutor:
         )
 
     def _set_input_method(self, event, ctx, serial, started_at, t0):
-        from mino_scout.adb_ime import ensure_adb_keyboard, resolve_target_ime
+        from mino_scout.adb_ime import (
+            ensure_adb_keyboard,
+            restore_system_input_method,
+            resolve_target_ime,
+        )
 
         target = resolve_target_ime(event.params or {})
-        outcome = ensure_adb_keyboard(serial, target_ime=target)
+        if target == "__system__":
+            outcome = restore_system_input_method(serial)
+        else:
+            outcome = ensure_adb_keyboard(serial, target_ime=target)
         elapsed = int((time.time() - t0) * 1000)
         if outcome.get("ok"):
             return make_event_result(

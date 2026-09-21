@@ -156,11 +156,67 @@ def resolve_target_ime(params: dict[str, Any] | None) -> str:
     ime = str(raw.get("ime") or explicit or "adbkeyboard").strip().lower()
     if ime in ("adbkeyboard", "adb_keyboard", "adb-keyboard"):
         return ADB_KEYBOARD_IME_ID
+    if ime in ("system", "default", "restore", "close", "close_adbkeyboard", "off"):
+        return "__system__"
     if "/" in ime:
         return ime
     if ime.startswith("com."):
         return f"{ime}/.AdbIME"
     return ADB_KEYBOARD_IME_ID
+
+
+def restore_system_input_method(
+    serial: str,
+    *,
+    shell: ShellRunner | None = None,
+) -> dict[str, Any]:
+    """关闭 ADB Keyboard：切到其它已启用 IME，并 disable ADB Keyboard。"""
+    sid = str(serial or "").strip()
+    if not sid:
+        return {"ok": False, "error": "缺少 adb serial", "serial": sid}
+
+    previous = current_default_ime(sid, shell=shell)
+    enabled = list_enabled_imes(sid, shell=shell)
+    target = ""
+    for ime in enabled:
+        if ime and not ime.startswith(ADB_KEYBOARD_PACKAGE):
+            target = ime
+            break
+    if not target:
+        return {
+            "ok": False,
+            "serial": sid,
+            "error": "未找到可切换的非 ADB 输入法（请先在系统设置启用系统键盘）",
+            "previous_ime": previous,
+        }
+
+    if previous != target:
+        rc, out, err = _run(sid, "ime", "set", target, shell=shell)
+        if rc != 0:
+            msg = err or out or f"ime set rc={rc}"
+            return {"ok": False, "serial": sid, "error": msg, "step": "set", "target_ime": target}
+
+    if ADB_KEYBOARD_IME_ID in enabled:
+        _run(sid, "ime", "disable", ADB_KEYBOARD_IME_ID, shell=shell)
+
+    current = current_default_ime(sid, shell=shell) or target
+    if current.startswith(ADB_KEYBOARD_PACKAGE):
+        return {
+            "ok": False,
+            "serial": sid,
+            "error": "切换后默认输入法仍是 ADB Keyboard",
+            "current_ime": current,
+        }
+
+    SLog.i(TAG, f"{sid} 已关闭 ADB Keyboard，当前输入法 {current}")
+    return {
+        "ok": True,
+        "serial": sid,
+        "changed": previous != current,
+        "previous_ime": previous,
+        "current_ime": current,
+        "summary": "已关闭 ADB Keyboard",
+    }
 
 
 def ensure_adb_keyboard(
