@@ -150,7 +150,8 @@ Nexus 收到后：`provides` ∩ 能力目录 → 该节点可执行的 capabili
   ],
   "device_workload": [
     {"sn": "R5CT30xxxx", "run_id": "run_20260902_153001_R5CT30", "step_idx": 3, "capability_id": "tap"}
-  ]
+  ],
+  "scout_version": "0.1.29"
 }
 ```
 
@@ -397,7 +398,7 @@ sequenceDiagram
 契约真源：`tests/fixtures/protocol/`。两仓必须一致。
 
 ```
-fixtures_sha256 = 6dd201c7af7023a712f37e41aa042b1af500e2bdfd1e9424713fa71d2caf7406
+fixtures_sha256 = fa2116551ae76dc372d8c238dc4cdffd6e9f3051192aa6fa12985327742d6710
 ```
 
 两仓各自确认：① `protocol.py` 能 round-trip 全部 fixture；② fixture 目录哈希与上面记录一致。
