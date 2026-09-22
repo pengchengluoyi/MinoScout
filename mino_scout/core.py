@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -28,7 +29,9 @@ from mino_scout.schemas import CapturedScreen, EventResult, EventStatus, PlanEve
 
 TAG = "ScoutCore"
 
-SCOUT_VERSION = "0.1.39"
+SCOUT_VERSION = "0.1.40"
+# 单节点 Web 槽 Playwright 并行路数（与 Nexus WEB_PLAYWRIGHT_PARALLEL_LANES 一致）
+PLAYWRIGHT_PARALLEL_LANES = 4
 
 # 幂等缓存保留时长。CONVENTIONS.md §5：该 run 结束或 10 分钟，取先到者。
 _IDEMPOTENT_TTL_SEC = 600.0
@@ -124,9 +127,12 @@ class ScoutCore:
         self._active_runs: set[str] = set()
         self._run_seen: dict[str, float] = {}
         self._pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="scout-exec")
-        # Playwright sync API 必须始终在同一条线程里用。8 路通用池会把
-        # launch_app 和 screenshot 拆到不同 worker，下一帧就是「没有打开的页面」。
-        self._pw_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="scout-pw")
+        # Playwright sync API 绑定线程：按 run_id 分片，同 run 固定在同一条 worker；路数固定 4。
+        self._pw_shard_count = PLAYWRIGHT_PARALLEL_LANES
+        self._pw_shards = [
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"scout-pw-{i}")
+            for i in range(self._pw_shard_count)
+        ]
         self._adb_ime_last_check: dict[str, float] = {}
         self._device_workload: dict[str, P.DeviceWorkload] = {}
 
@@ -140,7 +146,7 @@ class ScoutCore:
             return cached
 
         timeout = float(req.timeout_sec or 0) or 30.0
-        pool = self._pw_pool if _use_playwright_thread(req) else self._pool
+        pool = self._playwright_executor(req) if _use_playwright_thread(req) else self._pool
         fut = pool.submit(self._execute_body, req)
         try:
             result = fut.result(timeout=timeout)
@@ -523,6 +529,12 @@ class ScoutCore:
 
     # ---------------- CANCEL ----------------
 
+    def _playwright_executor(self, req: P.Execute) -> ThreadPoolExecutor:
+        rid = str(req.run_id or "").strip()
+        n = len(self._pw_shards) or 1
+        idx = (hash(rid) & 0x7FFFFFFF) % n if rid else 0
+        return self._pw_shards[idx]
+
     def cancel_run(self, run_id: str) -> int:
         """丢掉该 run 的幂等缓存并标记不再继续。
 
@@ -535,6 +547,13 @@ class ScoutCore:
             self._active_runs.discard(run_id)
             self._run_seen.pop(run_id, None)
         SLog.i(TAG, f"cancel run={run_id}，清掉 {len(keys)} 条幂等缓存")
+        rid = str(run_id or "").strip()
+        if rid:
+            fake = P.Execute(run_id=rid, step_idx=-1, capability_id="cancel_run", platform="web")
+            try:
+                self._playwright_executor(fake).submit(lambda: _release_playwright_run(rid)).result(timeout=12.0)
+            except Exception as exc:
+                SLog.w(TAG, f"cancel run playwright release: {exc!r}")
         return len(keys)
 
     def shutdown(self) -> None:
@@ -544,7 +563,8 @@ class ScoutCore:
         进程一死就会刷 TargetClosedError。
         """
         try:
-            self._pw_pool.submit(_stop_playwright_hub).result(timeout=8.0)
+            for shard in self._pw_shards:
+                shard.submit(_stop_playwright_hub).result(timeout=8.0)
         except Exception as exc:
             SLog.w(TAG, f"playwright 退出清理: {exc}")
 
@@ -601,6 +621,12 @@ class ScoutCore:
             self._done.pop(k, None)
 
 
+def _release_playwright_run(run_id: str) -> None:
+    from mino_scout.playwright_hub import get_hub
+
+    get_hub().release_run(run_id)
+
+
 # ---------------- 载荷 ↔ 内部模型 ----------------
 
 
@@ -645,6 +671,11 @@ def _device_from_execute(req: P.Execute, *, node_id: str = "") -> DeviceRef:
     if not adb_serial and platform == "android":
         adb_serial = _adb_serial_guess(device_id or sn)
 
+    extra = {k: v for k, v in hint.items()
+             if k not in {"platform", "adb_serial", "udid", "password", "model", "sn", "device_id"}}
+    if req.run_id:
+        extra["run_id"] = str(req.run_id)
+
     return DeviceRef(
         sn=sn or device_id,
         platform=platform or "android",
@@ -652,8 +683,7 @@ def _device_from_execute(req: P.Execute, *, node_id: str = "") -> DeviceRef:
         udid=str(hint.get("udid") or (device_id if platform == "ios" else "")),
         password=str(hint.get("password") or ""),
         model=str(hint.get("model") or ""),
-        extra={k: v for k, v in hint.items()
-               if k not in {"platform", "adb_serial", "udid", "password", "model", "sn", "device_id"}},
+        extra=extra,
     )
 
 

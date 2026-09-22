@@ -195,6 +195,7 @@ def compress_web_png(png_bytes: bytes, ratio: float) -> tuple[bytes, str, int, i
 def capture_via_playwright(
     sn: str,
     *,
+    run_id: str = "",
     timeout_sec: float = 15.0,
     compress_ratio: float = 2.0,
     base_url: str = "",
@@ -211,6 +212,7 @@ def capture_via_playwright(
 
         png_bytes = get_hub().screenshot_png(
             str(sn or ""),
+            run_id=str(run_id or ""),
             timeout_ms=int(timeout_sec * 1000),
             base_url=base_url,
             headed=headed_from_hint(device_hint),
@@ -275,6 +277,7 @@ def capture(
         )
         shot = capture_via_playwright(
             device.sn,
+            run_id=str(device.extra.get("run_id") or ""),
             timeout_sec=timeout_sec,
             compress_ratio=compress_ratio,
             base_url=url,

@@ -80,8 +80,12 @@ def is_web_slot(sn: str = "", platform: str = "") -> bool:
     return s.startswith("web") and len(s) > 3 and s[3:].isalnum()
 
 
-def _session_key(sn: str) -> str:
-    return str(sn or "").strip() or "web"
+def _session_key(sn: str, run_id: str = "") -> str:
+    base = str(sn or "").strip() or "web"
+    rid = str(run_id or "").strip()
+    if rid:
+        return f"{base}::{rid}"
+    return base
 
 
 def looks_like_url(value: str) -> bool:
@@ -308,10 +312,17 @@ class PlaywrightHub:
         SLog.i(TAG, f"chromium launched sn={key} headed={head}")
         return browser
 
-    def open_case(self, sn: str, *, base_url: str = "", headed: Optional[bool] = None) -> Any:
-        key = _session_key(sn)
-        self.close_case(key)
-        browser = self._browser(key, headed=headed)
+    def open_case(
+        self,
+        sn: str,
+        *,
+        run_id: str = "",
+        base_url: str = "",
+        headed: Optional[bool] = None,
+    ) -> Any:
+        key = _session_key(sn, run_id)
+        self.close_case(sn, run_id=run_id)
+        browser = self._browser(_session_key(sn), headed=headed)
         context = browser.new_context(
             viewport={"width": VIEWPORT_W, "height": VIEWPORT_H},
             screen={"width": VIEWPORT_W, "height": VIEWPORT_H},
@@ -327,14 +338,14 @@ class PlaywrightHub:
         SLog.i(TAG, f"case context ready sn={key} url={url or 'about:blank'}")
         return page
 
-    def current_page(self, sn: str = "") -> Any:
-        key = _session_key(sn)
+    def current_page(self, sn: str = "", *, run_id: str = "") -> Any:
+        key = _session_key(sn, run_id)
         with self._lock:
             row = self._sessions.get(key) or {}
         return row.get("page")
 
-    def current_url(self, sn: str = "") -> str:
-        page = self.current_page(sn)
+    def current_url(self, sn: str = "", *, run_id: str = "") -> str:
+        page = self.current_page(sn, run_id=run_id)
         if page is None:
             return ""
         try:
@@ -346,13 +357,14 @@ class PlaywrightHub:
         self,
         sn: str = "",
         *,
+        run_id: str = "",
         timeout_ms: int = 8_000,
         base_url: str = "",
         headed: Optional[bool] = None,
     ) -> bytes:
-        page = self.current_page(sn)
+        page = self.current_page(sn, run_id=run_id)
         if page is None:
-            page = self.open_case(sn, base_url=base_url, headed=headed)
+            page = self.open_case(sn, run_id=run_id, base_url=base_url, headed=headed)
         if page is None:
             raise RuntimeError("playwright 当前没有打开的页面")
         try:
@@ -369,8 +381,8 @@ class PlaywrightHub:
             timeout=cap_ms,
         )
 
-    def a11y_text(self, sn: str = "", *, max_chars: int = 4000) -> str:
-        page = self.current_page(sn)
+    def a11y_text(self, sn: str = "", *, run_id: str = "", max_chars: int = 4000) -> str:
+        page = self.current_page(sn, run_id=run_id)
         if page is None:
             return ""
         try:
@@ -385,15 +397,22 @@ class PlaywrightHub:
             return text[:max_chars]
         return text
 
-    def close_case(self, sn: str = "") -> None:
-        key = _session_key(sn)
+    def _session_keys_for_sn(self, sn: str) -> list[str]:
+        prefix = _session_key(sn) + "::"
+        bare = _session_key(sn)
+        with self._lock:
+            keys = list(self._sessions.keys())
+        out = [k for k in keys if k == bare or k.startswith(prefix)]
+        return out
+
+    def close_case(self, sn: str = "", *, run_id: str = "") -> None:
+        key = _session_key(sn, run_id)
         with self._lock:
             row = self._sessions.pop(key, None)
         if not row:
             return
         page = row.get("page")
         ctx = row.get("context")
-        # 先关 page 再关 context，减少 Connection.run 被直接掐掉时的 TargetClosedError。
         for obj in (page, ctx):
             if obj is None:
                 continue
@@ -402,11 +421,47 @@ class PlaywrightHub:
             except Exception:
                 pass
 
+    def close_run(self, sn: str, run_id: str = "", *, shutdown_browser: bool = False) -> None:
+        """关本 run 的 Context；shutdown_browser 时若无其它 run 占用同 sn 再关 Chromium。"""
+        self.close_case(sn, run_id=run_id)
+        if not shutdown_browser:
+            return
+        if self._session_keys_for_sn(sn):
+            return
+        sn_key = _session_key(sn)
+        browsers: dict = getattr(self._local, "browsers", None) or {}
+        modes: dict = getattr(self._local, "browser_headed", None) or {}
+        browser = browsers.pop(sn_key, None)
+        modes.pop(sn_key, None)
+        self._local.browsers = browsers
+        self._local.browser_headed = modes
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                pass
+
+    def release_run(self, run_id: str) -> None:
+        """任务 cancel / 结束：关掉该 run_id 下所有 Playwright 会话。"""
+        rid = str(run_id or "").strip()
+        if not rid:
+            return
+        suffix = f"::{rid}"
+        with self._lock:
+            keys = [k for k in self._sessions if k.endswith(suffix)]
+        for key in keys:
+            sn_part = key.split("::", 1)[0]
+            self.close_case(sn_part, run_id=rid)
+
     def shutdown_thread(self) -> None:
         with self._lock:
-            sns = list(self._sessions.keys())
-        for sn in sns:
-            self.close_case(sn)
+            keys = list(self._sessions.keys())
+        for key in keys:
+            if "::" in key:
+                sn_part, rid = key.split("::", 1)
+                self.close_case(sn_part, run_id=rid)
+            else:
+                self.close_case(key)
         browsers: dict = getattr(self._local, "browsers", None) or {}
         for sn, browser in list(browsers.items()):
             try:

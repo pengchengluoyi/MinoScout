@@ -71,6 +71,7 @@ class PlaywrightExecutor:
         t0 = time.time()
         cap = event.capability_id
         sn = str(ctx.device.sn or "")
+        run_id = str(ctx.run_id or "")
         if not ctx.device.is_web:
             return make_event_result(
                 event, status=EventStatus.DECLINED, executor_used=self.id,
@@ -92,23 +93,24 @@ class PlaywrightExecutor:
                     ctx.device.extra.get("target_package"),
                     p.get("package"),
                 )
-                page = hub.current_page(sn)
+                page = hub.current_page(sn, run_id=run_id)
                 if page is None:
-                    page = hub.open_case(sn, base_url=url, headed=headed)
+                    page = hub.open_case(sn, run_id=run_id, base_url=url, headed=headed)
                 elif url:
                     page.goto(url, wait_until="domcontentloaded", timeout=30_000)
                 return self._ok(event, started_at, t0, f"打开 {url or page.url}")
             if cap == "close_app":
                 p = event.params or {}
                 if p.get("shutdown_browser") or p.get("shutdown"):
-                    hub.shutdown_thread()
-                    return self._ok(event, started_at, t0, "关闭 Chromium")
-                hub.close_case(sn)
+                    hub.close_run(sn, run_id, shutdown_browser=True)
+                    return self._ok(event, started_at, t0, "关闭本任务 Chromium")
+                hub.close_case(sn, run_id=run_id)
                 return self._ok(event, started_at, t0, "关闭页面")
-            page = hub.current_page(sn)
+            page = hub.current_page(sn, run_id=run_id)
             if page is None:
                 page = hub.open_case(
                     sn,
+                    run_id=run_id,
                     base_url=pick_goto_url(ctx.device.extra.get("target_package")),
                     headed=headed,
                 )
