@@ -278,6 +278,12 @@ class NodeTransport:
         for w in reg.warnings or []:
             SLog.w(TAG, f"Nexus: {w}")
         _apply_registered_credentials(reg, self.core, self)
+        try:
+            from mino_scout.runtime_sidecar import write_runtime_sidecar
+
+            write_runtime_sidecar()
+        except Exception:
+            pass
         if not self._seen_register:
             from mino_scout.heavy_deps import schedule_heavy_deps
 
@@ -362,6 +368,12 @@ class NodeTransport:
         hb = self.core.heartbeat()
         hb.device_delta = delta
         await self._send(P.MsgType.HEARTBEAT, hb)
+        try:
+            from mino_scout.runtime_sidecar import write_runtime_sidecar
+
+            write_runtime_sidecar()
+        except Exception:
+            pass
         if devices is None:
             return
         from mino_scout.core import serials_adb_just_connected

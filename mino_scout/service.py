@@ -160,10 +160,21 @@ def collect_status() -> dict[str, Any]:
     }
     if running:
         try:
-            from mino_scout.app_version import imported_scout_version, read_app_semver
+            from mino_scout.app_version import read_app_semver
+            from mino_scout.runtime_sidecar import read_runtime_sidecar
 
-            out["process_version"] = imported_scout_version()
             out["app_semver"] = read_app_semver()
+            side = read_runtime_sidecar(expect_pid=pid)
+            if side:
+                out["process_version"] = str(side.get("imported_version") or "")
+                out["reported_version"] = str(side.get("reported_version") or "")
+                disk = str(side.get("disk_app_semver") or out["app_semver"] or "")
+                imp = out["process_version"]
+                out["process_stale"] = bool(disk and imp and disk != imp)
+            else:
+                out["process_stale"] = None
+                out["process_version"] = ""
+                out["reported_version"] = ""
         except Exception:
             pass
     bin_path = config_dir() / "bin" / "mino-scout"
