@@ -158,6 +158,13 @@ def collect_status() -> dict[str, Any]:
         "version": str(cfg.get("version") or ""),
         "scout_id": resolve_scout_id(),
     }
+    if running:
+        try:
+            from mino_scout.core import SCOUT_VERSION
+
+            out["process_version"] = SCOUT_VERSION
+        except Exception:
+            pass
     bin_path = config_dir() / "bin" / "mino-scout"
     if bin_path.is_file():
         out["binary"] = str(bin_path)

@@ -271,12 +271,21 @@ class ScoutCore:
                 )
             mode = str(out.get("mode") or "")
             layers = out.get("layers") or []
+            from mino_scout.self_update import installed_layers
+            from mino_scout.config import config_dir
+
+            inst = installed_layers(config_dir()) or {}
+            app_key = str(inst.get("app") or "").strip()
+            need_reload = bool(app_key and app_key != SCOUT_VERSION)
             summary = "已是最新" if mode == "up-to-date" else f"已更新 ({mode})"
             if layers:
                 summary = f"已更新层: {', '.join(str(x) for x in layers)}"
+            if need_reload and mode == "up-to-date":
+                summary = f"安装指纹已是 v{app_key}，正在重启以加载新版本"
             extra: dict[str, Any] = {"command": cmd, "update": out}
-            if mode != "up-to-date":
+            if mode != "up-to-date" or need_reload:
                 extra["_scout_reexec"] = True
+                extra["_scout_shutdown"] = True
             return make_event_result(
                 event, status=EventStatus.PASS, executor_used="core",
                 started_at=started, elapsed_ms=0, summary=summary,
