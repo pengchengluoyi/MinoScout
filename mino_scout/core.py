@@ -28,7 +28,7 @@ from mino_scout.schemas import CapturedScreen, EventResult, EventStatus, PlanEve
 
 TAG = "ScoutCore"
 
-SCOUT_VERSION = "0.1.31"
+SCOUT_VERSION = "0.1.32"
 
 # 幂等缓存保留时长。CONVENTIONS.md §5：该 run 结束或 10 分钟，取先到者。
 _IDEMPOTENT_TTL_SEC = 600.0
@@ -255,6 +255,7 @@ class ScoutCore:
         started = now_iso()
         if cmd == "update":
             from mino_scout import update_progress as UP
+            from mino_scout.app_version import needs_process_reload, report_scout_version
             from mino_scout.self_update import run_update
 
             UP.clear()
@@ -276,12 +277,12 @@ class ScoutCore:
 
             inst = installed_layers(config_dir()) or {}
             app_key = str(inst.get("app") or "").strip()
-            need_reload = bool(app_key and app_key != SCOUT_VERSION)
+            need_reload = needs_process_reload(app_layer_key=app_key)
             summary = "已是最新" if mode == "up-to-date" else f"已更新 ({mode})"
             if layers:
                 summary = f"已更新层: {', '.join(str(x) for x in layers)}"
             if need_reload and mode == "up-to-date":
-                summary = f"安装指纹已是 v{app_key}，正在重启以加载新版本"
+                summary = f"安装指纹 v{app_key or report_scout_version()}，正在重启以加载新版本"
             extra: dict[str, Any] = {"command": cmd, "update": out}
             if mode != "up-to-date" or need_reload:
                 extra["_scout_reexec"] = True
@@ -550,6 +551,8 @@ class ScoutCore:
     # ---------------- 状态 ----------------
 
     def heartbeat(self) -> P.Heartbeat:
+        from mino_scout.app_version import report_scout_version
+
         self._evict_idle_runs()
         with self._lock:
             active = sorted(self._active_runs)
@@ -563,7 +566,7 @@ class ScoutCore:
             busy=bool(active),
             active_runs=active,
             device_workload=workload,
-            scout_version=SCOUT_VERSION,
+            scout_version=report_scout_version(),
         )
 
     def _evict_idle_runs(self) -> None:

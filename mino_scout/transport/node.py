@@ -19,9 +19,9 @@ from typing import Any, Optional
 
 from mino_scout import protocol as P
 from mino_scout.core import (
-    SCOUT_VERSION,
     ScoutCore,
 )
+from mino_scout.app_version import report_scout_version
 from mino_scout.log import SLog, current_node_id
 from mino_scout.schemas import EventStatus
 
@@ -240,7 +240,7 @@ class NodeTransport:
             token=self.token,
             platform=platform.system().lower(),
             arch=platform.machine(),
-            scout_version=SCOUT_VERSION,
+            scout_version=report_scout_version(),
             hostname=resolve_hostname(),
             studio_id=resolve_studio_id(),
             executors=execs,

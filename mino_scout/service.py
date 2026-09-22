@@ -160,9 +160,10 @@ def collect_status() -> dict[str, Any]:
     }
     if running:
         try:
-            from mino_scout.core import SCOUT_VERSION
+            from mino_scout.app_version import imported_scout_version, read_app_semver
 
-            out["process_version"] = SCOUT_VERSION
+            out["process_version"] = imported_scout_version()
+            out["app_semver"] = read_app_semver()
         except Exception:
             pass
     bin_path = config_dir() / "bin" / "mino-scout"
