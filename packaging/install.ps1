@@ -193,21 +193,24 @@ function Install-Source {
 
 # ---------------- 停掉在跑的实例 ----------------
 
-# 刻意在动载荷**之前**停：替换正在运行的 exe 与 _internal 会让当前进程崩在半路，
-# Windows 上更直接 —— 文件被占用时改名会失败。
-$candidateBin = @(
-  (Join-Path $Prefix "bin\mino-scout.exe"),
-  (Join-Path $Prefix "venv\Scripts\mino-scout.exe")
-) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-if ($candidateBin) {
-  try { & $candidateBin stop 2>$null | Out-Null } catch { }
+# 刻意在动载荷**之前**停（进程内热更 MINO_SCOUT_UPDATING=1 时跳过）。
+if (-not $env:MINO_SCOUT_UPDATING) {
+  $candidateBin = @(
+    (Join-Path $Prefix "bin\mino-scout.exe"),
+    (Join-Path $Prefix "venv\Scripts\mino-scout.exe")
+  ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+  if ($candidateBin) {
+    try { & $candidateBin stop 2>$null | Out-Null } catch { }
+  }
+  try {
+    Stop-ScheduledTask -TaskName "Mino Scout" -ErrorAction SilentlyContinue | Out-Null
+  } catch { }
+  try {
+    Get-Process -Name "mino-scout" -ErrorAction SilentlyContinue | Stop-Process -Force
+  } catch { }
+} else {
+  Write-Host "MINO_SCOUT_UPDATING=1 — skip stop (in-place update; Scout reexec after install)"
 }
-try {
-  Stop-ScheduledTask -TaskName "Mino Scout" -ErrorAction SilentlyContinue | Out-Null
-} catch { }
-try {
-  Get-Process -Name "mino-scout" -ErrorAction SilentlyContinue | Stop-Process -Force
-} catch { }
 
 if (Test-Path -LiteralPath (Join-Path $Root "layers.txt")) {
   Install-Layers
@@ -218,8 +221,10 @@ if (Test-Path -LiteralPath (Join-Path $Root "layers.txt")) {
   throw "installer payload not found (need layers.txt with runtime\ app\ browser\, or mino_scout\)"
 }
 
-# CI 与本地自测只想验证"层有没有正确落地"，不该在跑测试的机器上留一个常驻任务。
-if ($env:MINO_SCOUT_SKIP_SERVICE) {
+# CI 与本地自测；进程内热更不重注册计划任务。
+if ($env:MINO_SCOUT_UPDATING) {
+  Write-Host "In-place update finished (scheduled task registration skipped)."
+} elseif ($env:MINO_SCOUT_SKIP_SERVICE) {
   Write-Host "MINO_SCOUT_SKIP_SERVICE set - not registering a scheduled task."
 } else {
   $taskName = "Mino Scout"

@@ -208,6 +208,7 @@ Nexus 收到后：`provides` ∩ 能力目录 → 该节点可执行的 capabili
 | `node.channel_changed` | S→N | 通道状态变化 |
 | `node.engine_crashed` | S→N | WDA / u2 agent 等崩溃 |
 | `node.shutting_down` | S→N | 人主动停。Nexus 立刻失败该节点在途 run。Scout 会在这条之前再发一帧 HEARTBEAT |
+| `node.update_progress` | S→N | 远程/本机自更新进度。`params.progress`：`stage` / `label` / `percent` / `layer` / `bytes_*` |
 | `tap_element` 等 | N→S | 仍走 executor；Nexus 给该 sn 的 `executor_order`，Scout 按 sn 执行 |
 
 `node.stop` / `node.restart`：Scout core 在 RESULT 的内部 extra 里打标记，transport 回完 RESULT 后再 shutdown。**不能靠 `node.stop` 启动一台已经离线的专机。**
@@ -392,7 +393,7 @@ sequenceDiagram
 契约真源：`tests/fixtures/protocol/`。两仓必须一致。
 
 ```
-fixtures_sha256 = cc5068f5ac2c9f777479bd88ee548c4822045212bd11608c43cd5848d4526d42
+fixtures_sha256 = 1891c3cd34daccd735b43533f4d92d345254fe46f88434d8c0af3c839f1b6356
 ```
 
 两仓各自确认：① `protocol.py` 能 round-trip 全部 fixture；② fixture 目录哈希与上面记录一致。

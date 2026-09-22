@@ -48,8 +48,8 @@ else
   PREFIX="${MINO_SCOUT_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/minoscout}"
 fi
 
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "需要 python3 解析 manifest" >&2
+if ! command -v python3 >/dev/null 2>&1 && ! command -v jq >/dev/null 2>&1; then
+  echo "需要 jq 或 python3 解析 manifest / 写入 config（推荐：brew install jq）" >&2
   exit 1
 fi
 
@@ -57,7 +57,8 @@ OS="$(uname -s)"
 case "$OS" in
   Darwin) SCOUT_OS="darwin" ;;
   Linux) SCOUT_OS="linux" ;;
-  *) echo "暂不支持 OS: $OS（请用 macOS / Linux）" >&2; exit 1 ;;
+  MINGW*|MSYS*|CYGWIN*) SCOUT_OS="win32" ;;
+  *) echo "暂不支持 OS: $OS" >&2; exit 1 ;;
 esac
 
 MACHINE="$(uname -m)"
@@ -72,6 +73,13 @@ MANIFEST_JSON="$(mktemp)"
 trap 'rm -f "$MANIFEST_JSON" "${ZIP_PATH:-}"' EXIT
 curl -fsSL "$MANIFEST_URL" -o "$MANIFEST_JSON"
 
+if command -v jq >/dev/null 2>&1; then
+  IFS=$'\t' read -r ZIP_URL ZIP_SHA ZIP_NAME APP_VER <<<"$(jq -r --arg os "$SCOUT_OS" --arg arch "$SCOUT_ARCH" '
+    (.items // [.])[]
+    | select((.os|ascii_downcase)==($os|ascii_downcase) and ((.arch|ascii_downcase)==($arch|ascii_downcase) or (.arch|ascii_downcase)=="x64"))
+    | [.url, (.sha256//""), (.filename//"scout-installer"), (.version//"")]
+    | @tsv' "$MANIFEST_JSON" | head -1)"
+else
 IFS=$'\t' read -r ZIP_URL ZIP_SHA ZIP_NAME APP_VER <<<"$(python3 - "$MANIFEST_JSON" "$SCOUT_OS" "$SCOUT_ARCH" <<'PY'
 import json, sys
 from pathlib import Path
@@ -119,6 +127,7 @@ ver = str(row.get("version") or version)
 print("\t".join([url, sha, name, ver]))
 PY
 )"
+fi
 
 if [[ -z "$ZIP_URL" ]]; then
   echo "无法从 manifest 解析安装包 URL" >&2
@@ -160,6 +169,21 @@ echo "→ 安装到 ${PREFIX}"
 
 CONFIG_PATH="${PREFIX}/config.json"
 mkdir -p "$PREFIX"
+if command -v jq >/dev/null 2>&1; then
+  CFG_BASE="{}"
+  [[ -f "$CONFIG_PATH" ]] && CFG_BASE="$(cat "$CONFIG_PATH")"
+  STUDIO_CLEAN=""
+  if [[ -n "$STUDIO_ID" ]]; then
+    STUDIO_CLEAN="$(printf '%s' "$STUDIO_ID" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]')"
+  fi
+  jq --arg nexus "$NEXUS_URL" --arg token "$TOKEN" --arg ver "$APP_VER" --arg studio "$STUDIO_CLEAN" '
+    .nexus_url = ($nexus | rtrimstr("/"))
+    | .token = $token
+    | .version = $ver
+    | (if $studio != "" then .studio_id = $studio else . end)
+  ' <<<"$CFG_BASE" > "${CONFIG_PATH}.tmp"
+  mv "${CONFIG_PATH}.tmp" "$CONFIG_PATH"
+else
 python3 - "$CONFIG_PATH" "$NEXUS_URL" "$TOKEN" "$STUDIO_ID" "$APP_VER" <<'PY'
 import json, sys, datetime
 from pathlib import Path
@@ -183,6 +207,7 @@ tmp = p.with_suffix(".json.tmp")
 tmp.write_text(text, encoding="utf-8")
 tmp.replace(p)
 PY
+fi
 
 echo "→ 配置已写入 ${CONFIG_PATH}"
 

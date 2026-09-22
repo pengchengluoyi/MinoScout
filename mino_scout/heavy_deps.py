@@ -47,7 +47,9 @@ def install_heavy_deps(*, manifest_url: str = "", adb_hook=None) -> dict[str, An
     else:
         for step in plan.get("steps") or []:
             SLog.i(TAG, f"安装 {step.get('layer') or 'layer'} …")
-            apply_plan_step(step)
+            from mino_scout.service import pid_alive, read_pid
+
+            apply_plan_step(step, inplace=pid_alive(read_pid()))
 
     adb_ok = False
     adb_err = ""

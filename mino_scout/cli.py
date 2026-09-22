@@ -3,7 +3,7 @@
     mino-scout                                 服务在跑 → 公开 status；否则尝试拉起服务
     mino-scout run                             常驻（launchd / systemd 用）
     mino-scout probe                           只探测 manifest，不连 Nexus
-    mino-scout status | stop | update
+    mino-scout status | stop | update | start
     mino-scout configure nexus-url <origin>    只改 Nexus 地址（token 由 Nexus REGISTER 下发）
 
 `probe` 子命令是部署新节点时的第一步（docs/DEVICE_SETUP.md §7）。
@@ -222,17 +222,27 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_update(raw[1:])
     if sub == "heavy-deps":
         return cmd_heavy_deps()
-    if sub == "run":
+    if sub in ("run", "start"):
+        if sub == "start" and not raw[1:]:
+            st = collect_status()
+            if not st.get("running"):
+                return try_start_service()
+            return cmd_public_status()
+        if sub == "start":
+            print("start 仅用于拉起后台服务；前台常驻请用 mino-scout run", file=sys.stderr)
+            return 2
         return cmd_run()
     if sub == "probe":
         return cmd_probe(build_core())
 
-    print(f"未知命令: {sub}（可用: run probe status stop update heavy-deps configure）", file=sys.stderr)
+    print(f"未知命令: {sub}（可用: run start probe status stop update heavy-deps configure）", file=sys.stderr)
     return 2
 
 
 def _legacy_argparse_entry(argv: list[str] | None = None) -> int:
     """保留 --help 文案。"""
+    from mino_scout.config import config_path
+
     ap = argparse.ArgumentParser(
         prog="mino-scout",
         description="Mino Scout 执行器",

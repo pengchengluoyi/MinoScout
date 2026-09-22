@@ -158,6 +158,21 @@ def collect_status() -> dict[str, Any]:
         "version": str(cfg.get("version") or ""),
         "scout_id": resolve_scout_id(),
     }
+    bin_path = config_dir() / "bin" / "mino-scout"
+    if bin_path.is_file():
+        out["binary"] = str(bin_path)
+    layers_file = config_dir() / "bin" / "layers.txt"
+    if layers_file.is_file():
+        try:
+            from mino_scout.install_plan import parse_layers_txt
+
+            layers = parse_layers_txt(layers_file.read_text(encoding="utf-8"))
+            if layers:
+                out["installed_layers"] = layers
+                if layers.get("app"):
+                    out["version"] = out.get("version") or str(cfg.get("version") or "")
+        except Exception:
+            pass
     if running:
         try:
             from mino_scout.power import get_guard
@@ -169,15 +184,23 @@ def collect_status() -> dict[str, Any]:
 
 
 def schedule_reexec(*, delay_sec: float = 1.5) -> dict[str, Any]:
-    """NODE 指令 restart：等本进程退出后再拉起同一条命令行。"""
+    """NODE 指令 restart/update：等本进程退出后再拉起 bin/mino-scout run。"""
     if str(os.environ.get("MINO_SCOUT_NO_REEXEC") or "").strip():
         return {"ok": True, "skipped": True}
     import subprocess
     import sys
 
-    argv = [a for a in list(sys.argv) if a]
-    if not argv:
-        argv = [sys.executable, "-m", "mino_scout"]
+    from mino_scout.config import config_dir
+
+    frozen_bin = config_dir() / "bin" / "mino-scout"
+    if frozen_bin.is_file():
+        argv = [str(frozen_bin), "run"]
+    else:
+        argv = [a for a in list(sys.argv) if a]
+        if not argv:
+            argv = [sys.executable, "-m", "mino_scout", "run"]
+        elif len(argv) == 1 or argv[-1] not in ("run",):
+            argv = [*argv[:1], "run"] if argv[0].endswith("mino-scout") else [sys.executable, "-m", "mino_scout", "run"]
     helper = (
         "import time,subprocess,sys;"
         f"time.sleep({max(0.4, float(delay_sec))});"

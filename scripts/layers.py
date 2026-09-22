@@ -50,9 +50,8 @@ _APP_DIR = "app"
 _BROWSER_DIR = "ms-playwright"
 
 # 冻结配方的世代号。**改了 build_binary.py 的 COLLECT_ALL / EXTRA_HIDDEN /
-# EXCLUDES / 入口脚本，就要 +1** —— 否则依赖清单没变、但产物变了，
-# runtime 指纹却不动，老客户端会以为自己的 runtime 还能用。
-RUNTIME_ABI = 2
+# EXCLUDES / 入口脚本 / runtime 锁定依赖算法，就要 +1**
+RUNTIME_ABI = 3
 
 
 def package_version() -> str:
@@ -65,19 +64,28 @@ def package_version() -> str:
 
 
 def declared_dependencies() -> list[str]:
-    """pyproject 里**声明的**依赖 spec，不是解析后的锁定版本。
-
-    刻意用声明而非 `pip freeze`：pyproject 用的是 `>=`，任何传递依赖发个新版本
-    都会让锁定版本表变化 —— 若指纹跟着变，几乎每次发版 runtime 都"变了"，
-    app-only 更新就永远用不上，整个分层方案作废。
-
-    声明集恰好回答了唯一要紧的问题：**我这个 runtime 能不能满足那个 app**。
-    代价是同一指纹的两台机器实际依赖版本可能不同；这可以接受 —— 新装的机器
-    拿到当时的最新版，老机器留着能跑的旧版。要更严就给依赖上锁（`==`）。
-    """
     data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     deps = list(data.get("project", {}).get("dependencies", []))
     return sorted(str(d).replace(" ", "") for d in deps)
+
+
+def locked_dependencies(frozen: Path | None = None) -> list[str]:
+    """冻结产物 runtime.lock（build 时 pip freeze）。无则回退 pyproject 声明。"""
+    candidates: list[Path] = []
+    if frozen is not None:
+        candidates.extend([frozen / "runtime.lock", frozen / "_internal" / "runtime.lock"])
+    candidates.append(ROOT / "build" / "dist" / "mino-scout" / "runtime.lock")
+    for path in candidates:
+        if not path.is_file():
+            continue
+        lines: list[str] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            t = line.strip()
+            if t and not t.startswith("#"):
+                lines.append(t.replace(" ", ""))
+        if lines:
+            return sorted(lines)
+    return declared_dependencies()
 
 
 def chromium_revision_from_frozen(frozen: Path) -> str:
@@ -120,7 +128,7 @@ def runtime_key(
         f"os={os_name}",
         f"arch={arch}",
         f"chromium_rev={rev or 'unknown'}",
-        *declared_dependencies(),
+        *locked_dependencies(frozen),
     ])
     return "rt-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:10]
 

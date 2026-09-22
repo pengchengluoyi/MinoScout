@@ -29,6 +29,29 @@ fi
 DEST="$PREFIX/bin"
 BIN=""
 LAYER_NAMES="runtime app browser"
+ROLLBACK_SNAPSHOT=""
+ROLLBACK_PATHS=()
+
+rollback_restore() {
+  local p
+  for p in "${ROLLBACK_PATHS[@]}"; do
+    [[ -n "$p" ]] || continue
+    if [[ -e "${p}.old" ]]; then
+      rm -rf "$p"
+      mv "${p}.old" "$p"
+    fi
+  done
+  if [[ -n "$ROLLBACK_SNAPSHOT" && -f "$ROLLBACK_SNAPSHOT" ]]; then
+    cp "$ROLLBACK_SNAPSHOT" "$DEST/layers.txt" 2>/dev/null || true
+  fi
+  echo "安装失败，已从 .old 快照回滚" >&2
+}
+
+install_failed() {
+  local code=$?
+  rollback_restore
+  exit "$code"
+}
 
 echo "Mino Scout → $PREFIX"
 mkdir -p "$PREFIX" "$LOG_DIR"
@@ -81,13 +104,14 @@ layer_target() {
 # 先拷到 .new 再 rename，把"目标已删、新的还没到位"的窗口压到一次 mv。
 replace_path() {
   local src="$1" dst="$2"
-  rm -rf "$dst.new" "$dst.old"
+  rm -rf "$dst.new"
   cp -R "$src" "$dst.new"
   if [[ -e "$dst" ]]; then
+    rm -rf "$dst.old"
     mv "$dst" "$dst.old"
+    ROLLBACK_PATHS+=("$dst")
   fi
   mv "$dst.new" "$dst"
-  rm -rf "$dst.old"
 }
 
 harden() {
@@ -146,6 +170,12 @@ check_app_gate() {
 install_layers() {
   local layer present=0
   mkdir -p "$DEST"
+  trap install_failed ERR
+
+  if [[ -f "$DEST/layers.txt" ]]; then
+    ROLLBACK_SNAPSHOT="$(mktemp)"
+    cp "$DEST/layers.txt" "$ROLLBACK_SNAPSHOT"
+  fi
 
   # app-only 增量：先过闸门，再动任何文件。
   if [[ -d "$ROOT/app" && ! -d "$ROOT/runtime" ]]; then
@@ -175,6 +205,15 @@ install_layers() {
     exit 1
   fi
   BIN="$DEST/mino-scout"
+
+  local p
+  for p in "${ROLLBACK_PATHS[@]}"; do
+    [[ -n "$p" ]] || continue
+    rm -rf "${p}.old"
+  done
+  ROLLBACK_PATHS=()
+  [[ -n "$ROLLBACK_SNAPSHOT" ]] && rm -f "$ROLLBACK_SNAPSHOT"
+  trap - ERR
 }
 
 install_source() {
@@ -198,10 +237,6 @@ install_source() {
   fi
 }
 
-# ---------------- 停掉在跑的实例 ----------------
-
-# 刻意在动载荷**之前**停：替换正在运行的可执行文件与 _internal 会让当前进程
-# 崩在半路（分层前的脚本也有这个问题，顺手修掉）。
 stop_running() {
   local candidate=""
   if [[ -x "$DEST/mino-scout" ]]; then
@@ -242,7 +277,11 @@ stop_running() {
   fi
 }
 
-stop_running
+if [[ -z "${MINO_SCOUT_UPDATING:-}" ]]; then
+  stop_running
+else
+  echo "MINO_SCOUT_UPDATING=1 — 跳过 stop（进程内热更，装完由 Scout reexec）"
+fi
 
 if [[ -f "$ROOT/layers.txt" ]]; then
   install_layers
@@ -296,7 +335,11 @@ EOF
 }
 
 # CI 与本地自测只想验证"层有没有正确落地"，不该在跑测试的机器上留一个常驻服务。
-if [[ -n "${MINO_SCOUT_SKIP_SERVICE:-}" ]]; then
+# 进程内热更也不重写 launchd / kickstart —— 由 schedule_reexec 拉起新二进制。
+if [[ -n "${MINO_SCOUT_UPDATING:-}" ]]; then
+  install_cli_link
+  echo "In-place update finished (service registration skipped)."
+elif [[ -n "${MINO_SCOUT_SKIP_SERVICE:-}" ]]; then
   echo "MINO_SCOUT_SKIP_SERVICE set - not registering a daemon."
 elif [[ "$(uname -s)" == "Darwin" ]]; then
   if [[ "$(id -u)" -eq 0 ]]; then
@@ -318,6 +361,7 @@ elif [[ "$(uname -s)" == "Darwin" ]]; then
       || launchctl load "$PLIST"
     echo "Registered LaunchAgent: $PLIST"
   fi
+  install_cli_link
 elif command -v systemctl >/dev/null 2>&1; then
   if [[ "$(id -u)" -eq 0 ]]; then
     UNIT="/etc/systemd/system/mino-scout.service"
@@ -350,8 +394,10 @@ EOF
     systemctl --user enable --now mino-scout.service
     echo "Registered systemd user unit: $UNIT"
   fi
+  install_cli_link
 else
   echo "No launchd/systemd. Start manually: $BIN"
+  install_cli_link
 fi
 
 if [[ -f "$DEST/layers.txt" ]]; then

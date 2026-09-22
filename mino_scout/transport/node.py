@@ -129,6 +129,13 @@ class NodeTransport:
         guard = get_guard()
         # 重连窗口也要压住：release 只在进程退出。绑 active_runs 会让待命时睡着。
         guard.acquire(HOLDER_NEXUS)
+        loop = asyncio.get_running_loop()
+        from mino_scout import update_progress as UP
+
+        def _progress_hook(payload: dict) -> None:
+            asyncio.run_coroutine_threadsafe(self._emit_update_progress(payload), loop)
+
+        UP.set_progress_hook(_progress_hook)
         try:
             backoff = _BACKOFF_START
             while not self._stop.is_set():
@@ -151,6 +158,7 @@ class NodeTransport:
                 guard.keepalive()
                 backoff = min(backoff * 2, _BACKOFF_MAX)
         finally:
+            UP.set_progress_hook(None)
             try:
                 self.core.shutdown()
             except Exception as exc:
@@ -467,6 +475,15 @@ class NodeTransport:
             SLog.w(TAG, f"{mtype.value} 等应答超时 {timeout}s")
             return None
 
+    async def _emit_update_progress(self, payload: dict) -> None:
+        if self._ws is None:
+            return
+        await self._send_framework(
+            "node.update_progress",
+            detail=str(payload.get("label") or payload.get("stage") or ""),
+            progress=dict(payload),
+        )
+
     async def _send_framework(
         self,
         capability_id: str,
@@ -475,20 +492,24 @@ class NodeTransport:
         platform: str = "",
         detail: str = "",
         severity: str = "info",
+        progress: dict | None = None,
     ) -> None:
         """S→N 框架事件，形状与能力调用相同。等 RESULT；丢了靠心跳收敛。"""
         event = capability_id.split(".", 1)[-1] if capability_id.startswith("node.") else capability_id
+        params: dict[str, Any] = {
+            "node_id": self.core.node_id,
+            "event": event,
+            "detail": detail,
+            "severity": severity,
+        }
+        if progress:
+            params["progress"] = dict(progress)
         req = P.Execute(
             run_id="",
             step_idx=-1,
             sn=sn,
             capability_id=capability_id,
-            params={
-                "node_id": self.core.node_id,
-                "event": event,
-                "detail": detail,
-                "severity": severity,
-            },
+            params=params,
             timeout_sec=5.0,
             device_id=sn,
             platform=platform,

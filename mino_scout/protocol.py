@@ -57,6 +57,7 @@ NODE_EVENT_CAPS = frozenset({
     "node.channel_changed",
     "node.engine_crashed",
     "node.shutting_down",
+    "node.update_progress",
 })
 FRAMEWORK_CAPS = NODE_COMMAND_CAPS | NODE_EVENT_CAPS
 

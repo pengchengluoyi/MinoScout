@@ -28,7 +28,7 @@ from mino_scout.schemas import CapturedScreen, EventResult, EventStatus, PlanEve
 
 TAG = "ScoutCore"
 
-SCOUT_VERSION = "0.1.27"
+SCOUT_VERSION = "0.1.28"
 
 # 幂等缓存保留时长。CONVENTIONS.md §5：该 run 结束或 10 分钟，取先到者。
 _IDEMPOTENT_TTL_SEC = 600.0
@@ -230,12 +230,16 @@ class ScoutCore:
         event = _event_from_execute(req)
         started = now_iso()
         if cmd == "update":
-            try:
-                from mino_scout.self_update import run_update
+            from mino_scout import update_progress as UP
+            from mino_scout.self_update import run_update
 
+            UP.clear()
+            UP.emit("plan", label="开始更新", percent=0)
+            try:
                 out = run_update()
             except Exception as exc:
                 msg = f"更新失败: {exc}"
+                UP.emit("done", label=msg, percent=100, error=msg, done=True)
                 return make_event_result(
                     event, status=EventStatus.FAIL, executor_used="core",
                     started_at=started, elapsed_ms=0, summary=msg, error=msg,

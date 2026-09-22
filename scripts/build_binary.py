@@ -178,6 +178,25 @@ def app_dir(dist_dir: Path) -> Path:
     return dist_dir / "app"
 
 
+def write_runtime_lock(dist_dir: Path) -> None:
+    """写入 pip freeze，供 runtime 层指纹与排障使用。"""
+    proc = subprocess.run(
+        [sys.executable, "-m", "pip", "freeze"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=str(ROOT),
+        timeout=120,
+    )
+    if proc.returncode != 0:
+        print("→ 警告：pip freeze 失败，未写入 runtime.lock")
+        return
+    path = dist_dir / "runtime.lock"
+    path.write_text(proc.stdout, encoding="utf-8")
+    print(f"→ runtime.lock ({len(proc.stdout.splitlines())} packages)")
+
+
 def materialize_app(dist_dir: Path) -> Path:
     """把 mino_scout 源码放到冻结产物的 app/ 下。
 
@@ -241,6 +260,7 @@ def build(*, clean: bool) -> Path:
         raise SystemExit(f"产物目录没生成：{out}")
     _assert_pkg_not_frozen(out)
     materialize_app(out)
+    write_runtime_lock(out)
     if not str(os.environ.get("MINO_SCOUT_SKIP_BROWSER") or "").strip():
         install_playwright_chromium(out)
     else:
