@@ -229,6 +229,15 @@ class NodeTransport:
     async def _register(self) -> None:
         import platform
 
+        def _reexec_if_stale() -> bool:
+            from mino_scout.stale_process import ensure_process_matches_app_layer
+
+            return ensure_process_matches_app_layer(log_tag=TAG)
+
+        if await asyncio.to_thread(_reexec_if_stale):
+            self.request_shutdown()
+            return
+
         # manifest() 会跑连通性探测，里面有阻塞调用；playwright 的 sync API
         # 更是**明确拒绝在事件循环里被调用**（"Please use the Async API instead"）。
         # 必须丢线程池 —— 直接 await 会让 playwright 永远上报不可用。
@@ -328,6 +337,16 @@ class NodeTransport:
 
     async def _tick_heartbeat(self) -> None:
         """心跳时重探 adb / 本机设备，把热插拔放进 device_delta。"""
+
+        def _reexec_if_stale() -> bool:
+            from mino_scout.stale_process import ensure_process_matches_app_layer
+
+            return ensure_process_matches_app_layer(log_tag=TAG)
+
+        if await asyncio.to_thread(_reexec_if_stale):
+            self.request_shutdown()
+            return
+
         from mino_scout.power import get_guard
 
         get_guard().keepalive()

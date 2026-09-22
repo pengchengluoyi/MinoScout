@@ -14,6 +14,12 @@ _SCOUT_VERSION_LINE = re.compile(r'^SCOUT_VERSION\s*=\s*"([^"]+)"', re.M)
 
 def _core_py_candidates() -> list[Path]:
     out: list[Path] = []
+    try:
+        from mino_scout.config import config_dir
+
+        out.append(config_dir() / "bin" / "app" / "mino_scout" / "core.py")
+    except Exception:
+        pass
     if getattr(sys, "frozen", False):
         base = Path(sys.executable).resolve().parent
         out.append(base / "app" / "mino_scout" / "core.py")

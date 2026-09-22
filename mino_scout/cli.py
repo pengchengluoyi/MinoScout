@@ -114,6 +114,14 @@ def cmd_update(argv: list[str]) -> int:
     except Exception as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 1
+    from mino_scout.service import pid_alive, read_pid, schedule_reexec
+
+    if out.get("ok") and pid_alive(read_pid()):
+        from mino_scout.stale_process import process_stale_vs_disk
+
+        if process_stale_vs_disk():
+            schedule_reexec()
+            out = {**out, "reexec": True, "reason": "app 层与进程不一致，已安排重启"}
     print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0 if out.get("ok") else 1
 
@@ -151,6 +159,10 @@ def cmd_default() -> int:
 def cmd_run() -> int:
     from mino_scout.config import config_path, resolve_runtime
     from mino_scout.playwright_hub import apply_browsers_path, install_playwright_closed_quiet
+    from mino_scout.stale_process import ensure_process_matches_app_layer
+
+    if ensure_process_matches_app_layer(log_tag=TAG):
+        return 0
 
     apply_browsers_path()
     install_playwright_closed_quiet()
