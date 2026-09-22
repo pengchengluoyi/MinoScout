@@ -52,8 +52,9 @@ def ensure_process_matches_app_layer(*, log_tag: str = "StaleProcess") -> bool:
     """磁盘 app semver ≠ 内存 import 时 schedule reexec。返回 True 表示已安排重启，调用方应尽快退出。"""
     if not process_stale_vs_disk():
         return False
+    from importlib import import_module
+
     from mino_scout.log import SLog
-    from mino_scout.service import schedule_reexec
 
     disk = read_disk_app_semver()
     imp = imported_app_semver()
@@ -61,5 +62,5 @@ def ensure_process_matches_app_layer(*, log_tag: str = "StaleProcess") -> bool:
         log_tag,
         f"app 层已更新（磁盘 v{disk}，进程 v{imp}），正在 reexec 以加载新版本",
     )
-    schedule_reexec()
+    import_module("mino_scout.reexec_spawn").schedule_reexec()
     return True

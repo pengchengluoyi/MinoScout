@@ -469,9 +469,10 @@ class NodeTransport:
     def _apply_node_side_effects(self, ev) -> None:
         extra = dict(getattr(ev, "raw_response", None) or {})
         if extra.get("_scout_reexec"):
-            from mino_scout.service import schedule_reexec
+            # 热更 app 层后必须从磁盘加载本模块，不能 import 已缓存的旧 service.schedule_reexec
+            from importlib import import_module
 
-            schedule_reexec()
+            import_module("mino_scout.reexec_spawn").schedule_reexec()
         if extra.get("_scout_shutdown"):
             self.request_shutdown()
 

@@ -114,13 +114,14 @@ def cmd_update(argv: list[str]) -> int:
     except Exception as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 1
-    from mino_scout.service import pid_alive, read_pid, schedule_reexec
+    from mino_scout.service import pid_alive, read_pid
+    from importlib import import_module
 
     if out.get("ok") and pid_alive(read_pid()):
         from mino_scout.stale_process import process_stale_vs_disk
 
         if process_stale_vs_disk():
-            schedule_reexec()
+            import_module("mino_scout.reexec_spawn").schedule_reexec()
             out = {**out, "reexec": True, "reason": "app 层与进程不一致，已安排重启"}
     print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0 if out.get("ok") else 1

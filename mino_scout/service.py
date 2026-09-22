@@ -203,90 +203,18 @@ def collect_status() -> dict[str, Any]:
 
 
 def schedule_reexec(*, delay_sec: float = 1.5) -> dict[str, Any]:
-    """NODE 指令 restart/update：等本进程退出后再拉起 bin/mino-scout run。"""
-    if str(os.environ.get("MINO_SCOUT_NO_REEXEC") or "").strip():
-        return {"ok": True, "skipped": True}
-    import shlex
-    import subprocess
-    import sys
+    """向后兼容：委托 reexec_spawn（热更后请优先 import reexec_spawn）。"""
+    from importlib import import_module
 
-    from mino_scout.config import config_dir
-
-    delay = max(0.4, float(delay_sec))
-    frozen_bin = config_dir() / "bin" / "mino-scout"
-    run_argv = [str(frozen_bin), "run"] if frozen_bin.is_file() else []
-    if not run_argv:
-        run_argv = [sys.executable, "-m", "mino_scout", "run"]
-
-    # PyInstaller 冻结产物里 sys.executable 就是 mino-scout 本身，不能当 python -c 用。
-    frozen_exec = bool(getattr(sys, "frozen", False))
-    if not frozen_exec and frozen_bin.is_file():
-        try:
-            frozen_exec = Path(sys.executable).resolve() == frozen_bin.resolve()
-        except OSError:
-            frozen_exec = False
-
-    if frozen_exec and frozen_bin.is_file():
-        quoted = shlex.quote(str(frozen_bin))
-        if os.name == "nt":
-            cmd = f'timeout /t {max(1, int(delay))} /nobreak >nul & "{frozen_bin}" run'
-            subprocess.Popen(
-                ["cmd.exe", "/c", cmd],
-                start_new_session=True,
-                close_fds=True,
-                cwd=str(config_dir()),
-            )
-        else:
-            script = f"sleep {delay}; exec {quoted} run"
-            subprocess.Popen(
-                ["/bin/sh", "-c", script],
-                start_new_session=True,
-                close_fds=True,
-                cwd=str(config_dir()),
-            )
-    else:
-        helper = (
-            "import time,subprocess,sys;"
-            f"time.sleep({delay});"
-            "subprocess.Popen(sys.argv[1:], start_new_session=True)"
-        )
-        subprocess.Popen(
-            [sys.executable, "-c", helper, *run_argv],
-            start_new_session=True,
-            close_fds=True,
-        )
-
-    _kickstart_service_after_reexec(delay_sec=delay + 0.5)
-    return {"ok": True, "skipped": False}
+    return import_module("mino_scout.reexec_spawn").schedule_reexec(delay_sec=delay_sec)
 
 
 def _kickstart_service_after_reexec(*, delay_sec: float = 2.0) -> None:
-    """launchd KeepAlive 不会在正常 exit 后拉起；延迟 kickstart 作 reexec 失败时的兜底。"""
-    import shlex
-    import subprocess
-    import sys
+    from importlib import import_module
 
-    if sys.platform != "darwin":
-        return
-
-    uid = os.getuid()
-    target = f"gui/{uid}/com.mino.scout"
-    plist = Path.home() / "Library/LaunchAgents/com.mino.scout.plist"
-    if not plist.is_file():
-        return
-    script = (
-        f"sleep {max(0.5, float(delay_sec))}; "
-        f"launchctl kickstart -k {shlex.quote(target)} 2>/dev/null || "
-        f"launchctl bootstrap gui/{uid} {shlex.quote(str(plist))} 2>/dev/null"
-    )
-    try:
-        subprocess.Popen(
-            ["/bin/sh", "-c", script],
-            start_new_session=True,
-            close_fds=True,
-        )
-    except OSError as exc:
-        SLog.w(TAG, f"reexec 后 kickstart 安排失败: {exc}")
+    mod = import_module("mino_scout.reexec_spawn")
+    if hasattr(mod, "_kickstart_launchd"):
+        mod._kickstart_launchd(delay_sec=delay_sec)
 
 
 def request_stop(*, timeout_sec: float = 15.0) -> dict[str, Any]:
