@@ -174,25 +174,29 @@ def cmd_run() -> int:
         print(f"需要 token：{config_path()} 或 Studio 安装流程写入", file=sys.stderr)
         return 2
 
+    from mino_scout.service import daemon_run_lock
     from mino_scout.transport.node import NodeTransport
 
-    transport = NodeTransport(core, nexus_url=nexus, token=token)
-    write_pid()
-    _install_signals(transport)
-    try:
-        asyncio.run(transport.run_forever())
-    except KeyboardInterrupt:
-        transport.request_shutdown()
-        SLog.i(TAG, "收到 Ctrl-C，退出")
-    finally:
-        try:
-            core.shutdown()
-        except Exception:
-            pass
-        from mino_scout.power import get_guard
+    with daemon_run_lock() as sole:
+        if not sole:
+            return 0
 
-        get_guard().sync([])
-        clear_pid(only_if=_os_getpid())
+        transport = NodeTransport(core, nexus_url=nexus, token=token)
+        _install_signals(transport)
+        try:
+            asyncio.run(transport.run_forever())
+        except KeyboardInterrupt:
+            transport.request_shutdown()
+            SLog.i(TAG, "收到 Ctrl-C，退出")
+        finally:
+            try:
+                core.shutdown()
+            except Exception:
+                pass
+            from mino_scout.power import get_guard
+
+            get_guard().sync([])
+            clear_pid(only_if=_os_getpid())
     return 0
 
 

@@ -1,7 +1,8 @@
 """本机守护进程的 pid / status / stop。
 
 Studio 和运维都走这三件事，不要再让人去 `launchctl unload`。
-`run` 写 pid；`status` 看进程在不在；`stop` 发 SIGTERM，Scout 自己发
+`run` 在 `scout.lock` 上 flock 后写 pid 再 dial Nexus，避免 kickstart 与旧进程双 REGISTER；
+`status` 看进程在不在；`stop` 发 SIGTERM，Scout 自己发
 `EXECUTE node.shutting_down` 再退出。launchd / systemd 的 KeepAlive 配的是
 Crashed / on-failure，正常退出不会被拉起来。
 """
@@ -11,17 +12,26 @@ import json
 import os
 import signal
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from mino_scout.config import config_dir, config_path, load_config, resolve_runtime, resolve_scout_id
 from mino_scout.log import SLog
 
 TAG = "Service"
 
+_STALE_LOCK_WAIT_SEC = 5.0
+_STALE_LOCK_POLL_SEC = 0.12
+
 
 def pid_path() -> Path:
     return config_dir() / "scout.pid"
+
+
+def lock_path() -> Path:
+    """`mino-scout run` 单实例锁；持有期间才允许 dial Nexus。"""
+    return config_dir() / "scout.lock"
 
 
 def write_pid(pid: int | None = None) -> Path:
@@ -50,6 +60,111 @@ def clear_pid(*, only_if: int = 0) -> None:
         path.unlink()
     except OSError:
         pass
+
+
+def _pid_from_lock_file(fh: Any) -> int:
+    try:
+        fh.seek(0)
+        raw = (fh.read() or b"").decode("utf-8", errors="ignore").strip()
+    except OSError:
+        return read_pid()
+    if not raw:
+        return read_pid()
+    try:
+        return int(raw.split()[0])
+    except ValueError:
+        return read_pid()
+
+
+class _RunLockHold:
+    def __init__(self) -> None:
+        self._fh: Any = None
+
+    def try_acquire(self, *, stale_wait_sec: float = _STALE_LOCK_WAIT_SEC) -> tuple[bool, str]:
+        path = lock_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        deadline = time.time() + max(0.5, float(stale_wait_sec))
+        last_holder = 0
+        while True:
+            fh = open(path, "a+b")
+            if self._try_flock_nb(fh):
+                self._fh = fh
+                pid = os.getpid()
+                fh.seek(0)
+                fh.truncate()
+                fh.write(f"{pid}\n".encode("utf-8"))
+                fh.flush()
+                return True, ""
+            holder = _pid_from_lock_file(fh)
+            last_holder = holder or last_holder
+            fh.close()
+            if holder and pid_alive(holder) and holder != os.getpid():
+                return False, f"已有 Scout 在运行（pid={holder}），本进程跳过 dial"
+            if time.time() >= deadline:
+                if holder and pid_alive(holder):
+                    return False, f"无法取得单实例锁（pid={holder} 仍存活）"
+                return False, "无法取得单实例锁（等待旧进程释放超时）"
+            time.sleep(_STALE_LOCK_POLL_SEC)
+
+    @staticmethod
+    def _try_flock_nb(fh: Any) -> bool:
+        if os.name == "nt":
+            import msvcrt
+
+            try:
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                return True
+            except OSError:
+                return False
+        import fcntl
+
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            return False
+        except OSError:
+            return False
+
+    def release(self) -> None:
+        fh = self._fh
+        self._fh = None
+        if fh is None:
+            return
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            fh.close()
+        except OSError:
+            pass
+
+
+@contextmanager
+def daemon_run_lock(*, stale_wait_sec: float = _STALE_LOCK_WAIT_SEC) -> Iterator[bool]:
+    """Yield True 表示已取得 flock，可 dial Nexus；False 时调用方应直接退出 run。"""
+    hold = _RunLockHold()
+    ok, msg = hold.try_acquire(stale_wait_sec=stale_wait_sec)
+    if not ok:
+        if msg:
+            SLog.i(TAG, msg)
+        yield False
+        return
+    try:
+        write_pid()
+        yield True
+    finally:
+        hold.release()
 
 
 def pid_alive(pid: int) -> bool:
