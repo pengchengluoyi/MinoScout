@@ -28,7 +28,7 @@ from mino_scout.schemas import CapturedScreen, EventResult, EventStatus, PlanEve
 
 TAG = "ScoutCore"
 
-SCOUT_VERSION = "0.1.29"
+SCOUT_VERSION = "0.1.30"
 
 # 幂等缓存保留时长。CONVENTIONS.md §5：该 run 结束或 10 分钟，取先到者。
 _IDEMPOTENT_TTL_SEC = 600.0
@@ -554,6 +554,7 @@ class ScoutCore:
             busy=bool(active),
             active_runs=active,
             device_workload=workload,
+            scout_version=SCOUT_VERSION,
         )
 
     def _evict_idle_runs(self) -> None:

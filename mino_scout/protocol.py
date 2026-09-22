@@ -133,6 +133,7 @@ class Heartbeat:
     active_runs: list[str] = field(default_factory=list)
     device_delta: list[DeviceManifest] = field(default_factory=list)
     device_workload: list[DeviceWorkload] = field(default_factory=list)
+    scout_version: str = ""
 
 
 @dataclass
