@@ -147,6 +147,9 @@ Nexus 收到后：`provides` ∩ 能力目录 → 该节点可执行的 capabili
   "active_runs": ["run_20260902_153001_R5CT30"],
   "device_delta": [
     {"sn": "R5CT30xxxx", "channels": {"adb": "disconnected", "remote": "connected"}}
+  ],
+  "device_workload": [
+    {"sn": "R5CT30xxxx", "run_id": "run_20260902_153001_R5CT30", "step_idx": 3, "capability_id": "tap"}
   ]
 }
 ```
@@ -203,6 +206,7 @@ Nexus 收到后：`provides` ∩ 能力目录 → 该节点可执行的 capabili
 | `node.stop`（别名 `stop`） | N→S | 应答 RESULT 后 Scout 退出 |
 | `node.restart`（别名 `restart`） | N→S | 应答后自拉起再退出 |
 | `node.update`（别名 `update`） | N→S | 无远程装包路径则 `fail` |
+| `node.log_tail` | N→S | 读本机 Scout 日志 tail。`params.lines` 默认 200，上限 2000 |
 | `node.device_lost` | S→N | 设备消失。`params.node_id` / `detail` / `severity`；`sn`/`device_id` 为设备 |
 | `node.device_found` | S→N | 设备出现 |
 | `node.channel_changed` | S→N | 通道状态变化 |
@@ -393,7 +397,7 @@ sequenceDiagram
 契约真源：`tests/fixtures/protocol/`。两仓必须一致。
 
 ```
-fixtures_sha256 = 1891c3cd34daccd735b43533f4d92d345254fe46f88434d8c0af3c839f1b6356
+fixtures_sha256 = 6dd201c7af7023a712f37e41aa042b1af500e2bdfd1e9424713fa71d2caf7406
 ```
 
 两仓各自确认：① `protocol.py` 能 round-trip 全部 fixture；② fixture 目录哈希与上面记录一致。

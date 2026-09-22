@@ -28,7 +28,7 @@ from mino_scout.schemas import CapturedScreen, EventResult, EventStatus, PlanEve
 
 TAG = "ScoutCore"
 
-SCOUT_VERSION = "0.1.28"
+SCOUT_VERSION = "0.1.29"
 
 # 幂等缓存保留时长。CONVENTIONS.md §5：该 run 结束或 10 分钟，取先到者。
 _IDEMPOTENT_TTL_SEC = 600.0
@@ -69,6 +69,7 @@ _NODE_COMMANDS = {
     "node.stop": "stop",
     "node.restart": "restart",
     "node.update": "update",
+    "node.log_tail": "log_tail",
 }
 
 
@@ -127,6 +128,7 @@ class ScoutCore:
         # launch_app 和 screenshot 拆到不同 worker，下一帧就是「没有打开的页面」。
         self._pw_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="scout-pw")
         self._adb_ime_last_check: dict[str, float] = {}
+        self._device_workload: dict[str, P.DeviceWorkload] = {}
 
     # ---------------- EXECUTE（唯一 dispatch） ----------------
 
@@ -158,6 +160,19 @@ class ScoutCore:
             with self._lock:
                 self._active_runs.add(req.run_id)
                 self._run_seen[req.run_id] = time.time()
+        wl_sn = ""
+        if req.run_id and req.step_idx >= 0:
+            cap_preview = _canonical_cap(req.capability_id)
+            if cap_preview not in _NODE_COMMANDS and not cap_preview.startswith("node."):
+                wl_sn = str(req.sn or req.device_id or "").strip()
+                if wl_sn:
+                    with self._lock:
+                        self._device_workload[wl_sn] = P.DeviceWorkload(
+                            sn=wl_sn,
+                            run_id=req.run_id,
+                            step_idx=req.step_idx,
+                            capability_id=cap_preview,
+                        )
         try:
             return self._dispatch(req)
         except Exception as exc:
@@ -172,6 +187,15 @@ class ScoutCore:
                 error=f"{type(exc).__name__}: {exc}",
             )
         finally:
+            if wl_sn:
+                with self._lock:
+                    cur = self._device_workload.get(wl_sn)
+                    if (
+                        cur is not None
+                        and cur.run_id == req.run_id
+                        and cur.step_idx == req.step_idx
+                    ):
+                        self._device_workload.pop(wl_sn, None)
             current_run_id.reset(token_run)
             current_step_idx.reset(token_step)
 
@@ -257,6 +281,21 @@ class ScoutCore:
                 event, status=EventStatus.PASS, executor_used="core",
                 started_at=started, elapsed_ms=0, summary=summary,
                 raw_response=extra,
+            )
+        if cmd == "log_tail":
+            from mino_scout.local_logs import tail_logs
+
+            lines = int((req.params or {}).get("lines") or 200)
+            body = tail_logs(lines=lines)
+            summary = f"日志 tail（stdout {len(body.get('files', {}).get('stdout', {}).get('tail') or [])} 行）"
+            return make_event_result(
+                event,
+                status=EventStatus.PASS,
+                executor_used="core",
+                started_at=started,
+                elapsed_ms=0,
+                summary=summary,
+                raw_response={"command": cmd, "logs": body},
             )
         extra: dict[str, Any] = {"command": cmd, "_scout_shutdown": True}
         if cmd == "restart":
@@ -505,11 +544,16 @@ class ScoutCore:
         self._evict_idle_runs()
         with self._lock:
             active = sorted(self._active_runs)
+            workload = sorted(
+                self._device_workload.values(),
+                key=lambda w: (w.sn, w.run_id, w.step_idx),
+            )
         return P.Heartbeat(
             node_id=self.node_id,
             uptime_sec=int(time.time() - self._started),
             busy=bool(active),
             active_runs=active,
+            device_workload=workload,
         )
 
     def _evict_idle_runs(self) -> None:

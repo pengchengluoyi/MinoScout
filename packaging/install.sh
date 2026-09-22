@@ -128,6 +128,14 @@ harden() {
   fi
 }
 
+install_cli_link() {
+  [[ -n "${BIN:-}" && -x "$BIN" ]] || return 0
+  local link_dir="${MINO_SCOUT_BIN_LINK_DIR:-$HOME/.local/bin}"
+  mkdir -p "$link_dir"
+  ln -sf "$BIN" "$link_dir/mino-scout"
+  echo "CLI 链接: $link_dir/mino-scout → $BIN"
+}
+
 install_layer() {
   local layer="$1" src="$ROOT/$layer" rel target
   rel="$(layer_target "$layer")"

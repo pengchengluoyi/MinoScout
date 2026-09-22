@@ -50,7 +50,7 @@ class EventStatus(str, Enum):
 
 
 # 框架层 capability_id。N→S 是节点指令，S→N 是节点事件，形状与设备能力相同。
-NODE_COMMAND_CAPS = frozenset({"node.stop", "node.restart", "node.update"})
+NODE_COMMAND_CAPS = frozenset({"node.stop", "node.restart", "node.update", "node.log_tail"})
 NODE_EVENT_CAPS = frozenset({
     "node.device_lost",
     "node.device_found",
@@ -118,12 +118,21 @@ class Registered:
 
 
 @dataclass
+class DeviceWorkload:
+    sn: str
+    run_id: str = ""
+    step_idx: int = -1
+    capability_id: str = ""
+
+
+@dataclass
 class Heartbeat:
     node_id: str
     uptime_sec: int
     busy: bool = False
     active_runs: list[str] = field(default_factory=list)
     device_delta: list[DeviceManifest] = field(default_factory=list)
+    device_workload: list[DeviceWorkload] = field(default_factory=list)
 
 
 @dataclass
