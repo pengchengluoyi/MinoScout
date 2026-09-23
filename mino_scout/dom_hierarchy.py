@@ -7,6 +7,7 @@ from typing import Any
 
 from mino_scout.log import SLog
 from mino_scout.playwright_hub import get_hub
+from mino_scout.web_focus import evaluate_web_focus, mark_focused_node
 
 TAG = "DomHierarchy"
 
@@ -55,6 +56,7 @@ class DomDump:
     nodes: list[dict[str, Any]]
     error: str = ""
     elapsed_ms: int = 0
+    web_focus: dict[str, Any] | None = None
 
 
 def dump_dom_nodes(*, sn: str, run_id: str = "") -> DomDump:
@@ -68,6 +70,7 @@ def dump_dom_nodes(*, sn: str, run_id: str = "") -> DomDump:
             error=f"web 槽无打开页面 sn={sn} run_id={run_id or '(empty)'}",
             elapsed_ms=int((time.time() - t0) * 1000),
         )
+    web_focus = evaluate_web_focus(page)
     try:
         raw = page.evaluate(_JS_COLLECT)
     except Exception as exc:
@@ -79,6 +82,7 @@ def dump_dom_nodes(*, sn: str, run_id: str = "") -> DomDump:
             elapsed_ms=int((time.time() - t0) * 1000),
         )
     nodes = [n for n in (raw or []) if isinstance(n, dict)]
+    mark_focused_node(nodes, web_focus)
     try:
         page_url = str(page.url or "").strip()
     except Exception:
@@ -102,4 +106,4 @@ def dump_dom_nodes(*, sn: str, run_id: str = "") -> DomDump:
         )
     elapsed = int((time.time() - t0) * 1000)
     SLog.i(TAG, f"dom dump sn={sn} nodes={len(nodes)} ms={elapsed}")
-    return DomDump(ok=True, nodes=nodes, elapsed_ms=elapsed)
+    return DomDump(ok=True, nodes=nodes, elapsed_ms=elapsed, web_focus=web_focus)

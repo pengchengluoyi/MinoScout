@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 import time
+from typing import Any
 
 from mino_scout.log import SLog
 
@@ -14,7 +15,14 @@ from mino_scout.executors.base import (
     _now_iso,
     make_event_result,
 )
-from mino_scout.playwright_hub import get_hub, headed_from_hint, pick_goto_url
+from mino_scout.playwright_hub import get_hub, goto_url, headed_from_hint, pick_goto_url
+from mino_scout.playwright_locators import (
+    click_locator,
+    css_selector_from_params,
+    input_locators_for_field,
+    locator_from_params,
+)
+from mino_scout.web_focus import evaluate_web_focus, web_focus_editable_ready
 
 TAG = "PlaywrightExecutor"
 
@@ -29,6 +37,8 @@ _SUPPORTED_CAPS: set[str] = {
     "input_text",
     "swipe_direction",
     "swipe_element_to_element",
+    "get_foreground_app",
+    "wait_screen_ready",
 }
 
 
@@ -122,9 +132,15 @@ class PlaywrightExecutor:
                 )
                 page = hub.current_page(sn, run_id=run_id)
                 if page is None:
-                    page = hub.open_case(sn, run_id=run_id, base_url=url, headed=headed)
+                    page = hub.open_case(
+                        sn,
+                        run_id=run_id,
+                        base_url=url,
+                        headed=headed,
+                        goto_params=p,
+                    )
                 elif url:
-                    page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+                    goto_url(page, url, params=p)
                 return self._ok(event, started_at, t0, f"打开 {url or page.url}")
             if cap == "close_app":
                 p = event.params or {}
@@ -141,6 +157,10 @@ class PlaywrightExecutor:
                     base_url=pick_goto_url(ctx.device.extra.get("target_package")),
                     headed=headed,
                 )
+            if cap == "get_foreground_app":
+                return self._get_foreground_app(event, hub, sn, run_id, started_at, t0)
+            if cap == "wait_screen_ready":
+                return self._wait_screen_ready(event, page, started_at, t0)
             if cap == "tap_element":
                 return self._tap(event, page, started_at, t0)
             if cap == "multi_tap":
@@ -150,8 +170,16 @@ class PlaywrightExecutor:
             if cap == "input_text":
                 return self._input(event, page, started_at, t0)
             if cap == "press_key":
-                key = str((event.params or {}).get("key") or (event.params or {}).get("keycode") or "Escape")
-                mapped = {"back": "Escape", "home": "Home", "enter": "Enter", "esc": "Escape"}.get(key.lower(), key)
+                p = event.params or {}
+                key = str(p.get("key") or p.get("keycode") or "Escape")
+                low = key.lower()
+                if low in ("back", "browser_back") and p.get("browser_back", True):
+                    try:
+                        page.go_back(wait_until="domcontentloaded", timeout=10_000)
+                        return self._ok(event, started_at, t0, "浏览器后退")
+                    except Exception:
+                        pass
+                mapped = {"back": "Escape", "home": "Home", "enter": "Enter", "esc": "Escape"}.get(low, key)
                 page.keyboard.press(mapped)
                 return self._ok(event, started_at, t0, f"按键 {mapped}")
             if cap == "swipe_direction":
@@ -195,11 +223,72 @@ class PlaywrightExecutor:
             SLog.e(TAG, f"execute exception cap={cap} sn={sn}: {exc}")
             return self._fail(event, started_at, t0, f"exception: {exc}")
 
+    def _get_foreground_app(
+        self,
+        event: PlanEvent,
+        hub: Any,
+        sn: str,
+        run_id: str,
+        started_at: str,
+        t0: float,
+    ) -> EventResult:
+        url = hub.current_url(sn, run_id=run_id)
+        if not url:
+            return self._fail(event, started_at, t0, "无打开页面，无法读取当前 URL")
+        expect = pick_goto_url(
+            (event.params or {}).get("url"),
+            (event.params or {}).get("package"),
+        )
+        match = None
+        if expect:
+            match = url.rstrip("/") == expect.rstrip("/") or expect in url
+        summary = url[:120]
+        if expect:
+            summary = f"{summary}（目标{'命中' if match else '未命中'}）"
+        return make_event_result(
+            event,
+            status=EventStatus.PASS,
+            executor_used=self.id,
+            started_at=started_at,
+            elapsed_ms=int((time.time() - t0) * 1000),
+            summary=summary,
+            raw_response={
+                "page_url": url,
+                "package": url,
+                "platform": "web",
+                "expected_url": expect,
+                "match": match,
+            },
+        )
+
+    def _wait_screen_ready(self, event: PlanEvent, page, started_at: str, t0: float) -> EventResult:
+        p = event.params or {}
+        timeout = max(1000, min(int(p.get("timeout_ms") or 20_000), 120_000))
+        sel = css_selector_from_params(p) or str(p.get("wait_selector") or "").strip()
+        try:
+            if sel:
+                page.wait_for_selector(sel, state="visible", timeout=timeout)
+                return self._ok(event, started_at, t0, f"已出现 {sel[:48]}")
+            state = str(p.get("load_state") or p.get("wait_until") or "domcontentloaded").strip()
+            if state not in ("commit", "domcontentloaded", "load", "networkidle"):
+                state = "domcontentloaded"
+            page.wait_for_load_state(state, timeout=timeout)
+            return self._ok(event, started_at, t0, f"页面 {state}")
+        except Exception as exc:
+            return self._fail(event, started_at, t0, f"等待就绪超时: {exc}")
+
     def _tap(self, event: PlanEvent, page, started_at: str, t0: float) -> EventResult:
-        name = _name_from_params(event.params or {})
-        if name and self._click_by_name(page, name):
-            self._settle_page(page)
-            return self._ok(event, started_at, t0, f"点击「{name[:40]}」")
+        params = event.params or {}
+        name = _name_from_params(params)
+        loc = locator_from_params(page, params, name=name)
+        if loc is not None:
+            try:
+                click_locator(loc)
+                self._settle_page(page)
+                label = name[:40] if name else css_selector_from_params(params)[:40]
+                return self._ok(event, started_at, t0, f"点击「{label}」")
+            except Exception:
+                pass
         try:
             x, y = self._xy(event, page)
         except ValueError:
@@ -266,85 +355,16 @@ class PlaywrightExecutor:
         page.mouse.up()
         return self._ok(event, started_at, t0, f"长按 ({x},{y})")
 
-    def _click_by_name(self, page, name: str) -> bool:
-        locators = (
-            page.get_by_role("button", name=name),
-            page.get_by_role("link", name=name),
-            page.get_by_role("tab", name=name),
-            page.get_by_role("menuitem", name=name),
-            page.get_by_role("textbox", name=name),
-            page.get_by_placeholder(name),
-            page.get_by_label(name),
-            page.get_by_text(name, exact=True),
-            page.get_by_text(name),
-        )
-        for loc in locators:
+    def _find_input(self, page, name: str, text: str, login_field: str = "", params: dict | None = None):
+        css = css_selector_from_params(params)
+        if css:
             try:
-                if loc.count() == 0:
-                    continue
-                loc.first.click(timeout=4000)
-                return True
+                loc = page.locator(css)
+                if loc.count() > 0:
+                    return loc.first
             except Exception:
-                continue
-        return False
-
-    def _find_input(self, page, name: str, text: str, login_field: str = ""):
-        candidates = []
-        lf = str(login_field or "").strip().lower()
-        if lf == "email":
-            candidates.extend((
-                page.locator("input[type='email']"),
-                page.locator("input[autocomplete='email']"),
-                page.locator("input[name*='email' i]"),
-                page.get_by_placeholder(re.compile(r"email|邮箱|e-?mail", re.I)),
-                page.get_by_label(re.compile(r"email|邮箱", re.I)),
-                page.get_by_role("textbox", name=re.compile(r"email|邮箱", re.I)),
-            ))
-        elif lf == "phone":
-            candidates.extend((
-                page.locator("input[type='tel']"),
-                page.locator("input[autocomplete='tel']"),
-                page.locator("input[name*='phone' i], input[name*='mobile' i]"),
-                page.get_by_placeholder(re.compile(r"手机|phone|mobile", re.I)),
-                page.get_by_label(re.compile(r"手机|phone", re.I)),
-            ))
-        elif lf == "sms_code":
-            candidates.extend((
-                page.locator("input[autocomplete='one-time-code']"),
-                page.locator("input[name*='otp' i], input[name*='code' i], input[name*='captcha' i]"),
-                page.get_by_placeholder(re.compile(r"验证码|code|otp", re.I)),
-                page.get_by_label(re.compile(r"验证码|code", re.I)),
-            ))
-        elif lf == "password":
-            candidates.extend((
-                page.locator("input[type='password']"),
-                page.get_by_placeholder(re.compile(r"密码|password", re.I)),
-            ))
-        if name and lf not in ("email", "phone", "sms_code", "password"):
-            candidates.extend((
-                page.get_by_role("textbox", name=name),
-                page.get_by_placeholder(name),
-                page.get_by_label(name),
-            ))
-        raw = (text or "").strip()
-        if not lf and "@" in raw:
-            candidates.extend((
-                page.locator("input[type='email']"),
-                page.locator("input[autocomplete='email']"),
-                page.get_by_placeholder(re.compile(r"email|邮箱", re.I)),
-            ))
-        if re.fullmatch(r"1\d{10}", raw):
-            candidates.extend((
-                page.get_by_placeholder(re.compile(r"手机")),
-                page.locator("input[type='tel']"),
-                page.locator("input[name*='phone' i], input[name*='mobile' i]"),
-            ))
-        elif re.fullmatch(r"\d{4,8}", raw):
-            candidates.extend((
-                page.get_by_placeholder(re.compile(r"验证码")),
-                page.locator("input[autocomplete='one-time-code']"),
-            ))
-        for loc in candidates:
+                pass
+        for loc in input_locators_for_field(page, login_field, name, text):
             try:
                 if loc.count() > 0:
                     return loc.first
@@ -373,20 +393,36 @@ class PlaywrightExecutor:
         text = str(params.get("text") or "")
         name = _name_from_params(params)
         login_field = _login_field_from_params(params)
-        loc = self._find_input(page, name, text, login_field=login_field)
+        loc = self._find_input(page, name, text, login_field=login_field, params=params)
         if loc is not None:
+            try:
+                loc.click(timeout=3000)
+            except Exception:
+                pass
             _fill_and_sync(loc, text)
             self._settle_page(page)
             tag = login_field or "textbox"
             return self._ok(event, started_at, t0, f"输入({tag}) {text[:24]}")
+        clicked = False
         try:
             x, y = self._xy(event, page)
             page.mouse.click(x, y)
+            clicked = True
         except ValueError:
             pass
-        page.keyboard.type(text, delay=20)
-        self._settle_page(page)
-        return self._ok(event, started_at, t0, f"输入 {text[:24]}")
+        focus = evaluate_web_focus(page)
+        if web_focus_editable_ready(focus):
+            page.keyboard.type(text, delay=20)
+            self._settle_page(page)
+            return self._ok(event, started_at, t0, f"输入(focus) {text[:24]}")
+        if clicked:
+            return self._fail(
+                event,
+                started_at,
+                t0,
+                f"坐标已点但焦点不可输入（{focus.get('reason', '?')}）；请检查 selector/field",
+            )
+        return self._fail(event, started_at, t0, "未找到可填输入框，且无有效坐标")
 
     @staticmethod
     def _settle_page(page, ms: int = 300) -> None:

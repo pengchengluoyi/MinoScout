@@ -429,12 +429,16 @@ class ScoutCore:
                     "source": "playwright",
                 }
             nodes = list(dump.nodes or [])
+            extra: dict[str, Any] = {"nodes": nodes}
+            if isinstance(dump.web_focus, dict) and dump.web_focus:
+                extra["web_focus"] = dump.web_focus
             return EventStatus.PASS, {
                 "source": "playwright",
                 "hierarchy_format": "accessibility_json",
                 "summary": f"DOM 层级 {len(nodes)} 节点",
-                "extra": {"nodes": nodes},
+                "extra": extra,
                 "nodes": nodes,
+                "web_focus": dump.web_focus or {},
                 "elapsed_ms": int(dump.elapsed_ms or 0),
             }
         if not device.adb_serial or device.adb_serial.startswith("claw-"):

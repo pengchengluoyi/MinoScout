@@ -117,6 +117,23 @@ def normalize_goto_url(value: str) -> str:
     return "https://" + s
 
 
+_GOTO_WAIT_STATES = frozenset({"commit", "domcontentloaded", "load", "networkidle"})
+
+
+def goto_options_from_params(params: dict[str, Any] | None) -> tuple[str, int]:
+    p = dict(params or {})
+    wait_until = str(p.get("wait_until") or p.get("load_state") or "domcontentloaded").strip().lower()
+    if wait_until not in _GOTO_WAIT_STATES:
+        wait_until = "domcontentloaded"
+    timeout = int(p.get("timeout_ms") or p.get("goto_timeout_ms") or 60_000)
+    return wait_until, max(5_000, min(timeout, 120_000))
+
+
+def goto_url(page: Any, url: str, *, params: dict[str, Any] | None = None) -> None:
+    wait_until, timeout = goto_options_from_params(params)
+    page.goto(url, wait_until=wait_until, timeout=timeout)
+
+
 def pick_goto_url(*candidates: Any) -> str:
     for raw in candidates:
         url = normalize_goto_url("" if raw is None else str(raw))
@@ -319,6 +336,7 @@ class PlaywrightHub:
         run_id: str = "",
         base_url: str = "",
         headed: Optional[bool] = None,
+        goto_params: dict[str, Any] | None = None,
     ) -> Any:
         key = _session_key(sn, run_id)
         self.close_case(sn, run_id=run_id)
@@ -332,7 +350,7 @@ class PlaywrightHub:
         page = context.new_page()
         url = normalize_goto_url(base_url)
         if url:
-            page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+            goto_url(page, url, params=goto_params)
         with self._lock:
             self._sessions[key] = {"context": context, "page": page, "base_url": url}
         SLog.i(TAG, f"case context ready sn={key} url={url or 'about:blank'}")
