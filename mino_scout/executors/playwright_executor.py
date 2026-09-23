@@ -46,6 +46,19 @@ _SUPPORTED_CAPS: set[str] = {
 }
 
 
+def _input_summary_snippet(text: str, *, max_len: int = 40) -> str:
+    """结果摘要展示用，避免 24 字截断把 gmail.com 切成 gmail.co 误导上游。"""
+    t = str(text or "").strip()
+    if len(t) <= max_len:
+        return t
+    if "@" in t:
+        local, domain = t.split("@", 1)
+        head = local[:14] if len(local) > 14 else local
+        tail = domain if len(domain) <= 16 else f"…{domain[-12:]}"
+        return f"{head}@{tail}"
+    return f"{t[: max_len - 1]}…"
+
+
 def _name_from_params(params: dict) -> str:
     target = params.get("target") if isinstance(params.get("target"), dict) else {}
     for key in ("selector_text", "description", "label", "text"):
@@ -480,7 +493,7 @@ class PlaywrightExecutor:
             _fill_and_sync(loc, text)
             self._settle_page(page)
             tag = login_field or "textbox"
-            return self._ok(event, started_at, t0, f"输入({tag}) {text[:24]}")
+            return self._ok(event, started_at, t0, f"输入({tag}) {_input_summary_snippet(text)}")
         clicked = False
         try:
             x, y = self._xy(event, page)
@@ -492,7 +505,7 @@ class PlaywrightExecutor:
         if web_focus_editable_ready(focus):
             page.keyboard.type(text, delay=20)
             self._settle_page(page)
-            return self._ok(event, started_at, t0, f"输入(focus) {text[:24]}")
+            return self._ok(event, started_at, t0, f"输入(focus) {_input_summary_snippet(text)}")
         if clicked:
             return self._fail(
                 event,
