@@ -20,6 +20,7 @@ MinoScout 是执行器。它接收 [MinoNexus](../MinoNexus) 下发的动作，�
 | 2 | **不调大模型** —— 不 import `openai` / `httpx` 打 LLM endpoint、不含 prompt 常量 | `scripts/verify_no_llm.py` | 决策权在 Nexus。Scout 一旦能"想"，两边就会各想一半 |
 | 3 | **不读能力目录** —— 不解析 `plugins/**.yaml`、不含 `abstract_caps` 逻辑 | `scripts/verify_no_yaml_catalog.py` | 能力目录唯一真源在 Nexus。Scout 只按 `EXECUTE` 载荷里给定的 `executor_order` 执行 |
 | 4 | **不 import Nexus** —— 任何 `mino_nexus` / `server.*` 引用 | `scripts/verify_no_nexus_import.py` | 依赖必须单向 |
+| 5 | **不写/不改单元测试** —— 禁止新增 `tests/test_*.py`、禁止为自证修复跑 pytest | Agent 擅写 test 干扰现场；执行侧问题以 Nexus **`session_events`**（`tool/call`、`tool/result` 的 `summary`）为准 |
 
 跑 `python scripts/verify_all.py` 一次性检查。
 
