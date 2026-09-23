@@ -200,6 +200,7 @@ def capture_via_playwright(
     compress_ratio: float = 2.0,
     base_url: str = "",
     device_hint: dict | None = None,
+    screenshot_params: dict[str, Any] | None = None,
 ) -> CapturedScreen:
     """port: 上游 `screen.py::_capture_via_playwright`。
 
@@ -216,6 +217,7 @@ def capture_via_playwright(
             timeout_ms=int(timeout_sec * 1000),
             base_url=base_url,
             headed=headed_from_hint(device_hint),
+            screenshot_params=screenshot_params,
         )
     except Exception as e:
         return CapturedScreen(
@@ -261,6 +263,7 @@ def capture(
     timeout_sec: float = 15.0,
     compress_ratio: float = 2.0,
     allow_blank: bool = False,
+    screenshot_params: dict[str, Any] | None = None,
 ) -> CapturedScreen:
     """按这台 sn 的设备类型截图，不跨设备试通道。
 
@@ -282,6 +285,7 @@ def capture(
             compress_ratio=compress_ratio,
             base_url=url,
             device_hint=dict(device.extra or {}),
+            screenshot_params=screenshot_params,
         )
     else:
         shot = capture_via_adb(device.adb_serial, timeout_sec=timeout_sec)

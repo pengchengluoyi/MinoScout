@@ -271,8 +271,21 @@ def _write_zip(
         for layer in include:
             for path in buckets[layer]:
                 rel = L.payload_relpath(layer, path, frozen)
-                _add_file(zf, path, f"{root_name}/{layer}/{rel}",
-                          executable=_looks_executable(path))
+                arc = f"{root_name}/{layer}/{rel}"
+                if layer == "app" and rel.replace("\\", "/").endswith("mino_scout/core.py"):
+                    from mino_scout.app_version import stamp_scout_version_in_core
+
+                    body = stamp_scout_version_in_core(
+                        path.read_text(encoding="utf-8"), ver
+                    ).encode("utf-8")
+                    _add_bytes(zf, body, arc)
+                else:
+                    _add_file(
+                        zf,
+                        path,
+                        arc,
+                        executable=_looks_executable(path),
+                    )
         _add_file(zf, ROOT / "packaging" / "install.sh", f"{root_name}/install.sh", executable=True)
         _add_file(zf, ROOT / "packaging" / "install.ps1", f"{root_name}/install.ps1")
         _add_file(zf, ROOT / "packaging" / "README.txt", f"{root_name}/README.txt")

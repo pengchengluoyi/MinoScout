@@ -3,51 +3,17 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from mino_scout.log import SLog
+from mino_scout.playwright_context import resolve_aria_root
 from mino_scout.playwright_hub import get_hub
 from mino_scout.web_focus import evaluate_web_focus, mark_focused_node
 
 TAG = "DomHierarchy"
 
-_JS_COLLECT = """
-() => {
-  const out = [];
-  const vw = window.innerWidth || 1280;
-  const vh = window.innerHeight || 800;
-  const sel = 'input, textarea, select, button, a, [role="button"], [role="link"], [role="textbox"]';
-  for (const el of document.querySelectorAll(sel)) {
-    const r = el.getBoundingClientRect();
-    if (!r || r.width < 2 || r.height < 2) continue;
-    if (r.bottom < 0 || r.top > vh || r.right < 0 || r.left > vw) continue;
-    const tag = (el.tagName || '').toLowerCase();
-    const typ = (el.getAttribute('type') || '').toLowerCase();
-    const val = (el.value || '').toString();
-    const inner = (el.innerText || el.textContent || '').trim().slice(0, 200);
-    const text = val || inner;
-    const placeholder = el.getAttribute('placeholder') || '';
-    const aria = el.getAttribute('aria-label') || '';
-    const role = el.getAttribute('role') || '';
-    const editable = tag === 'input' || tag === 'textarea' || el.isContentEditable;
-    const clickable = tag === 'button' || tag === 'a' || role === 'button' || role === 'link'
-      || el.onclick != null || window.getComputedStyle(el).cursor === 'pointer';
-    out.push({
-      resource_id: el.id || '',
-      text,
-      content_desc: placeholder || aria || role,
-      class: typ ? `${tag}:${typ}` : tag,
-      role,
-      clickable: !!clickable,
-      editable: !!editable,
-      bounds: [Math.round(r.left), Math.round(r.top), Math.round(r.right), Math.round(r.bottom)],
-      center: [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)],
-    });
-    if (out.length >= 280) break;
-  }
-  return out;
-}
-"""
+_JS_COLLECT = Path(__file__).with_name("dom_collect.js").read_text(encoding="utf-8").strip()
 
 
 @dataclass
@@ -57,9 +23,32 @@ class DomDump:
     error: str = ""
     elapsed_ms: int = 0
     web_focus: dict[str, Any] | None = None
+    aria_snapshot: str = ""
+    tabs: list[dict[str, Any]] | None = None
 
 
-def dump_dom_nodes(*, sn: str, run_id: str = "") -> DomDump:
+def _aria_snapshot_text(page: Any, params: dict[str, Any] | None, *, max_chars: int) -> str:
+    if not params or not params.get("include_aria_snapshot", True):
+        return ""
+    cap = max(500, min(int(params.get("aria_max_chars") or max_chars), 24_000))
+    try:
+        root = resolve_aria_root(page, params)
+        snap = root.aria_snapshot()
+        text = str(snap or "").strip()
+    except Exception as exc:
+        SLog.d(TAG, f"aria_snapshot skipped: {exc}")
+        return ""
+    if len(text) > cap:
+        return text[:cap]
+    return text
+
+
+def dump_dom_nodes(
+    *,
+    sn: str,
+    run_id: str = "",
+    params: dict[str, Any] | None = None,
+) -> DomDump:
     t0 = time.time()
     hub = get_hub()
     page = hub.current_page(str(sn or ""), run_id=str(run_id or ""))
@@ -70,6 +59,7 @@ def dump_dom_nodes(*, sn: str, run_id: str = "") -> DomDump:
             error=f"web 槽无打开页面 sn={sn} run_id={run_id or '(empty)'}",
             elapsed_ms=int((time.time() - t0) * 1000),
         )
+    p = dict(params or {})
     web_focus = evaluate_web_focus(page)
     try:
         raw = page.evaluate(_JS_COLLECT)
@@ -83,6 +73,8 @@ def dump_dom_nodes(*, sn: str, run_id: str = "") -> DomDump:
         )
     nodes = [n for n in (raw or []) if isinstance(n, dict)]
     mark_focused_node(nodes, web_focus)
+    aria = _aria_snapshot_text(page, p, max_chars=int(p.get("aria_max_chars") or 6000))
+    tabs = hub.list_tabs(str(sn or ""), run_id=str(run_id or "")) if p.get("include_tabs") else None
     try:
         page_url = str(page.url or "").strip()
     except Exception:
@@ -105,5 +97,12 @@ def dump_dom_nodes(*, sn: str, run_id: str = "") -> DomDump:
             },
         )
     elapsed = int((time.time() - t0) * 1000)
-    SLog.i(TAG, f"dom dump sn={sn} nodes={len(nodes)} ms={elapsed}")
-    return DomDump(ok=True, nodes=nodes, elapsed_ms=elapsed, web_focus=web_focus)
+    SLog.i(TAG, f"dom dump sn={sn} nodes={len(nodes)} aria={len(aria)} ms={elapsed}")
+    return DomDump(
+        ok=True,
+        nodes=nodes,
+        elapsed_ms=elapsed,
+        web_focus=web_focus,
+        aria_snapshot=aria,
+        tabs=tabs,
+    )

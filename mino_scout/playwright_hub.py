@@ -371,6 +371,22 @@ class PlaywrightHub:
         except Exception:
             return ""
 
+    def _clip_from_params(self, params: dict[str, Any] | None) -> dict[str, float] | None:
+        p = dict(params or {})
+        clip = p.get("clip")
+        if isinstance(clip, dict) and all(k in clip for k in ("x", "y", "width", "height")):
+            return {
+                "x": float(clip["x"]),
+                "y": float(clip["y"]),
+                "width": float(clip["width"]),
+                "height": float(clip["height"]),
+            }
+        region = p.get("region")
+        if isinstance(region, (list, tuple)) and len(region) >= 4:
+            x1, y1, x2, y2 = [float(region[i]) for i in range(4)]
+            return {"x": x1, "y": y1, "width": max(1.0, x2 - x1), "height": max(1.0, y2 - y1)}
+        return None
+
     def screenshot_png(
         self,
         sn: str = "",
@@ -379,6 +395,7 @@ class PlaywrightHub:
         timeout_ms: int = 8_000,
         base_url: str = "",
         headed: Optional[bool] = None,
+        screenshot_params: dict[str, Any] | None = None,
     ) -> bytes:
         page = self.current_page(sn, run_id=run_id)
         if page is None:
@@ -389,15 +406,117 @@ class PlaywrightHub:
             page.wait_for_load_state("domcontentloaded", timeout=500)
         except Exception:
             pass
-        cap_ms = max(2000, min(int(timeout_ms or 8_000), 10_000))
-        return page.screenshot(
-            type="png",
-            full_page=False,
-            scale="css",
-            animations="disabled",
-            caret="hide",
-            timeout=cap_ms,
-        )
+        p = dict(screenshot_params or {})
+        cap_ms = max(2000, min(int(p.get("timeout_ms") or timeout_ms or 8_000), 30_000))
+        full_page = bool(p.get("full_page") or p.get("fullPage"))
+        clip = self._clip_from_params(p)
+        kwargs: dict[str, Any] = {
+            "type": "png",
+            "full_page": full_page,
+            "scale": "css",
+            "animations": "disabled",
+            "caret": "hide",
+            "timeout": cap_ms,
+        }
+        if clip and not full_page:
+            kwargs["clip"] = clip
+        return page.screenshot(**kwargs)
+
+    def list_tabs(self, sn: str = "", *, run_id: str = "") -> list[dict[str, Any]]:
+        key = _session_key(sn, run_id)
+        with self._lock:
+            row = self._sessions.get(key) or {}
+        ctx = row.get("context")
+        active = row.get("page")
+        if ctx is None:
+            return []
+        out: list[dict[str, Any]] = []
+        try:
+            pages = list(ctx.pages)
+        except Exception:
+            pages = [active] if active else []
+        for i, pg in enumerate(pages):
+            if pg is None:
+                continue
+            try:
+                out.append(
+                    {
+                        "index": i,
+                        "url": str(pg.url or ""),
+                        "title": str(pg.title() or ""),
+                        "active": pg is active,
+                    }
+                )
+            except Exception:
+                out.append({"index": i, "url": "", "title": "", "active": pg is active})
+        return out
+
+    def switch_tab(
+        self,
+        sn: str = "",
+        *,
+        run_id: str = "",
+        tab_index: int | None = None,
+        url_contains: str = "",
+        title_contains: str = "",
+    ) -> Any:
+        key = _session_key(sn, run_id)
+        with self._lock:
+            row = self._sessions.get(key) or {}
+        ctx = row.get("context")
+        if ctx is None:
+            raise RuntimeError("无浏览器上下文")
+        pages = list(ctx.pages)
+        target = None
+        if tab_index is not None:
+            idx = int(tab_index)
+            if 0 <= idx < len(pages):
+                target = pages[idx]
+        needle_url = str(url_contains or "").strip()
+        needle_title = str(title_contains or "").strip()
+        if target is None and (needle_url or needle_title):
+            for pg in pages:
+                try:
+                    if needle_url and needle_url not in str(pg.url or ""):
+                        continue
+                    if needle_title and needle_title not in str(pg.title() or ""):
+                        continue
+                    target = pg
+                    break
+                except Exception:
+                    continue
+        if target is None:
+            raise RuntimeError("未找到目标 Tab")
+        try:
+            target.bring_to_front()
+        except Exception:
+            pass
+        with self._lock:
+            if key in self._sessions:
+                self._sessions[key]["page"] = target
+        return target
+
+    def open_tab(
+        self,
+        sn: str = "",
+        *,
+        run_id: str = "",
+        url: str = "",
+    ) -> Any:
+        key = _session_key(sn, run_id)
+        with self._lock:
+            row = self._sessions.get(key) or {}
+        ctx = row.get("context")
+        if ctx is None:
+            raise RuntimeError("无浏览器上下文")
+        page = ctx.new_page()
+        dest = normalize_goto_url(url)
+        if dest:
+            goto_url(page, dest)
+        with self._lock:
+            if key in self._sessions:
+                self._sessions[key]["page"] = page
+        return page
 
     def a11y_text(self, sn: str = "", *, run_id: str = "", max_chars: int = 4000) -> str:
         page = self.current_page(sn, run_id=run_id)

@@ -29,7 +29,7 @@ from mino_scout.schemas import CapturedScreen, EventResult, EventStatus, PlanEve
 
 TAG = "ScoutCore"
 
-SCOUT_VERSION = "0.1.42"
+SCOUT_VERSION = "0.1.45"
 # 单节点 Web 槽 Playwright 并行路数（与 Nexus WEB_PLAYWRIGHT_PARALLEL_LANES 一致）
 PLAYWRIGHT_PARALLEL_LANES = 4
 
@@ -350,11 +350,13 @@ class ScoutCore:
 
     def _dispatch_screenshot(self, req: P.Execute) -> EventResult:
         device = _device_from_execute(req, node_id=self.node_id)
-        compress = float((req.params or {}).get("compress_ratio") or 2.0)
+        params = dict(req.params or {})
+        compress = float(params.get("compress_ratio") or 2.0)
         shot = SCREEN.capture(
             device,
             timeout_sec=float(req.timeout_sec or 15.0),
             compress_ratio=compress,
+            screenshot_params=params,
         )
         status, fields = _screen_to_result(shot)
         return make_event_result(
@@ -370,7 +372,11 @@ class ScoutCore:
 
     def _dispatch_hierarchy(self, req: P.Execute) -> EventResult:
         device = _device_from_execute(req, node_id=self.node_id)
-        status, fields = self._hierarchy_fields(device, run_id=str(req.run_id or ""))
+        status, fields = self._hierarchy_fields(
+            device,
+            run_id=str(req.run_id or ""),
+            hierarchy_params=dict(req.params or {}),
+        )
         extra = dict(fields.get("extra") or {})
         raw = dict(fields)
         if extra:
@@ -416,13 +422,23 @@ class ScoutCore:
         )
         return ev.status, _event_result_to_observe_fields(ev)
 
-    def _hierarchy_fields(self, device: DeviceRef, *, run_id: str = "") -> tuple[EventStatus, dict[str, Any]]:
+    def _hierarchy_fields(
+        self,
+        device: DeviceRef,
+        *,
+        run_id: str = "",
+        hierarchy_params: dict[str, Any] | None = None,
+    ) -> tuple[EventStatus, dict[str, Any]]:
         from mino_scout import hierarchy as H
 
         if device.is_web:
             from mino_scout.dom_hierarchy import dump_dom_nodes
 
-            dump = dump_dom_nodes(sn=str(device.sn or ""), run_id=str(run_id or ""))
+            dump = dump_dom_nodes(
+                sn=str(device.sn or ""),
+                run_id=str(run_id or ""),
+                params=dict(hierarchy_params or {}),
+            )
             if not dump.ok:
                 return EventStatus.FAIL, {
                     "error": dump.error or "web DOM 采集失败",
@@ -432,6 +448,10 @@ class ScoutCore:
             extra: dict[str, Any] = {"nodes": nodes}
             if isinstance(dump.web_focus, dict) and dump.web_focus:
                 extra["web_focus"] = dump.web_focus
+            if dump.aria_snapshot:
+                extra["aria_snapshot"] = dump.aria_snapshot
+            if dump.tabs:
+                extra["tabs"] = dump.tabs
             return EventStatus.PASS, {
                 "source": "playwright",
                 "hierarchy_format": "accessibility_json",
@@ -439,6 +459,8 @@ class ScoutCore:
                 "extra": extra,
                 "nodes": nodes,
                 "web_focus": dump.web_focus or {},
+                "aria_snapshot": dump.aria_snapshot or "",
+                "tabs": dump.tabs or [],
                 "elapsed_ms": int(dump.elapsed_ms or 0),
             }
         if not device.adb_serial or device.adb_serial.startswith("claw-"):

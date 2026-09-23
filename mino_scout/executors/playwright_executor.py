@@ -16,6 +16,7 @@ from mino_scout.executors.base import (
     make_event_result,
 )
 from mino_scout.playwright_hub import get_hub, goto_url, headed_from_hint, pick_goto_url
+from mino_scout.playwright_context import resolve_locator_scope
 from mino_scout.playwright_locators import (
     click_locator,
     css_selector_from_params,
@@ -39,6 +40,9 @@ _SUPPORTED_CAPS: set[str] = {
     "swipe_element_to_element",
     "get_foreground_app",
     "wait_screen_ready",
+    "switch_tab",
+    "open_tab",
+    "upload_file",
 }
 
 
@@ -161,6 +165,12 @@ class PlaywrightExecutor:
                 return self._get_foreground_app(event, hub, sn, run_id, started_at, t0)
             if cap == "wait_screen_ready":
                 return self._wait_screen_ready(event, page, started_at, t0)
+            if cap == "switch_tab":
+                return self._switch_tab(event, hub, sn, run_id, started_at, t0)
+            if cap == "open_tab":
+                return self._open_tab(event, hub, sn, run_id, started_at, t0)
+            if cap == "upload_file":
+                return self._upload_file(event, page, started_at, t0)
             if cap == "tap_element":
                 return self._tap(event, page, started_at, t0)
             if cap == "multi_tap":
@@ -261,13 +271,80 @@ class PlaywrightExecutor:
             },
         )
 
+    def _switch_tab(
+        self,
+        event: PlanEvent,
+        hub: Any,
+        sn: str,
+        run_id: str,
+        started_at: str,
+        t0: float,
+    ) -> EventResult:
+        p = event.params or {}
+        try:
+            page = hub.switch_tab(
+                sn,
+                run_id=run_id,
+                tab_index=p.get("tab_index") if p.get("tab_index") is not None else None,
+                url_contains=str(p.get("url_contains") or p.get("url") or ""),
+                title_contains=str(p.get("title_contains") or p.get("title") or ""),
+            )
+            return self._ok(event, started_at, t0, f"切换 Tab {str(page.url or '')[:80]}")
+        except Exception as exc:
+            return self._fail(event, started_at, t0, f"切换 Tab 失败: {exc}")
+
+    def _open_tab(
+        self,
+        event: PlanEvent,
+        hub: Any,
+        sn: str,
+        run_id: str,
+        started_at: str,
+        t0: float,
+    ) -> EventResult:
+        p = event.params or {}
+        try:
+            page = hub.open_tab(
+                sn,
+                run_id=run_id,
+                url=str(p.get("url") or pick_goto_url(p.get("package")) or ""),
+            )
+            return self._ok(event, started_at, t0, f"新开 Tab {str(page.url or '')[:80]}")
+        except Exception as exc:
+            return self._fail(event, started_at, t0, f"新开 Tab 失败: {exc}")
+
+    def _upload_file(self, event: PlanEvent, page, started_at: str, t0: float) -> EventResult:
+        p = event.params or {}
+        paths = p.get("file_paths") or p.get("files")
+        if not paths:
+            one = str(p.get("file_path") or p.get("path") or "").strip()
+            paths = [one] if one else []
+        if isinstance(paths, str):
+            paths = [paths]
+        files = [str(x).strip() for x in paths if str(x).strip()]
+        if not files:
+            return self._fail(event, started_at, t0, "upload_file 需要 file_path 或 file_paths")
+        loc = locator_from_params(page, p)
+        if loc is None:
+            css = css_selector_from_params(p)
+            if css:
+                loc = resolve_locator_scope(page, p).locator(css).first
+            else:
+                loc = resolve_locator_scope(page, p).locator("input[type='file']").first
+        try:
+            loc.set_input_files(files)
+            return self._ok(event, started_at, t0, f"上传 {len(files)} 个文件")
+        except Exception as exc:
+            return self._fail(event, started_at, t0, f"上传失败: {exc}")
+
     def _wait_screen_ready(self, event: PlanEvent, page, started_at: str, t0: float) -> EventResult:
         p = event.params or {}
+        scope = resolve_locator_scope(page, p)
         timeout = max(1000, min(int(p.get("timeout_ms") or 20_000), 120_000))
         sel = css_selector_from_params(p) or str(p.get("wait_selector") or "").strip()
         try:
             if sel:
-                page.wait_for_selector(sel, state="visible", timeout=timeout)
+                scope.locator(sel).first.wait_for(state="visible", timeout=timeout)
                 return self._ok(event, started_at, t0, f"已出现 {sel[:48]}")
             state = str(p.get("load_state") or p.get("wait_until") or "domcontentloaded").strip()
             if state not in ("commit", "domcontentloaded", "load", "networkidle"):
@@ -356,15 +433,16 @@ class PlaywrightExecutor:
         return self._ok(event, started_at, t0, f"长按 ({x},{y})")
 
     def _find_input(self, page, name: str, text: str, login_field: str = "", params: dict | None = None):
+        scope = resolve_locator_scope(page, params)
         css = css_selector_from_params(params)
         if css:
             try:
-                loc = page.locator(css)
+                loc = scope.locator(css)
                 if loc.count() > 0:
                     return loc.first
             except Exception:
                 pass
-        for loc in input_locators_for_field(page, login_field, name, text):
+        for loc in input_locators_for_field(page, login_field, name, text, params=params):
             try:
                 if loc.count() > 0:
                     return loc.first

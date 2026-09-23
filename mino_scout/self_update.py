@@ -211,6 +211,11 @@ def run_update(*, manifest_url: str = "", inplace: bool | None = None) -> dict[s
         if ver:
             cfg["version"] = ver
             _sync_config_version(cfg, installed_layers(prefix))
+            from mino_scout.app_version import read_app_semver
+
+            disk = read_app_semver()
+            if disk:
+                cfg["version"] = disk
             save_config(cfg)
         UP.emit("done", label="已是最新", percent=100, done=True)
         return {"ok": True, "mode": "up-to-date", "plan": plan}
@@ -231,6 +236,11 @@ def run_update(*, manifest_url: str = "", inplace: bool | None = None) -> dict[s
         cfg = load_config()
         cfg["version"] = ver
         _sync_config_version(cfg, installed_layers(prefix))
+        from mino_scout.app_version import read_app_semver
+
+        disk = read_app_semver()
+        if disk:
+            cfg["version"] = disk
         save_config(cfg)
 
     UP.emit(
