@@ -17,10 +17,9 @@ from mino_scout.executors.base import (
 )
 from mino_scout.playwright_hub import get_hub, goto_url, headed_from_hint, pick_goto_url
 from mino_scout.playwright_context import resolve_locator_scope
+from mino_scout.playwright_coords import resolve_viewport_xy
 from mino_scout.playwright_locators import (
-    click_locator,
     css_selector_from_params,
-    input_locators_for_field,
     locator_from_params,
 )
 from mino_scout.web_focus import evaluate_web_focus, web_focus_editable_ready
@@ -83,17 +82,6 @@ def _login_field_from_params(params: dict | None) -> str:
         if raw in ("password", "密码"):
             return "password"
     return ""
-
-
-def _fill_and_sync(loc, text: str) -> None:
-    loc.fill(text, timeout=5000)
-    try:
-        loc.evaluate(
-            "el => { el.dispatchEvent(new Event('input', { bubbles: true })); "
-            "el.dispatchEvent(new Event('change', { bubbles: true })); }"
-        )
-    except Exception:
-        pass
 
 
 class PlaywrightExecutor:
@@ -370,21 +358,14 @@ class PlaywrightExecutor:
     def _tap(self, event: PlanEvent, page, started_at: str, t0: float) -> EventResult:
         params = event.params or {}
         name = _name_from_params(params)
-        loc = locator_from_params(page, params, name=name)
-        if loc is not None:
-            try:
-                click_locator(loc)
-                self._settle_page(page)
-                label = name[:40] if name else css_selector_from_params(params)[:40]
-                return self._ok(event, started_at, t0, f"点击「{label}」")
-            except Exception:
-                pass
         try:
-            x, y = self._xy(event, page)
+            x, y = resolve_viewport_xy(params, page)
         except ValueError:
             return self._fail(
-                event, started_at, t0,
-                f"未找到可点目标「{name[:40]}」且没有坐标" if name else "未找到可点目标，且没有坐标",
+                event,
+                started_at,
+                t0,
+                f"Web 点击需要坐标 x/y「{name[:40]}」" if name else "Web 点击需要坐标 x/y",
             )
         page.mouse.click(x, y)
         self._settle_page(page)
@@ -399,7 +380,7 @@ class PlaywrightExecutor:
             return self._fail(event, started_at, t0, err)
         _, _, count, interval = parsed
         try:
-            x, y = self._xy(event, page)
+            x, y = resolve_viewport_xy(event.params or {}, page)
         except ValueError:
             return self._fail(event, started_at, t0, "multi_tap 缺坐标")
         for i in range(count):
@@ -410,34 +391,14 @@ class PlaywrightExecutor:
 
     def _long_press(self, event: PlanEvent, page, started_at: str, t0: float) -> EventResult:
         name = _name_from_params(event.params or {})
-        if name:
-            locators = (
-                page.get_by_role("button", name=name),
-                page.get_by_text(name, exact=True),
-                page.get_by_text(name),
-            )
-            for loc in locators:
-                try:
-                    if loc.count() == 0:
-                        continue
-                    box = loc.first.bounding_box()
-                    if not box:
-                        continue
-                    x = int(box["x"] + box["width"] / 2)
-                    y = int(box["y"] + box["height"] / 2)
-                    page.mouse.move(x, y)
-                    page.mouse.down()
-                    time.sleep(0.8)
-                    page.mouse.up()
-                    return self._ok(event, started_at, t0, f"长按「{name[:40]}」")
-                except Exception:
-                    continue
         try:
-            x, y = self._xy(event, page)
+            x, y = resolve_viewport_xy(event.params or {}, page)
         except ValueError:
             return self._fail(
-                event, started_at, t0,
-                f"未找到可长按目标「{name[:40]}」且没有坐标" if name else "未找到可长按目标，且没有坐标",
+                event,
+                started_at,
+                t0,
+                f"Web 长按需要坐标 x/y「{name[:40]}」" if name else "Web 长按需要坐标 x/y",
             )
         page.mouse.move(x, y)
         page.mouse.down()
@@ -445,75 +406,42 @@ class PlaywrightExecutor:
         page.mouse.up()
         return self._ok(event, started_at, t0, f"长按 ({x},{y})")
 
-    def _find_input(self, page, name: str, text: str, login_field: str = "", params: dict | None = None):
-        scope = resolve_locator_scope(page, params)
-        css = css_selector_from_params(params)
-        if css:
-            try:
-                loc = scope.locator(css)
-                if loc.count() > 0:
-                    return loc.first
-            except Exception:
-                pass
-        for loc in input_locators_for_field(page, login_field, name, text, params=params):
-            try:
-                if loc.count() > 0:
-                    return loc.first
-            except Exception:
-                continue
-        try:
-            boxes = page.get_by_role("textbox")
-            n = min(boxes.count(), 6)
-            for i in range(n):
-                el = boxes.nth(i)
-                if not el.is_visible():
-                    continue
-                val = ""
-                try:
-                    val = str(el.input_value() or "")
-                except Exception:
-                    val = ""
-                if not val:
-                    return el
-        except Exception:
-            pass
-        return None
-
     def _input(self, event: PlanEvent, page, started_at: str, t0: float) -> EventResult:
         params = event.params or {}
         text = str(params.get("text") or "")
-        name = _name_from_params(params)
         login_field = _login_field_from_params(params)
-        loc = self._find_input(page, name, text, login_field=login_field, params=params)
-        if loc is not None:
-            try:
-                loc.click(timeout=3000)
-            except Exception:
-                pass
-            _fill_and_sync(loc, text)
-            self._settle_page(page)
-            tag = login_field or "textbox"
-            return self._ok(event, started_at, t0, f"输入({tag}) {_input_summary_snippet(text)}")
-        clicked = False
+        tag = login_field or "textbox"
         try:
-            x, y = self._xy(event, page)
-            page.mouse.click(x, y)
-            clicked = True
+            x, y = resolve_viewport_xy(params, page)
         except ValueError:
+            return self._fail(event, started_at, t0, f"Web 输入({tag}) 需要坐标 x/y")
+        page.mouse.click(x, y)
+        time.sleep(0.05)
+        try:
+            page.keyboard.press("Control+a")
+        except Exception:
             pass
+        try:
+            page.keyboard.press("Meta+a")
+        except Exception:
+            pass
+        page.keyboard.press("Backspace")
+        page.keyboard.type(text, delay=20)
+        self._settle_page(page)
         focus = evaluate_web_focus(page)
         if web_focus_editable_ready(focus):
-            page.keyboard.type(text, delay=20)
-            self._settle_page(page)
-            return self._ok(event, started_at, t0, f"输入(focus) {_input_summary_snippet(text)}")
-        if clicked:
-            return self._fail(
+            return self._ok(
                 event,
                 started_at,
                 t0,
-                f"坐标已点但焦点不可输入（{focus.get('reason', '?')}）；请检查 selector/field",
+                f"输入({tag})@({x},{y}) {_input_summary_snippet(text)}",
             )
-        return self._fail(event, started_at, t0, "未找到可填输入框，且无有效坐标")
+        return self._ok(
+            event,
+            started_at,
+            t0,
+            f"输入({tag})@({x},{y}) {_input_summary_snippet(text)}（焦点未确认）",
+        )
 
     @staticmethod
     def _settle_page(page, ms: int = 300) -> None:
@@ -522,18 +450,6 @@ class PlaywrightExecutor:
             page.wait_for_timeout(max(0, int(ms)))
         except Exception:
             pass
-
-    def _xy(self, event: PlanEvent, page) -> tuple[int, int]:
-        p = event.params or {}
-        if p.get("x") is None or p.get("y") is None:
-            raise ValueError("缺坐标 x/y")
-        x, y = int(p["x"]), int(p["y"])
-        box = page.viewport_size or {"width": 1280, "height": 800}
-        w, h = int(box["width"]), int(box["height"])
-        if 0 <= x <= 1000 and 0 <= y <= 1000 and w > 1000:
-            x = int(round(x / 1000.0 * w))
-            y = int(round(y / 1000.0 * h))
-        return max(0, min(w - 1, x)), max(0, min(h - 1, y))
 
     def _ok(self, event, started_at, t0, summary: str) -> EventResult:
         return make_event_result(
