@@ -270,7 +270,7 @@ S→N 的框架事件可丢（超时未等到 RESULT 时 Scout 只记 warn）；
 
 | 场景 | 行为 |
 |---|---|
-| web / playwright 槽 | `status=fail`，`error` 说明没有安卓 UI hierarchy |
+| web / playwright 槽 | `status=pass`，`data.source=playwright`，`nodes` 为 **DOM 快照**（`input`/`button` 等，`class` 为 HTML tag 或 `tag:type`）；**不是**安卓 `android.widget.*` |
 | 非 adb 序列号（如远程 `claw-` 设备） | `status=fail`；`remote` / `ios_wda` 通道待后续版本 |
 | dump 失败（设备忙 / agent 挂） | `status=fail`，`error` 汇总各来源的失败原因 |
 
