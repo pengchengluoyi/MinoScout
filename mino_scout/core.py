@@ -29,7 +29,7 @@ from mino_scout.schemas import CapturedScreen, EventResult, EventStatus, PlanEve
 
 TAG = "ScoutCore"
 
-SCOUT_VERSION = "0.1.41"
+SCOUT_VERSION = "0.1.42"
 # 单节点 Web 槽 Playwright 并行路数（与 Nexus WEB_PLAYWRIGHT_PARALLEL_LANES 一致）
 PLAYWRIGHT_PARALLEL_LANES = 4
 

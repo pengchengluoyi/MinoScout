@@ -42,6 +42,33 @@ def _name_from_params(params: dict) -> str:
     return str(target.get("text") or "").strip()
 
 
+def _login_field_from_params(params: dict | None) -> str:
+    """Nexus Web 渠道：input_text.params.field / login_field（安卓 adb 路径可忽略）。"""
+    p = params or {}
+    for key in ("login_field", "field"):
+        raw = str(p.get(key) or "").strip().lower()
+        if raw in ("email", "login_email"):
+            return "email"
+        if raw == "phone":
+            return "phone"
+        if raw in ("sms_code", "验证码", "otp"):
+            return "sms_code"
+        if raw in ("password", "密码"):
+            return "password"
+    return ""
+
+
+def _fill_and_sync(loc, text: str) -> None:
+    loc.fill(text, timeout=5000)
+    try:
+        loc.evaluate(
+            "el => { el.dispatchEvent(new Event('input', { bubbles: true })); "
+            "el.dispatchEvent(new Event('change', { bubbles: true })); }"
+        )
+    except Exception:
+        pass
+
+
 class PlaywrightExecutor:
     id = "playwright"
 
@@ -261,15 +288,51 @@ class PlaywrightExecutor:
                 continue
         return False
 
-    def _find_input(self, page, name: str, text: str):
+    def _find_input(self, page, name: str, text: str, login_field: str = ""):
         candidates = []
-        if name:
+        lf = str(login_field or "").strip().lower()
+        if lf == "email":
+            candidates.extend((
+                page.locator("input[type='email']"),
+                page.locator("input[autocomplete='email']"),
+                page.locator("input[name*='email' i]"),
+                page.get_by_placeholder(re.compile(r"email|邮箱|e-?mail", re.I)),
+                page.get_by_label(re.compile(r"email|邮箱", re.I)),
+                page.get_by_role("textbox", name=re.compile(r"email|邮箱", re.I)),
+            ))
+        elif lf == "phone":
+            candidates.extend((
+                page.locator("input[type='tel']"),
+                page.locator("input[autocomplete='tel']"),
+                page.locator("input[name*='phone' i], input[name*='mobile' i]"),
+                page.get_by_placeholder(re.compile(r"手机|phone|mobile", re.I)),
+                page.get_by_label(re.compile(r"手机|phone", re.I)),
+            ))
+        elif lf == "sms_code":
+            candidates.extend((
+                page.locator("input[autocomplete='one-time-code']"),
+                page.locator("input[name*='otp' i], input[name*='code' i], input[name*='captcha' i]"),
+                page.get_by_placeholder(re.compile(r"验证码|code|otp", re.I)),
+                page.get_by_label(re.compile(r"验证码|code", re.I)),
+            ))
+        elif lf == "password":
+            candidates.extend((
+                page.locator("input[type='password']"),
+                page.get_by_placeholder(re.compile(r"密码|password", re.I)),
+            ))
+        if name and lf not in ("email", "phone", "sms_code", "password"):
             candidates.extend((
                 page.get_by_role("textbox", name=name),
                 page.get_by_placeholder(name),
                 page.get_by_label(name),
             ))
         raw = (text or "").strip()
+        if not lf and "@" in raw:
+            candidates.extend((
+                page.locator("input[type='email']"),
+                page.locator("input[autocomplete='email']"),
+                page.get_by_placeholder(re.compile(r"email|邮箱", re.I)),
+            ))
         if re.fullmatch(r"1\d{10}", raw):
             candidates.extend((
                 page.get_by_placeholder(re.compile(r"手机")),
@@ -306,13 +369,16 @@ class PlaywrightExecutor:
         return None
 
     def _input(self, event: PlanEvent, page, started_at: str, t0: float) -> EventResult:
-        text = str((event.params or {}).get("text") or "")
-        name = _name_from_params(event.params or {})
-        loc = self._find_input(page, name, text)
+        params = event.params or {}
+        text = str(params.get("text") or "")
+        name = _name_from_params(params)
+        login_field = _login_field_from_params(params)
+        loc = self._find_input(page, name, text, login_field=login_field)
         if loc is not None:
-            loc.fill(text, timeout=5000)
+            _fill_and_sync(loc, text)
             self._settle_page(page)
-            return self._ok(event, started_at, t0, f"输入 {text[:24]}")
+            tag = login_field or "textbox"
+            return self._ok(event, started_at, t0, f"输入({tag}) {text[:24]}")
         try:
             x, y = self._xy(event, page)
             page.mouse.click(x, y)

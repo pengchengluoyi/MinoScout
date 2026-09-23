@@ -79,6 +79,27 @@ def dump_dom_nodes(*, sn: str, run_id: str = "") -> DomDump:
             elapsed_ms=int((time.time() - t0) * 1000),
         )
     nodes = [n for n in (raw or []) if isinstance(n, dict)]
+    try:
+        page_url = str(page.url or "").strip()
+    except Exception:
+        page_url = ""
+    if page_url:
+        nodes.insert(
+            0,
+            {
+                "resource_id": "__page__",
+                "class": "document:html",
+                "text": "",
+                "content_desc": page_url[:500],
+                "url": page_url,
+                "page_url": page_url,
+                "href": page_url,
+                "clickable": False,
+                "editable": False,
+                "bounds": [0, 0, 0, 0],
+                "center": [0, 0],
+            },
+        )
     elapsed = int((time.time() - t0) * 1000)
     SLog.i(TAG, f"dom dump sn={sn} nodes={len(nodes)} ms={elapsed}")
     return DomDump(ok=True, nodes=nodes, elapsed_ms=elapsed)
