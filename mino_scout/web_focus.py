@@ -31,6 +31,9 @@ _JS_ACTIVE_FOCUS = """
     id: String(el.id || '').slice(0, 64),
     name: String(el.name || '').slice(0, 64),
     value_len,
+    value: (tag === 'input' || tag === 'textarea')
+      ? String(el.value || '').slice(0, 120)
+      : (ce ? String(el.innerText || el.textContent || '').trim().slice(0, 120) : ''),
     bounds: r ? [Math.round(r.left), Math.round(r.top), Math.round(r.right), Math.round(r.bottom)] : [],
   };
 }
