@@ -7,6 +7,7 @@ import json
 import re
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 from mino_scout.log import SLog
 
@@ -26,6 +27,43 @@ from mino_scout.playwright_locators import (
 from mino_scout.web_focus import evaluate_web_focus, web_focus_editable_ready
 
 TAG = "PlaywrightExecutor"
+
+_CSRF_NAME = re.compile(r"csrf|xsrf", re.I)
+_AUTH_TOKEN_NAME = re.compile(
+    r"^(access_token|refresh_token|id_token|auth_token|authorization)$",
+    re.I,
+)
+
+
+def _host_of(url: str) -> str:
+    return (urlparse(str(url or "")).hostname or "").lower().rstrip(".")
+
+
+def _hosts_related(left: str, right: str) -> bool:
+    a = str(left or "").lower().rstrip(".")
+    b = str(right or "").lower().rstrip(".")
+    if not a or not b:
+        return False
+    return a == b or a.endswith("." + b) or b.endswith("." + a)
+
+
+def _cookie_for_host(domain: str, host: str) -> bool:
+    d = str(domain or "").lstrip(".").lower().rstrip(".")
+    return _hosts_related(d, host)
+
+
+def _web_auth_evidence(name: str, value: str) -> str:
+    """当前站点上的 JWT 或明确令牌名才算凭据。普通 session/sid/csrf 不算。"""
+    key = str(name or "")
+    raw = str(value or "")
+    if not raw or _CSRF_NAME.search(key):
+        return ""
+    parts = raw.split(".")
+    if len(parts) == 3 and parts[0].startswith("eyJ") and all(parts) and len(raw) >= 20:
+        return "jwt"
+    if _AUTH_TOKEN_NAME.fullmatch(key) and len(raw) >= 24:
+        return "auth_token"
+    return ""
 
 _SUPPORTED_CAPS: set[str] = {
     "launch_app",
@@ -241,7 +279,7 @@ class PlaywrightExecutor:
             return self._fail(event, started_at, t0, f"exception: {exc}")
 
     def _read_web_auth(self, event, page, started_at: str, t0: float) -> EventResult:
-        """只读 Cookie / localStorage / sessionStorage 是否像登录凭据。不返回值。"""
+        """只读当前被测网页域名上的 Cookie / 本地存储。别的站点的令牌不算已登录。不返回值。"""
         if page is None:
             return self._ok(
                 event,
@@ -250,51 +288,129 @@ class PlaywrightExecutor:
                 json.dumps({"session": "logged_out", "reason": "no_page"}, ensure_ascii=False),
             )
         try:
-            cookies = page.context.cookies()
+            page_url = str(page.url or "")
         except Exception:
-            cookies = []
-        auth_cookie = False
+            page_url = ""
+        page_host = _host_of(page_url)
+        params = event.params or {}
+        expect_host = ""
+        for key in ("url", "origin", "package"):
+            raw = str(params.get(key) or "").strip()
+            if raw.startswith("http://") or raw.startswith("https://"):
+                expect_host = _host_of(raw)
+                break
+        if expect_host and page_host and not _hosts_related(page_host, expect_host):
+            return self._ok(
+                event,
+                started_at,
+                t0,
+                json.dumps(
+                    {
+                        "session": "unknown",
+                        "evidence": "",
+                        "host": page_host,
+                        "expected_host": expect_host,
+                        "cookie_count": 0,
+                        "storage_keys": 0,
+                        "reason": "page_not_app",
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        try:
+            cookies = page.context.cookies([page_url]) if page_url else []
+        except Exception:
+            try:
+                cookies = page.context.cookies()
+            except Exception:
+                cookies = []
+        cookies = [
+            item
+            for item in (cookies or [])
+            if isinstance(item, dict) and _cookie_for_host(str(item.get("domain") or ""), page_host)
+        ]
+        evidence = ""
         for item in cookies or []:
             if not isinstance(item, dict):
                 continue
             name = str(item.get("name") or "")
-            if item.get("value") and re.search(r"session|token|auth|jwt|sid|login", name, re.I):
-                auth_cookie = True
+            value = str(item.get("value") or "")
+            hit = _web_auth_evidence(name, value)
+            if hit == "jwt" or (hit and not evidence):
+                evidence = hit
+            if evidence == "jwt":
                 break
-        storage = {"localAuth": False, "sessionAuth": False, "localCount": 0, "sessionCount": 0}
+        storage = {
+            "localJwt": False,
+            "localToken": False,
+            "sessionJwt": False,
+            "sessionToken": False,
+            "localCount": 0,
+            "sessionCount": 0,
+        }
         try:
             raw = page.evaluate(
                 """() => {
-                  const re = /session|token|auth|jwt|sid|login/i;
-                  const nonempty = (store) => {
-                    for (let i = 0; i < store.length; i++) {
-                      const k = store.key(i) || "";
-                      if (re.test(k) && (store.getItem(k) || "").length > 0) return true;
-                    }
-                    return false;
+                  const csrf = /csrf|xsrf/i;
+                  const authName = /^(access_token|refresh_token|id_token|auth_token|authorization)$/i;
+                  const jwt = (v) => {
+                    if (!v || v.length < 20) return false;
+                    const p = String(v).split('.');
+                    return p.length === 3 && p[0].indexOf('eyJ') === 0 && p[1] && p[2];
                   };
+                  const scan = (store) => {
+                    let jwtHit = false;
+                    let tokenHit = false;
+                    for (let i = 0; i < store.length; i++) {
+                      const k = store.key(i) || '';
+                      const v = store.getItem(k) || '';
+                      if (!v || csrf.test(k)) continue;
+                      if (jwt(v)) jwtHit = true;
+                      else if (authName.test(k) && v.length >= 24) tokenHit = true;
+                    }
+                    return { jwtHit, tokenHit, count: store.length };
+                  };
+                  const local = scan(localStorage);
+                  const sess = scan(sessionStorage);
                   return {
-                    localAuth: nonempty(localStorage),
-                    sessionAuth: nonempty(sessionStorage),
-                    localCount: localStorage.length,
-                    sessionCount: sessionStorage.length,
+                    localJwt: local.jwtHit,
+                    localToken: local.tokenHit,
+                    sessionJwt: sess.jwtHit,
+                    sessionToken: sess.tokenHit,
+                    localCount: local.count,
+                    sessionCount: sess.count,
                   };
                 }"""
             )
             if isinstance(raw, dict):
                 storage = raw
         except Exception:
-            storage = {"localAuth": False, "sessionAuth": False, "localCount": -1, "sessionCount": -1}
-        if auth_cookie or storage.get("localAuth") or storage.get("sessionAuth"):
+            storage = {
+                "localJwt": False,
+                "localToken": False,
+                "sessionJwt": False,
+                "sessionToken": False,
+                "localCount": -1,
+                "sessionCount": -1,
+            }
+        if storage.get("localJwt") or storage.get("sessionJwt"):
+            evidence = "jwt"
+        elif not evidence and (storage.get("localToken") or storage.get("sessionToken")):
+            evidence = "auth_token"
+        local_n = int(storage.get("localCount") or 0)
+        session_n = int(storage.get("sessionCount") or 0)
+        if evidence:
             session = "logged_in"
-        elif not cookies and storage.get("localCount") == 0 and storage.get("sessionCount") == 0:
+        elif not cookies and local_n == 0 and session_n == 0:
             session = "logged_out"
         else:
             session = "unknown"
         payload = {
             "session": session,
+            "evidence": evidence,
+            "host": page_host,
             "cookie_count": len(cookies or []),
-            "storage_keys": int(storage.get("localCount") or 0) + int(storage.get("sessionCount") or 0),
+            "storage_keys": local_n + session_n,
         }
         return self._ok(event, started_at, t0, json.dumps(payload, ensure_ascii=False))
 
