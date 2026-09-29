@@ -192,13 +192,13 @@ Nexus 收到后：`provides` ∩ 能力目录 → 该节点可执行的 capabili
 
 **幂等**：`(run_id, step_idx)` 是唯一键。Scout 必须缓存已完成的 `(run_id, step_idx) → RESULT`（建议保留至该 run 结束或 10 分钟），重复收到时**直接返回缓存结果，不重新执行**。`step_idx < 0` 不做幂等（截图/探活/框架事件每次都要发生）。
 
-`compress_ratio`（默认 `2.0`，`1.0` = 不压缩）目前只对 **playwright 通道**生效：Web 截图按此比例缩小后转 JPEG。这是 Nexus 侧设置，必须放进 `params` 下发 —— Scout 不读设置。**`RESULT` 里的 `width` / `height` 始终报原图尺寸**，坐标体系不受压缩影响。
+`compress_ratio`（`1.0` = 不压缩）对 **playwright 与 adb** 都生效：按比例缩小后，大于 1 时转 JPEG。Nexus 按渠道填入当前跑用例模型的 `web_compress_ratio` 或 `android_compress_ratio`，Scout 不读设置。**`RESULT` 里的 `width` / `height` 始终报原图尺寸**，坐标体系不受压缩影响。喂给大模型的图另按 `plan_compress_ratio` 统一转 JPEG，与渠道无关。
 
 #### 4.4.1 `capability_id` 清单
 
 | `capability_id` | 方向 | 说明 |
 |---|---|---|
-| `screenshot` | N→S | 截图。`params.compress_ratio` 只对 playwright 通道生效 |
+| `screenshot` | N→S | 截图。`params.compress_ratio` 对 playwright 与 adb 都生效 |
 | `hierarchy` | N→S | UI 层级 dump |
 | `get_app_version`（别名 `app_version`） | N→S | 目标包版本 |
 | `get_foreground_app`（别名 `foreground_app`） | N→S | 前台包名 / bundle id |

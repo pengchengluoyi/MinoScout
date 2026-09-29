@@ -65,7 +65,12 @@ def peek_png_size(data: bytes) -> tuple[int, int]:
 # ---------- ADB 通路 ----------
 
 
-def capture_via_adb(adb_serial: str, *, timeout_sec: float = 15.0) -> CapturedScreen:
+def capture_via_adb(
+    adb_serial: str,
+    *,
+    timeout_sec: float = 15.0,
+    compress_ratio: float = 1.0,
+) -> CapturedScreen:
     """port: 上游 `screen.py::_capture_via_adb`，逻辑逐条对齐。"""
     from mino_scout.playwright_hub import is_web_slot
 
@@ -97,21 +102,22 @@ def capture_via_adb(adb_serial: str, *, timeout_sec: float = 15.0) -> CapturedSc
         )
 
     png_bytes = proc.stdout
+    out, mime, width, height = compress_web_png(png_bytes, compress_ratio)
+    suffix = ".jpg" if mime == "image/jpeg" else ".png"
     # 落盘到 tmp 便于排查。ARCHITECTURE.md §7：原图用后即删，不是持久状态。
-    fd, path = tempfile.mkstemp(prefix=f"screen_{adb_serial}_", suffix=".png")
+    fd, path = tempfile.mkstemp(prefix=f"screen_{adb_serial}_", suffix=suffix)
     try:
-        os.write(fd, png_bytes)
+        os.write(fd, out)
     finally:
         os.close(fd)
 
-    width, height = peek_png_size(png_bytes)
     remember_capture_size(adb_serial, width, height)
     return CapturedScreen(
         ok=True,
         source="adb",
         path=path,
-        image_base64=base64.b64encode(png_bytes).decode("ascii"),
-        image_mime="image/png",
+        image_base64=base64.b64encode(out).decode("ascii"),
+        image_mime=mime,
         width=width,
         height=height,
         elapsed_ms=elapsed_ms,
@@ -288,7 +294,11 @@ def capture(
             screenshot_params=screenshot_params,
         )
     else:
-        shot = capture_via_adb(device.adb_serial, timeout_sec=timeout_sec)
+        shot = capture_via_adb(
+            device.adb_serial,
+            timeout_sec=timeout_sec,
+            compress_ratio=compress_ratio,
+        )
 
     if shot.has_image():
         if allow_blank or not png_is_blank(base64.b64decode(shot.image_base64)):

@@ -3,6 +3,7 @@
 """Web 执行通道：Playwright，和 AdbExecutor 平级。禁止 page.evaluate 改界面。"""
 from __future__ import annotations
 
+import json
 import re
 import time
 from typing import Any
@@ -38,6 +39,7 @@ _SUPPORTED_CAPS: set[str] = {
     "swipe_direction",
     "swipe_element_to_element",
     "get_foreground_app",
+    "read_web_auth",
     "wait_screen_ready",
     "switch_tab",
     "open_tab",
@@ -154,6 +156,10 @@ class PlaywrightExecutor:
                     return self._ok(event, started_at, t0, "关闭本任务 Chromium")
                 hub.close_case(sn, run_id=run_id)
                 return self._ok(event, started_at, t0, "关闭页面")
+            if cap == "read_web_auth":
+                return self._read_web_auth(
+                    event, hub.current_page(sn, run_id=run_id), started_at, t0
+                )
             page = hub.current_page(sn, run_id=run_id)
             if page is None:
                 page = hub.open_case(
@@ -233,6 +239,64 @@ class PlaywrightExecutor:
         except Exception as exc:
             SLog.e(TAG, f"execute exception cap={cap} sn={sn}: {exc}")
             return self._fail(event, started_at, t0, f"exception: {exc}")
+
+    def _read_web_auth(self, event, page, started_at: str, t0: float) -> EventResult:
+        """只读 Cookie / localStorage / sessionStorage 是否像登录凭据。不返回值。"""
+        if page is None:
+            return self._ok(
+                event,
+                started_at,
+                t0,
+                json.dumps({"session": "logged_out", "reason": "no_page"}, ensure_ascii=False),
+            )
+        try:
+            cookies = page.context.cookies()
+        except Exception:
+            cookies = []
+        auth_cookie = False
+        for item in cookies or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "")
+            if item.get("value") and re.search(r"session|token|auth|jwt|sid|login", name, re.I):
+                auth_cookie = True
+                break
+        storage = {"localAuth": False, "sessionAuth": False, "localCount": 0, "sessionCount": 0}
+        try:
+            raw = page.evaluate(
+                """() => {
+                  const re = /session|token|auth|jwt|sid|login/i;
+                  const nonempty = (store) => {
+                    for (let i = 0; i < store.length; i++) {
+                      const k = store.key(i) || "";
+                      if (re.test(k) && (store.getItem(k) || "").length > 0) return true;
+                    }
+                    return false;
+                  };
+                  return {
+                    localAuth: nonempty(localStorage),
+                    sessionAuth: nonempty(sessionStorage),
+                    localCount: localStorage.length,
+                    sessionCount: sessionStorage.length,
+                  };
+                }"""
+            )
+            if isinstance(raw, dict):
+                storage = raw
+        except Exception:
+            storage = {"localAuth": False, "sessionAuth": False, "localCount": -1, "sessionCount": -1}
+        if auth_cookie or storage.get("localAuth") or storage.get("sessionAuth"):
+            session = "logged_in"
+        elif not cookies and storage.get("localCount") == 0 and storage.get("sessionCount") == 0:
+            session = "logged_out"
+        else:
+            session = "unknown"
+        payload = {
+            "session": session,
+            "cookie_count": len(cookies or []),
+            "storage_keys": int(storage.get("localCount") or 0) + int(storage.get("sessionCount") or 0),
+        }
+        return self._ok(event, started_at, t0, json.dumps(payload, ensure_ascii=False))
 
     def _get_foreground_app(
         self,
