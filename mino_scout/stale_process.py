@@ -15,6 +15,15 @@ def disk_app_core_path() -> Path:
 
 
 def read_disk_app_semver() -> str:
+    root = config_dir() / "bin" / "app" / "mino_scout"
+    version_file = root / "VERSION"
+    if version_file.is_file():
+        try:
+            text = version_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            text = ""
+        if text:
+            return text
     path = disk_app_core_path()
     if not path.is_file():
         return ""

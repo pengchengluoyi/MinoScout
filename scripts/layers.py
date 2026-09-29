@@ -55,12 +55,10 @@ RUNTIME_ABI = 3
 
 
 def package_version() -> str:
-    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    for line in text.splitlines():
-        if line.startswith("version"):
-            _, _, rest = line.partition("=")
-            return rest.strip().strip('"').strip("'")
-    raise SystemExit("could not read version from pyproject.toml")
+    text = (ROOT / "mino_scout" / "VERSION").read_text(encoding="utf-8").strip()
+    if not text:
+        raise SystemExit("could not read mino_scout/VERSION")
+    return text
 
 
 def declared_dependencies() -> list[str]:

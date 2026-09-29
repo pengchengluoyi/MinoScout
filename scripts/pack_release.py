@@ -268,17 +268,15 @@ def _write_zip(
         _add_bytes(zf, (json.dumps(doc, indent=2) + "\n").encode("utf-8"),
                    f"{root_name}/layers.json")
         _add_bytes(zf, _layers_txt(include, keys, frozen), f"{root_name}/layers.txt")
+        saw_version = False
         for layer in include:
             for path in buckets[layer]:
                 rel = L.payload_relpath(layer, path, frozen)
                 arc = f"{root_name}/{layer}/{rel}"
-                if layer == "app" and rel.replace("\\", "/").endswith("mino_scout/core.py"):
-                    from mino_scout.app_version import stamp_scout_version_in_core
-
-                    body = stamp_scout_version_in_core(
-                        path.read_text(encoding="utf-8"), ver
-                    ).encode("utf-8")
-                    _add_bytes(zf, body, arc)
+                norm = rel.replace("\\", "/")
+                if layer == "app" and norm.endswith("mino_scout/VERSION"):
+                    _add_bytes(zf, f"{ver.strip()}\n".encode("utf-8"), arc)
+                    saw_version = True
                 else:
                     _add_file(
                         zf,
@@ -286,6 +284,12 @@ def _write_zip(
                         arc,
                         executable=_looks_executable(path),
                     )
+            if layer == "app" and not saw_version:
+                _add_bytes(
+                    zf,
+                    f"{ver.strip()}\n".encode("utf-8"),
+                    f"{root_name}/app/mino_scout/VERSION",
+                )
         _add_file(zf, ROOT / "packaging" / "install.sh", f"{root_name}/install.sh", executable=True)
         _add_file(zf, ROOT / "packaging" / "install.ps1", f"{root_name}/install.ps1")
         _add_file(zf, ROOT / "packaging" / "README.txt", f"{root_name}/README.txt")

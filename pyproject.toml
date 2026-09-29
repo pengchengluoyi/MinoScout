@@ -1,6 +1,10 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "mino-scout"
-version = "0.1.51"
+dynamic = ["version"]
 description = "MinoScout — 执行器：接收 MinoNexus 下发的动作，操作设备，回报结果"
 requires-python = ">=3.12"
 
@@ -30,3 +34,9 @@ mino-scout = "mino_scout.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["mino_scout*"]
+
+[tool.setuptools.dynamic]
+version = {file = "mino_scout/VERSION"}
+
+[tool.setuptools.package-data]
+mino_scout = ["VERSION"]

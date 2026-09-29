@@ -17,6 +17,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from dataclasses import replace
 from typing import Any, Optional
 
@@ -29,7 +30,7 @@ from mino_scout.schemas import CapturedScreen, EventResult, EventStatus, PlanEve
 
 TAG = "ScoutCore"
 
-SCOUT_VERSION = "0.1.51"
+SCOUT_VERSION = Path(__file__).with_name("VERSION").read_text(encoding="utf-8").strip()
 # 单节点 Web 槽 Playwright 并行路数（与 Nexus WEB_PLAYWRIGHT_PARALLEL_LANES 一致）
 PLAYWRIGHT_PARALLEL_LANES = 4
 

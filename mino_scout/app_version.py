@@ -15,7 +15,7 @@ _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+([\-+].*)?$")
 
 
 def stamp_scout_version_in_core(text: str, semver: str) -> str:
-    """打包 app 层时写入与 pyproject / layers.txt 一致的 SCOUT_VERSION。"""
+    """旧包仍可能把版本写在 core.py。新包不再改这个文件。"""
     ver = str(semver or "").strip().lstrip("v")
     if not ver:
         return text
@@ -34,16 +34,10 @@ def layer_app_semver(layers: dict[str, str] | None) -> str:
 
 def package_version_from_pyproject() -> str:
     try:
-        from pathlib import Path
-
         root = Path(__file__).resolve().parents[1]
-        for line in (root / "pyproject.toml").read_text(encoding="utf-8").splitlines():
-            if line.startswith("version"):
-                _, _, rest = line.partition("=")
-                return rest.strip().strip('"').strip("'")
+        return (root / "mino_scout" / "VERSION").read_text(encoding="utf-8").strip()
     except OSError:
-        pass
-    return ""
+        return ""
 
 
 def _core_py_candidates() -> list[Path]:
@@ -64,9 +58,21 @@ def _core_py_candidates() -> list[Path]:
     return out
 
 
+def _read_version_file(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 def read_app_semver() -> str:
-    """当前 app 层 `core.py` 里的 SCOUT_VERSION（与 layers.txt 的 app 指纹应对齐）。"""
+    """当前 app 层 VERSION。旧安装仍可能只在 core.py 里写着 SCOUT_VERSION。"""
     for path in _core_py_candidates():
+        found = _read_version_file(path.with_name("VERSION"))
+        if found:
+            return found
         if not path.is_file():
             continue
         try:
