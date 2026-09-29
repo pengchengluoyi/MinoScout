@@ -32,15 +32,19 @@ LAYER_NAMES="runtime app browser"
 ROLLBACK_SNAPSHOT=""
 ROLLBACK_PATHS=()
 
+# macOS /bin/bash 是 3.2。set -u 下空数组 "${arr[@]}" 会报 unbound variable，
+# 且行号指向函数定义而不是 for 本身。先看长度再展开。
 rollback_restore() {
   local p
-  for p in "${ROLLBACK_PATHS[@]}"; do
-    [[ -n "$p" ]] || continue
-    if [[ -e "${p}.old" ]]; then
-      rm -rf "$p"
-      mv "${p}.old" "$p"
-    fi
-  done
+  if [[ ${#ROLLBACK_PATHS[@]} -gt 0 ]]; then
+    for p in "${ROLLBACK_PATHS[@]}"; do
+      [[ -n "$p" ]] || continue
+      if [[ -e "${p}.old" ]]; then
+        rm -rf "$p"
+        mv "${p}.old" "$p"
+      fi
+    done
+  fi
   if [[ -n "$ROLLBACK_SNAPSHOT" && -f "$ROLLBACK_SNAPSHOT" ]]; then
     cp "$ROLLBACK_SNAPSHOT" "$DEST/layers.txt" 2>/dev/null || true
   fi
@@ -215,10 +219,12 @@ install_layers() {
   BIN="$DEST/mino-scout"
 
   local p
-  for p in "${ROLLBACK_PATHS[@]}"; do
-    [[ -n "$p" ]] || continue
-    rm -rf "${p}.old"
-  done
+  if [[ ${#ROLLBACK_PATHS[@]} -gt 0 ]]; then
+    for p in "${ROLLBACK_PATHS[@]}"; do
+      [[ -n "$p" ]] || continue
+      rm -rf "${p}.old"
+    done
+  fi
   ROLLBACK_PATHS=()
   [[ -n "$ROLLBACK_SNAPSHOT" ]] && rm -f "$ROLLBACK_SNAPSHOT"
   trap - ERR
