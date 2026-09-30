@@ -181,7 +181,7 @@ Nexus 收到后：`provides` ∩ 能力目录 → 该节点可执行的 capabili
 | 字段 | 规定 |
 |---|---|
 | `capability_id` | 能力或框架指令 id。Scout 不校验它是否存在于目录（目录在 Nexus），只看自己的 executor `supports()` 或内置框架 cap |
-| `params` | **坐标一律是 0–1000 归一化千分比，不是像素。** Scout 负责按实际分辨率换算。观察类能力可带 `compress_ratio` 等 |
+| `params` | **坐标一律是 0–1000 归一化千分比，不是像素。** Scout 负责按实际分辨率换算。观察类能力可带 `compress_ratio` 等。点击可带 `point_policy`：`coordinate` 表示只用 `x,y`，禁止文案锚点、禁止吸附邻近节点；`node` 表示只用 `target` 锚点，锚点未命中则失败，禁止用坐标兜底。缺省保持旧行为（锚点优先，未命中再坐标并可能吸附） |
 | `device_id` | 可选。设备唯一 ID；空则回退 `sn` / `device_hint`。**dumps 时空字符串省略** |
 | `platform` | 可选。`android` \| `ios` \| `web` \| `playwright` \| `other`。空则从 `sn` / `device_hint` 猜测。**dumps 时空字符串省略** |
 | `sn` | 设备串号；web/playwright 可为槽位 sn 或字面 `playwright` |

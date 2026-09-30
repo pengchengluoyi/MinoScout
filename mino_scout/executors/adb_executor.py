@@ -406,6 +406,10 @@ class AdbExecutor:
         x2 = params.get("to_x"); y2 = params.get("to_y")
         if None in (x1, y1, x2, y2):
             return self._fail(event, started_at, t0, "swipe_element_to_element 需要 from_x/from_y/to_x/to_y（VLM locate 应已注入）")
+        policy = str(params.get("point_policy") or "").strip().lower()
+        if policy in ("coordinate", "node"):
+            x1, y1 = self._map_to_display(serial, int(x1), int(y1))
+            x2, y2 = self._map_to_display(serial, int(x2), int(y2))
         duration = int(params.get("duration_ms") or 400)
         rc, out, err = self._adb_shell(serial, "input", "swipe", str(int(x1)), str(int(y1)), str(int(x2)), str(int(y2)), str(duration))
         elapsed = int((time.time() - t0) * 1000)
@@ -684,10 +688,17 @@ class AdbExecutor:
         # 坐标来源：语义锚点优先（稳定、可复用），模型给的坐标兜底
         x, y, audit, how = self._point_for(event, serial)
         if x is None or y is None:
+            policy = str((event.params or {}).get("point_policy") or "")
+            if policy == "node":
+                reason = "DOM 点击锚点未命中，不用坐标兜底"
+            elif policy == "coordinate":
+                reason = "视觉点击缺少坐标"
+            else:
+                reason = "tap_element 无可用坐标（锚点未命中且未给 x/y）"
+            extra = (audit.get("anchor") or {}).get("reason", "") if audit else ""
             return self._fail(
                 event, started_at, t0,
-                "tap_element 无可用坐标（锚点未命中且未给 x/y）"
-                + (f"：{(audit.get('anchor') or {}).get('reason', '')}" if audit else ""),
+                reason + (f"：{extra}" if extra else ""),
             )
         ok, inject, extra = self._inject_tap(
             serial, x, y, scale=how in ("xy", "fallback_xy"),
@@ -714,9 +725,20 @@ class AdbExecutor:
         parsed, err = parse_multi_tap(event.params)
         if err:
             return self._fail(event, started_at, t0, err)
-        x, y, count, interval = parsed
+        _, _, count, interval = parsed
+        policy = str((event.params or {}).get("point_policy") or "").strip().lower()
+        scale = True
+        if policy in ("coordinate", "node"):
+            x, y, _audit, how = self._point_for(event, serial)
+            if x is None or y is None:
+                if policy == "node":
+                    return self._fail(event, started_at, t0, "DOM 连点锚点未命中，不用坐标兜底")
+                return self._fail(event, started_at, t0, "视觉连点缺少坐标")
+            scale = how in ("xy", "fallback_xy")
+        else:
+            x, y = parsed[0], parsed[1]
         for i in range(count):
-            ok, inject, extra = self._inject_tap(serial, x, y, settle=False)
+            ok, inject, extra = self._inject_tap(serial, x, y, settle=False, scale=scale)
             if not ok:
                 self._invalidate_hierarchy(serial)
                 return self._fail(
@@ -883,10 +905,30 @@ class AdbExecutor:
         return x, y, audit
 
     def _point_for(self, event, serial: str) -> tuple[Optional[int], Optional[int], dict, str]:
-        """统一取坐标：锚点优先，模型坐标兜底。返回 (x, y, audit, how)。"""
+        """统一取坐标。point_policy=coordinate 只用坐标；node 只用锚点。"""
         from mino_scout import hierarchy as H
 
-        params = H.lift_text_anchor(event.params or {})
+        raw = event.params or {}
+        policy = str(raw.get("point_policy") or "").strip().lower()
+        if policy == "coordinate":
+            x, y = raw.get("x"), raw.get("y")
+            if x is None or y is None:
+                return None, None, {"point_policy": "coordinate"}, "none"
+            x, y = int(x), int(y)
+            from mino_scout.screen import last_capture_size
+
+            shot = last_capture_size(serial)
+            display = self._wm_size(serial)
+            px, py = milli_to_shot_pixels(x, y, shot=shot, display=display)
+            return px, py, {"point_policy": "coordinate"}, "xy"
+        if policy == "node":
+            ax, ay, audit = self._resolve_anchor_xy(event, serial)
+            audit = {**audit, "point_policy": "node"}
+            if ax is None or ay is None:
+                return None, None, audit, "none"
+            return ax, ay, audit, "anchor"
+
+        params = H.lift_text_anchor(raw)
         ax, ay, audit = self._resolve_anchor_xy(event, serial)
         if ax is not None and ay is not None:
             return ax, ay, audit, "anchor"

@@ -231,8 +231,8 @@ def _frame_local(frame: Any, px: int, py: int) -> tuple[int, int] | None:
     return lx, ly
 
 
-def locate_editable_at(page: Any, x: int, y: int, field: str = "") -> Any:
-    """先在落点所在帧里命中输入框，再在同一帧里找最近的可见输入框。不改页面。"""
+def locate_editable_at(page: Any, x: int, y: int, field: str = "", *, allow_near: bool = True) -> Any:
+    """先在落点所在帧里命中输入框。allow_near 为假时不再找最近的另一只输入框。"""
     px, py = int(x), int(y)
     hint = str(field or "")
     main = getattr(page, "main_frame", None) or page
@@ -251,6 +251,8 @@ def locate_editable_at(page: Any, x: int, y: int, field: str = "") -> Any:
         if hit is not None:
             return hit
         containing.append((frame, local[0], local[1]))
+    if not allow_near:
+        return None
     near_targets = containing or [(main, px, py)]
     for frame, lx, ly in near_targets:
         hit = _locate_in_frame(frame, lx, ly, hint, "near")

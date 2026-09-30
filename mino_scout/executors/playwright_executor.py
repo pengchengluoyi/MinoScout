@@ -121,6 +121,16 @@ def _name_from_params(params: dict) -> str:
     return str(target.get("text") or "").strip()
 
 
+def _anchor_name(params: dict) -> str:
+    """DOM 锚点。不读 input 的 text，那是要输入的内容。"""
+    target = params.get("target") if isinstance(params.get("target"), dict) else {}
+    for key in ("text", "content_desc", "label"):
+        s = str(target.get(key) or "").strip().strip("「」\"'")
+        if s:
+            return s
+    return str(params.get("selector_text") or "").strip()
+
+
 def _login_field_from_params(params: dict | None) -> str:
     """Nexus Web 渠道：input_text.params.field / login_field（安卓 adb 路径可忽略）。"""
     p = params or {}
@@ -571,6 +581,9 @@ class PlaywrightExecutor:
 
     def _tap(self, event: PlanEvent, page, started_at: str, t0: float) -> EventResult:
         params = event.params or {}
+        policy = str(params.get("point_policy") or "").strip().lower()
+        if policy == "node":
+            return self._tap_node(event, page, started_at, t0, params)
         name = _name_from_params(params)
         try:
             x, y = resolve_viewport_xy(params, page)
@@ -586,15 +599,38 @@ class PlaywrightExecutor:
         label = f"「{name[:40]}」({x},{y})" if name else f"({x},{y})"
         return self._ok(event, started_at, t0, f"点击 {label}")
 
+    def _tap_node(self, event, page, started_at, t0, params) -> EventResult:
+        name = _anchor_name(params)
+        if not name:
+            return self._fail(event, started_at, t0, "DOM 点击缺少锚点")
+        try:
+            loc = page.get_by_text(name, exact=True)
+            count = int(loc.count())
+        except Exception as exc:
+            return self._fail(event, started_at, t0, f"DOM 点击锚点未命中：{exc}")
+        if count != 1:
+            return self._fail(
+                event,
+                started_at,
+                t0,
+                f"DOM 点击锚点未唯一命中「{name[:40]}」（{count}）",
+            )
+        loc.click()
+        self._settle_page(page)
+        return self._ok(event, started_at, t0, f"点击「{name[:40]}」")
+
     def _multi_tap(self, event: PlanEvent, page, started_at: str, t0: float) -> EventResult:
+        params = event.params or {}
+        if str(params.get("point_policy") or "").strip().lower() == "node":
+            return self._repeat_node(event, page, started_at, t0, params)
         from mino_scout.executors.multi_tap import parse_multi_tap
 
-        parsed, err = parse_multi_tap(event.params)
+        parsed, err = parse_multi_tap(params)
         if err:
             return self._fail(event, started_at, t0, err)
         _, _, count, interval = parsed
         try:
-            x, y = resolve_viewport_xy(event.params or {}, page)
+            x, y = resolve_viewport_xy(params, page)
         except ValueError:
             return self._fail(event, started_at, t0, "multi_tap 缺坐标")
         for i in range(count):
@@ -603,8 +639,51 @@ class PlaywrightExecutor:
                 time.sleep(interval / 1000.0)
         return self._ok(event, started_at, t0, f"连点 ({x},{y}) ×{count} 间隔{interval}ms")
 
+    def _repeat_node(self, event, page, started_at, t0, params) -> EventResult:
+        from mino_scout.executors.multi_tap import parse_multi_tap
+
+        parsed, err = parse_multi_tap({**params, "x": params.get("x") or 0, "y": params.get("y") or 0})
+        if err:
+            return self._fail(event, started_at, t0, err)
+        _, _, count, interval = parsed
+        name = _anchor_name(params)
+        if not name:
+            return self._fail(event, started_at, t0, "DOM 连点缺少锚点")
+        try:
+            loc = page.get_by_text(name, exact=True)
+            if int(loc.count()) != 1:
+                return self._fail(event, started_at, t0, f"DOM 连点锚点未唯一命中「{name[:40]}」")
+        except Exception as exc:
+            return self._fail(event, started_at, t0, f"DOM 连点锚点未命中：{exc}")
+        for i in range(count):
+            loc.click()
+            if i + 1 < count:
+                time.sleep(interval / 1000.0)
+        return self._ok(event, started_at, t0, f"连点「{name[:40]}」×{count}")
+
     def _long_press(self, event: PlanEvent, page, started_at: str, t0: float) -> EventResult:
-        name = _name_from_params(event.params or {})
+        params = event.params or {}
+        if str(params.get("point_policy") or "").strip().lower() == "node":
+            name = _anchor_name(params)
+            if not name:
+                return self._fail(event, started_at, t0, "DOM 长按缺少锚点")
+            try:
+                loc = page.get_by_text(name, exact=True)
+                if int(loc.count()) != 1:
+                    return self._fail(event, started_at, t0, f"DOM 长按锚点未唯一命中「{name[:40]}」")
+                box = loc.bounding_box()
+            except Exception as exc:
+                return self._fail(event, started_at, t0, f"DOM 长按锚点未命中：{exc}")
+            if not box:
+                return self._fail(event, started_at, t0, "DOM 长按锚点没有位置")
+            x = int(box["x"] + box["width"] / 2)
+            y = int(box["y"] + box["height"] / 2)
+            page.mouse.move(x, y)
+            page.mouse.down()
+            time.sleep(0.8)
+            page.mouse.up()
+            return self._ok(event, started_at, t0, f"长按「{name[:40]}」")
+        name = _name_from_params(params)
         try:
             x, y = resolve_viewport_xy(event.params or {}, page)
         except ValueError:
@@ -625,11 +704,34 @@ class PlaywrightExecutor:
         text = str(params.get("text") or "")
         login_field = _login_field_from_params(params)
         tag = login_field or "textbox"
+        policy = str(params.get("point_policy") or "").strip().lower()
+        if policy == "node":
+            name = _anchor_name(params)
+            if not name:
+                return self._fail(event, started_at, t0, "DOM 输入缺少锚点")
+            try:
+                loc = None
+                for cand in (
+                    page.get_by_role("textbox", name=name, exact=True),
+                    page.get_by_label(name, exact=True),
+                    page.get_by_placeholder(name, exact=True),
+                ):
+                    if int(cand.count()) == 1:
+                        loc = cand
+                        break
+                if loc is None:
+                    return self._fail(event, started_at, t0, f"DOM 输入锚点未唯一命中「{name[:40]}」")
+            except Exception as exc:
+                return self._fail(event, started_at, t0, f"DOM 输入锚点未命中：{exc}")
+            loc.fill(text)
+            return self._ok(event, started_at, t0, f"输入({tag})「{name[:40]}」")
         try:
             x, y = resolve_viewport_xy(params, page)
         except ValueError:
             return self._fail(event, started_at, t0, f"Web 输入({tag}) 需要坐标 x/y")
-        target = locate_editable_at(page, x, y, field=login_field)
+        target = locate_editable_at(
+            page, x, y, field=login_field, allow_near=policy != "coordinate"
+        )
         if target is None:
             return self._fail(
                 event,
