@@ -17,13 +17,14 @@
     const aria = el.getAttribute && el.getAttribute('aria-label') || '';
     const role = el.getAttribute && el.getAttribute('role') || '';
     const editable = tag === 'input' || tag === 'textarea' || el.isContentEditable;
+    const cls = typ ? `${tag}:${typ}` : (el.isContentEditable ? `${tag}:contenteditable` : tag);
     const clickable = tag === 'button' || tag === 'a' || role === 'button' || role === 'link'
       || el.onclick != null || window.getComputedStyle(el).cursor === 'pointer';
     out.push({
       resource_id: el.id || '',
       text,
       content_desc: placeholder || aria || role,
-      class: typ ? `${tag}:${typ}` : tag,
+      class: cls,
       role,
       clickable: !!clickable,
       editable: !!editable,
@@ -41,7 +42,7 @@
     });
   }
 
-  const sel = 'input, textarea, select, button, a, [role="button"], [role="link"], [role="textbox"]';
+  const sel = 'input, textarea, select, button, a, [role="button"], [role="link"], [role="textbox"], [contenteditable="true"], [contenteditable=""]';
 
   function walkRoot(root, out, depth, prefix) {
     if (out.length >= MAX || depth > MAX_DEPTH) return;
@@ -60,11 +61,17 @@
         continue;
       }
       pushNode(out, el, r, { frame_path: prefix || '' });
-      if (el.shadowRoot) {
-        walkRoot(el.shadowRoot, out, depth + 1, prefix);
-      }
     }
     if (depth >= MAX_DEPTH) return;
+    let hosts;
+    try {
+      hosts = root.querySelectorAll('*');
+    } catch (e) {
+      hosts = [];
+    }
+    for (const host of hosts) {
+      if (host.shadowRoot) walkRoot(host.shadowRoot, out, depth + 1, prefix);
+    }
     let iframes;
     try {
       iframes = root.querySelectorAll('iframe, frame');

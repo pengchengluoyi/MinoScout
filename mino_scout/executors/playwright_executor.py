@@ -24,7 +24,11 @@ from mino_scout.playwright_locators import (
     css_selector_from_params,
     locator_from_params,
 )
-from mino_scout.web_focus import evaluate_web_focus, web_focus_editable_ready
+from mino_scout.web_focus import (
+    evaluate_web_focus,
+    locate_editable_at,
+    web_focus_editable_ready,
+)
 
 TAG = "PlaywrightExecutor"
 
@@ -278,15 +282,34 @@ class PlaywrightExecutor:
             SLog.e(TAG, f"execute exception cap={cap} sn={sn}: {exc}")
             return self._fail(event, started_at, t0, f"exception: {exc}")
 
+    def _auth_body(
+        self,
+        *,
+        session: str,
+        evidence: str = "",
+        host: str = "",
+        expected_host: str = "",
+        cookie_count: int = 0,
+        storage_keys: int = 0,
+        reason: str = "",
+    ) -> str:
+        return json.dumps(
+            {
+                "session": session,
+                "evidence": evidence,
+                "host": host,
+                "expected_host": expected_host,
+                "cookie_count": cookie_count,
+                "storage_keys": storage_keys,
+                "reason": reason,
+            },
+            ensure_ascii=False,
+        )
+
     def _read_web_auth(self, event, page, started_at: str, t0: float) -> EventResult:
         """只读当前被测网页域名上的 Cookie / 本地存储。别的站点的令牌不算已登录。不返回值。"""
         if page is None:
-            return self._ok(
-                event,
-                started_at,
-                t0,
-                json.dumps({"session": "logged_out", "reason": "no_page"}, ensure_ascii=False),
-            )
+            return self._ok(event, started_at, t0, self._auth_body(session="guest", reason="no_page"))
         try:
             page_url = str(page.url or "")
         except Exception:
@@ -304,17 +327,11 @@ class PlaywrightExecutor:
                 event,
                 started_at,
                 t0,
-                json.dumps(
-                    {
-                        "session": "unknown",
-                        "evidence": "",
-                        "host": page_host,
-                        "expected_host": expect_host,
-                        "cookie_count": 0,
-                        "storage_keys": 0,
-                        "reason": "page_not_app",
-                    },
-                    ensure_ascii=False,
+                self._auth_body(
+                    session="guest",
+                    host=page_host,
+                    expected_host=expect_host,
+                    reason="page_not_app",
                 ),
             )
         try:
@@ -399,20 +416,24 @@ class PlaywrightExecutor:
             evidence = "auth_token"
         local_n = int(storage.get("localCount") or 0)
         session_n = int(storage.get("sessionCount") or 0)
-        if evidence:
-            session = "logged_in"
-        elif not cookies and local_n == 0 and session_n == 0:
-            session = "logged_out"
-        else:
-            session = "unknown"
-        payload = {
-            "session": session,
-            "evidence": evidence,
-            "host": page_host,
-            "cookie_count": len(cookies or []),
-            "storage_keys": local_n + session_n,
-        }
-        return self._ok(event, started_at, t0, json.dumps(payload, ensure_ascii=False))
+        # 只有当前页域名上的 JWT / 明确令牌名才是已登录。空存储、无关 cookie、对不上的站点都是 guest。
+        associated = bool(evidence) and bool(page_host) and (
+            not expect_host or _hosts_related(page_host, expect_host)
+        )
+        return self._ok(
+            event,
+            started_at,
+            t0,
+            self._auth_body(
+                session="logged_in" if associated else "guest",
+                evidence=evidence if associated else "",
+                host=page_host,
+                expected_host=expect_host,
+                cookie_count=len(cookies or []),
+                storage_keys=local_n + session_n,
+                reason="associated" if associated else "no_credential",
+            ),
+        )
 
     def _get_foreground_app(
         self,
@@ -595,7 +616,30 @@ class PlaywrightExecutor:
             x, y = resolve_viewport_xy(params, page)
         except ValueError:
             return self._fail(event, started_at, t0, f"Web 输入({tag}) 需要坐标 x/y")
-        page.mouse.click(x, y)
+        target = locate_editable_at(page, x, y)
+        if target is None:
+            page.mouse.click(x, y)
+            time.sleep(0.05)
+            target = locate_editable_at(page, x, y)
+        if target is None:
+            return self._fail(
+                event,
+                started_at,
+                t0,
+                f"输入({tag})@({x},{y}) {_input_summary_snippet(text)}（焦点未确认）",
+            )
+        try:
+            target.click(timeout=2000, force=True)
+        except Exception:
+            try:
+                target.focus()
+            except Exception:
+                return self._fail(
+                    event,
+                    started_at,
+                    t0,
+                    f"输入({tag})@({x},{y}) {_input_summary_snippet(text)}（焦点未确认）",
+                )
         time.sleep(0.05)
         try:
             page.keyboard.press("Control+a")
@@ -609,14 +653,18 @@ class PlaywrightExecutor:
         page.keyboard.type(text, delay=20)
         self._settle_page(page)
         focus = evaluate_web_focus(page)
-        if web_focus_editable_ready(focus):
+        typed = bool(str(text or "").strip())
+        landed = web_focus_editable_ready(focus) and (
+            not typed or int(focus.get("value_len") or 0) > 0
+        )
+        if landed:
             return self._ok(
                 event,
                 started_at,
                 t0,
                 f"输入({tag})@({x},{y}) {_input_summary_snippet(text)}",
             )
-        return self._ok(
+        return self._fail(
             event,
             started_at,
             t0,
