@@ -71,11 +71,14 @@ _JS_ACTIVE_FOCUS = """
 }
 """
 
-# 只定位，不改焦点。命中栈里第一个可编辑框（含被遮罩盖住的输入框）。
+# 只定位，不改焦点。先看命中栈，再在本文档里找包含该点或离该点最近的可见输入框。
+# iframe 由 Python 按帧再调一次，避免跨 frame 的 ElementHandle 丢失。
 _JS_LOCATE_EDITABLE = """
 (xy) => {
   const x = Number(xy && xy.x);
   const y = Number(xy && xy.y);
+  const field = String((xy && xy.field) || '').toLowerCase();
+  const mode = String((xy && xy.mode) || 'all');
   const SKIP_TYPE = { hidden: 1, checkbox: 1, radio: 1, button: 1, submit: 1, file: 1, image: 1 };
   function isEditable(el) {
     if (!el || !el.tagName) return false;
@@ -87,13 +90,23 @@ _JS_LOCATE_EDITABLE = """
     const editable = tag === 'input' || tag === 'textarea' || ce || role === 'textbox';
     return editable && !el.disabled && !el.readOnly;
   }
+  function visible(el) {
+    if (!isEditable(el)) return false;
+    const r = el.getBoundingClientRect();
+    if (!r || r.width < 4 || r.height < 4) return false;
+    const win = el.ownerDocument && el.ownerDocument.defaultView;
+    if (!win) return true;
+    const st = win.getComputedStyle(el);
+    if (!st || st.visibility === 'hidden' || st.display === 'none') return false;
+    return true;
+  }
   function fromLabel(el) {
     if (!el || !el.closest) return null;
     const label = el.tagName.toLowerCase() === 'label' ? el : el.closest('label');
     if (!label) return null;
     const id = label.getAttribute('for');
     const ctl = id ? label.ownerDocument.getElementById(id) : label.querySelector('input, textarea, [contenteditable="true"], [role="textbox"]');
-    return isEditable(ctl) ? ctl : null;
+    return visible(ctl) ? ctl : null;
   }
   function stackAt(doc, px, py) {
     if (!doc || !doc.elementsFromPoint) {
@@ -106,23 +119,68 @@ _JS_LOCATE_EDITABLE = """
     if (!doc || depth > 6) return null;
     const stack = stackAt(doc, px, py);
     for (const start of stack) {
-      if (isEditable(start)) return start;
+      if (visible(start)) return start;
       const labeled = fromLabel(start);
       if (labeled) return labeled;
       if (start.shadowRoot) {
         const inner = search(start.shadowRoot, px, py, depth + 1);
         if (inner) return inner;
       }
-      const tag = (start.tagName || '').toLowerCase();
-      if ((tag === 'iframe' || tag === 'frame') && start.contentDocument) {
-        const r = start.getBoundingClientRect();
-        const inner = search(start.contentDocument, px - r.left, py - r.top, depth + 1);
-        if (inner) return inner;
-      }
     }
     return null;
   }
-  return search(document, x, y, 0);
+  function walk(root, acc, depth) {
+    if (!root || !root.querySelectorAll || depth > 8) return;
+    const nodes = root.querySelectorAll('input, textarea, [contenteditable="true"], [contenteditable=""], [role="textbox"]');
+    for (const el of nodes) {
+      if (visible(el)) acc.push(el);
+      if (el.shadowRoot) walk(el.shadowRoot, acc, depth + 1);
+    }
+    const hosts = root.querySelectorAll('*');
+    for (const el of hosts) {
+      if (el.shadowRoot) walk(el.shadowRoot, acc, depth + 1);
+    }
+  }
+  function fieldBoost(el) {
+    if (field !== 'email' && field !== 'login_email' && field !== 'phone' && field !== 'sms_code') return 0;
+    const typ = (el.getAttribute('type') || '').toLowerCase();
+    const blob = [
+      el.getAttribute('name') || '',
+      el.getAttribute('id') || '',
+      el.getAttribute('autocomplete') || '',
+      el.getAttribute('placeholder') || '',
+      el.getAttribute('aria-label') || '',
+    ].join(' ').toLowerCase();
+    if ((field === 'email' || field === 'login_email') && (typ === 'email' || /email|e-mail|username/.test(blob))) return 500;
+    if (field === 'phone' && (typ === 'tel' || /phone|mobile|tel/.test(blob))) return 500;
+    if (field === 'sms_code' && (typ === 'tel' || typ === 'number' || /otp|code|one-time|digit/.test(blob))) return 500;
+    return 0;
+  }
+  function pick(list) {
+    let best = null;
+    let bestScore = 1e12;
+    for (const el of list) {
+      const r = el.getBoundingClientRect();
+      const pad = 20;
+      const inside = x >= r.left - pad && x <= r.right + pad && y >= r.top - pad && y <= r.bottom + pad;
+      const cx = r.left + r.width / 2;
+      const cy = r.top + r.height / 2;
+      const dist = Math.abs(cx - x) + Math.abs(cy - y);
+      if (!inside && dist > 240) continue;
+      const score = (inside ? dist : 1000 + dist) - fieldBoost(el);
+      if (score < bestScore) {
+        bestScore = score;
+        best = el;
+      }
+    }
+    return best;
+  }
+  const direct = search(document, x, y, 0);
+  if (direct) return direct;
+  if (mode === 'hit') return null;
+  const all = [];
+  walk(document, all, 0);
+  return pick(all);
 }
 """
 
@@ -135,10 +193,12 @@ def evaluate_web_focus(page: Any) -> dict[str, Any]:
     return dict(raw) if isinstance(raw, dict) else {"editable_ready": False, "reason": "bad_shape"}
 
 
-def locate_editable_at(page: Any, x: int, y: int) -> Any:
-    """返回命中点上的可编辑 ElementHandle。没有则 None。不改页面。"""
+def _locate_in_frame(frame: Any, x: int, y: int, field: str, mode: str) -> Any:
     try:
-        handle = page.evaluate_handle(_JS_LOCATE_EDITABLE, {"x": int(x), "y": int(y)})
+        handle = frame.evaluate_handle(
+            _JS_LOCATE_EDITABLE,
+            {"x": int(x), "y": int(y), "field": str(field or ""), "mode": str(mode or "hit")},
+        )
     except Exception:
         return None
     try:
@@ -151,6 +211,52 @@ def locate_editable_at(page: Any, x: int, y: int) -> Any:
         except Exception:
             pass
     return el
+
+
+def _frame_local(frame: Any, px: int, py: int) -> tuple[int, int] | None:
+    """点落在该 frame 内时返回 frame 内坐标。"""
+    try:
+        host = frame.frame_element()
+        box = host.bounding_box() if host is not None else None
+    except Exception:
+        return None
+    if not box:
+        return None
+    lx = px - int(box.get("x") or 0)
+    ly = py - int(box.get("y") or 0)
+    bw = float(box.get("width") or 0)
+    bh = float(box.get("height") or 0)
+    if lx < 0 or ly < 0 or lx > bw or ly > bh:
+        return None
+    return lx, ly
+
+
+def locate_editable_at(page: Any, x: int, y: int, field: str = "") -> Any:
+    """先在落点所在帧里命中输入框，再在同一帧里找最近的可见输入框。不改页面。"""
+    px, py = int(x), int(y)
+    hint = str(field or "")
+    main = getattr(page, "main_frame", None) or page
+    hit = _locate_in_frame(main, px, py, hint, "hit")
+    if hit is not None:
+        return hit
+    frames = list(getattr(page, "frames", []) or [])
+    containing: list[tuple[Any, int, int]] = []
+    for frame in frames:
+        if frame is main:
+            continue
+        local = _frame_local(frame, px, py)
+        if local is None:
+            continue
+        hit = _locate_in_frame(frame, local[0], local[1], hint, "hit")
+        if hit is not None:
+            return hit
+        containing.append((frame, local[0], local[1]))
+    near_targets = containing or [(main, px, py)]
+    for frame, lx, ly in near_targets:
+        hit = _locate_in_frame(frame, lx, ly, hint, "near")
+        if hit is not None:
+            return hit
+    return None
 
 
 def web_focus_editable_ready(focus: dict[str, Any] | None) -> bool:

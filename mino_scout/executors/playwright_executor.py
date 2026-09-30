@@ -19,16 +19,12 @@ from mino_scout.executors.base import (
 )
 from mino_scout.playwright_hub import get_hub, goto_url, headed_from_hint, pick_goto_url
 from mino_scout.playwright_context import resolve_locator_scope
-from mino_scout.playwright_coords import resolve_viewport_xy
+from mino_scout.playwright_coords import resolve_viewport_xy, to_viewport_xy
 from mino_scout.playwright_locators import (
     css_selector_from_params,
     locator_from_params,
 )
-from mino_scout.web_focus import (
-    evaluate_web_focus,
-    locate_editable_at,
-    web_focus_editable_ready,
-)
+from mino_scout.web_focus import locate_editable_at
 
 TAG = "PlaywrightExecutor"
 
@@ -41,6 +37,19 @@ _AUTH_TOKEN_NAME = re.compile(
 
 def _host_of(url: str) -> str:
     return (urlparse(str(url or "")).hostname or "").lower().rstrip(".")
+
+
+def _page_matches_expect(current: str, expect: str) -> bool:
+    """当前页与目标地址：主机必须相关，路径按前缀比，不用整段 URL 子串。"""
+    cu = urlparse(str(current or ""))
+    eu = urlparse(str(expect or ""))
+    if not _hosts_related(cu.hostname or "", eu.hostname or ""):
+        return False
+    ep = (eu.path or "/").rstrip("/") or "/"
+    cp = (cu.path or "/").rstrip("/") or "/"
+    if ep == "/":
+        return True
+    return cp == ep or cp.startswith(ep + "/")
 
 
 def _hosts_related(left: str, right: str) -> bool:
@@ -169,8 +178,12 @@ class PlaywrightExecutor:
         try:
             if cap == "wait_ms":
                 p = event.params or {}
-                ms = int(p.get("duration_ms") or p.get("ms") or 0)
-                time.sleep(max(0, ms) / 1000.0)
+                try:
+                    ms = int(p.get("duration_ms") or p.get("ms") or 0)
+                except (TypeError, ValueError):
+                    return self._fail(event, started_at, t0, "wait_ms 时长无效")
+                ms = max(0, min(ms, 120_000))
+                time.sleep(ms / 1000.0)
                 return self._ok(event, started_at, t0, f"等待 {ms}ms")
             if cap == "launch_app":
                 p = event.params or {}
@@ -236,8 +249,8 @@ class PlaywrightExecutor:
                     try:
                         page.go_back(wait_until="domcontentloaded", timeout=10_000)
                         return self._ok(event, started_at, t0, "浏览器后退")
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        return self._fail(event, started_at, t0, f"浏览器后退失败: {exc}")
                 mapped = {"back": "Escape", "home": "Home", "enter": "Enter", "esc": "Escape"}.get(low, key)
                 page.keyboard.press(mapped)
                 return self._ok(event, started_at, t0, f"按键 {mapped}")
@@ -248,11 +261,9 @@ class PlaywrightExecutor:
                 w, h = int(box["width"]), int(box["height"])
                 fx, fy, tx, ty = p.get("from_x"), p.get("from_y"), p.get("to_x"), p.get("to_y")
                 if None not in (fx, fy, tx, ty):
-                    def _m(v: int, dim: int) -> int:
-                        vi = int(v)
-                        return int(round(vi / 1000.0 * dim)) if 0 <= vi <= 1000 else vi
-
-                    delta = (_m(int(fx), w), _m(int(fy), h), _m(int(tx), w), _m(int(ty), h))
+                    x1, y1 = to_viewport_xy(fx, fy, page)
+                    x2, y2 = to_viewport_xy(tx, ty, page)
+                    delta = (x1, y1, x2, y2)
                     summary = f"滑动 ({fx},{fy})→({tx},{ty})"
                 else:
                     cx, cy = w // 2, h // 2
@@ -260,7 +271,7 @@ class PlaywrightExecutor:
                         "up": (cx, int(h * 0.75), cx, int(h * 0.25)),
                         "down": (cx, int(h * 0.25), cx, int(h * 0.75)),
                         "left": (int(w * 0.75), cy, int(w * 0.25), cy),
-                        "right": (cx, cy, int(w * 0.75), cy),
+                        "right": (int(w * 0.25), cy, int(w * 0.75), cy),
                     }.get(direction, (cx, int(h * 0.75), cx, int(h * 0.25)))
                     summary = f"滑动 {direction}"
                 page.mouse.move(delta[0], delta[1])
@@ -270,8 +281,10 @@ class PlaywrightExecutor:
                 return self._ok(event, started_at, t0, summary)
             if cap == "swipe_element_to_element":
                 p = event.params or {}
-                x1, y1 = int(p.get("from_x") or 0), int(p.get("from_y") or 0)
-                x2, y2 = int(p.get("to_x") or 0), int(p.get("to_y") or 0)
+                if None in (p.get("from_x"), p.get("from_y"), p.get("to_x"), p.get("to_y")):
+                    return self._fail(event, started_at, t0, "拖拽需要 from_x/from_y/to_x/to_y")
+                x1, y1 = to_viewport_xy(p.get("from_x"), p.get("from_y"), page)
+                x2, y2 = to_viewport_xy(p.get("to_x"), p.get("to_y"), page)
                 page.mouse.move(x1, y1)
                 page.mouse.down()
                 page.mouse.move(x2, y2, steps=12)
@@ -407,8 +420,8 @@ class PlaywrightExecutor:
                 "localToken": False,
                 "sessionJwt": False,
                 "sessionToken": False,
-                "localCount": -1,
-                "sessionCount": -1,
+                "localCount": 0,
+                "sessionCount": 0,
             }
         if storage.get("localJwt") or storage.get("sessionJwt"):
             evidence = "jwt"
@@ -453,7 +466,7 @@ class PlaywrightExecutor:
         )
         match = None
         if expect:
-            match = url.rstrip("/") == expect.rstrip("/") or expect in url
+            match = _page_matches_expect(url, expect)
         summary = url[:120]
         if expect:
             summary = f"{summary}（目标{'命中' if match else '未命中'}）"
@@ -616,11 +629,7 @@ class PlaywrightExecutor:
             x, y = resolve_viewport_xy(params, page)
         except ValueError:
             return self._fail(event, started_at, t0, f"Web 输入({tag}) 需要坐标 x/y")
-        target = locate_editable_at(page, x, y)
-        if target is None:
-            page.mouse.click(x, y)
-            time.sleep(0.05)
-            target = locate_editable_at(page, x, y)
+        target = locate_editable_at(page, x, y, field=login_field)
         if target is None:
             return self._fail(
                 event,
@@ -628,34 +637,8 @@ class PlaywrightExecutor:
                 t0,
                 f"输入({tag})@({x},{y}) {_input_summary_snippet(text)}（焦点未确认）",
             )
-        try:
-            target.click(timeout=2000, force=True)
-        except Exception:
-            try:
-                target.focus()
-            except Exception:
-                return self._fail(
-                    event,
-                    started_at,
-                    t0,
-                    f"输入({tag})@({x},{y}) {_input_summary_snippet(text)}（焦点未确认）",
-                )
-        time.sleep(0.05)
-        try:
-            page.keyboard.press("Control+a")
-        except Exception:
-            pass
-        try:
-            page.keyboard.press("Meta+a")
-        except Exception:
-            pass
-        page.keyboard.press("Backspace")
-        page.keyboard.type(text, delay=20)
-        self._settle_page(page)
-        focus = evaluate_web_focus(page)
-        typed = bool(str(text or "").strip())
-        landed = web_focus_editable_ready(focus) and (
-            not typed or int(focus.get("value_len") or 0) > 0
+        landed = self._commit_input_value(
+            page, target, text, x=x, y=y, field=login_field
         )
         if landed:
             return self._ok(
@@ -670,6 +653,77 @@ class PlaywrightExecutor:
             t0,
             f"输入({tag})@({x},{y}) {_input_summary_snippet(text)}（焦点未确认）",
         )
+
+    @staticmethod
+    def _read_editable_value(target) -> str:
+        try:
+            raw = target.evaluate(
+                """el => {
+                  if (!el || !el.tagName) return '';
+                  const tag = el.tagName.toLowerCase();
+                  if (tag === 'input' || tag === 'textarea') return String(el.value || '');
+                  return String(el.innerText || el.textContent || '').trim();
+                }"""
+            )
+        except Exception:
+            return ""
+        return str(raw or "")
+
+    @staticmethod
+    def _value_has_expected(got: str, expected: str) -> bool:
+        exp = str(expected or "").strip()
+        val = str(got or "").strip()
+        if not exp or not val:
+            return False
+        return exp in val
+
+    def _commit_input_value(
+        self,
+        page,
+        target,
+        text: str,
+        *,
+        x: int,
+        y: int,
+        field: str,
+    ) -> bool:
+        """把字写进定位到的控件本身。成功只认框里包含完整文本。"""
+        expected = str(text or "")
+        if not expected.strip():
+            return False
+        try:
+            target.fill(expected, timeout=2000)
+        except Exception:
+            try:
+                target.click(timeout=2000, force=True)
+            except Exception:
+                try:
+                    target.focus()
+                except Exception:
+                    return False
+            try:
+                page.keyboard.press("Control+a")
+            except Exception:
+                pass
+            try:
+                page.keyboard.press("Meta+a")
+            except Exception:
+                pass
+            try:
+                page.keyboard.press("Backspace")
+            except Exception:
+                pass
+            try:
+                page.keyboard.type(expected, delay=15)
+            except Exception:
+                return False
+        self._settle_page(page, ms=80)
+        if self._value_has_expected(self._read_editable_value(target), expected):
+            return True
+        fresh = locate_editable_at(page, x, y, field=field)
+        if fresh is None:
+            return False
+        return self._value_has_expected(self._read_editable_value(fresh), expected)
 
     @staticmethod
     def _settle_page(page, ms: int = 300) -> None:

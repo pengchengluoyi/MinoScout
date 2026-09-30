@@ -15,7 +15,10 @@ def to_viewport_xy(x: Any, y: Any, page: Any) -> tuple[int, int]:
     if 0 <= xi <= 1000 and 0 <= yi <= 1000 and w > 1000:
         xi = int(round(xi / 1000.0 * w))
         yi = int(round(yi / 1000.0 * h))
-    return max(0, min(w - 1, xi)), max(0, min(h - 1, yi))
+        return max(0, min(w - 1, xi)), max(0, min(h - 1, yi))
+    if xi < 0 or yi < 0 or xi >= w or yi >= h:
+        raise ValueError(f"坐标超出视口 ({xi},{yi})，视口 {w}x{h}")
+    return xi, yi
 
 
 def resolve_viewport_xy(params: dict[str, Any] | None, page: Any) -> tuple[int, int]:
