@@ -840,10 +840,13 @@ class AdbExecutor:
         text = params.get("text") or ""
         if not text:
             return self._fail(event, started_at, t0, "input_text 缺 params.text")
-        # 若能定出输入框位置（锚点优先），先点它取焦点
+        policy = str(params.get("point_policy") or "").strip().lower()
         x, y, audit, how = self._point_for(event, serial)
-        if x is not None and y is not None:
-            self._inject_tap(serial, x, y, scale=how in ("xy", "fallback_xy", "none"))
+        if x is None or y is None:
+            if policy == "node":
+                return self._fail(event, started_at, t0, "DOM 输入锚点未命中，不用坐标兜底")
+            return self._fail(event, started_at, t0, "视觉输入缺少坐标")
+        self._inject_tap(serial, x, y, scale=how == "xy")
         # adb input text 不支持中文 / 空格；空格转 %s
         safe_text = str(text).replace(" ", "%s")
         rc, out, err = self._adb_shell(serial, "input", "text", safe_text)
@@ -905,64 +908,23 @@ class AdbExecutor:
         return x, y, audit
 
     def _point_for(self, event, serial: str) -> tuple[Optional[int], Optional[int], dict, str]:
-        """统一取坐标。point_policy=coordinate 只用坐标；node 只用锚点。"""
-        from mino_scout import hierarchy as H
-
+        """点只有两种。node 只用锚点。其余只用 x,y，不按文案改点，也不吸附。"""
         raw = event.params or {}
         policy = str(raw.get("point_policy") or "").strip().lower()
-        if policy == "coordinate":
-            x, y = raw.get("x"), raw.get("y")
-            if x is None or y is None:
-                return None, None, {"point_policy": "coordinate"}, "none"
-            x, y = int(x), int(y)
-            from mino_scout.screen import last_capture_size
-
-            shot = last_capture_size(serial)
-            display = self._wm_size(serial)
-            px, py = milli_to_shot_pixels(x, y, shot=shot, display=display)
-            return px, py, {"point_policy": "coordinate"}, "xy"
         if policy == "node":
             ax, ay, audit = self._resolve_anchor_xy(event, serial)
             audit = {**audit, "point_policy": "node"}
             if ax is None or ay is None:
                 return None, None, audit, "none"
             return ax, ay, audit, "anchor"
-
-        params = H.lift_text_anchor(raw)
-        ax, ay, audit = self._resolve_anchor_xy(event, serial)
-        if ax is not None and ay is not None:
-            return ax, ay, audit, "anchor"
-        fb = params.get("fallback_xy")
-        if isinstance(fb, (list, tuple)) and len(fb) >= 2:
-            try:
-                fx, fy = int(fb[0]), int(fb[1])
-            except (TypeError, ValueError):
-                fx, fy = None, None
-            if fx is not None and fy is not None and (fx > 1000 or fy > 1000):
-                return fx, fy, audit, "fallback_xy"
-        x, y = params.get("x"), params.get("y")
+        x, y = raw.get("x"), raw.get("y")
         if x is None or y is None:
-            return None, None, audit, "none"
-        x, y = int(x), int(y)
-        from mino_scout.screen import last_capture_size
-
-        shot = last_capture_size(serial)
-        display = self._wm_size(serial)
-        px, py = milli_to_shot_pixels(x, y, shot=shot, display=display)
-        snap_x, snap_y = scale_to_display(px, py, shot=shot, display=display)
-        dump = H.dump_ui_nodes(serial)
-        if dump.ok:
-            snapped = H.snap_point(dump.nodes, snap_x, snap_y)
-            if snapped is not None:
-                sx, sy, extra = snapped
-                audit = {**audit, **extra}
-                SLog.i(
-                    TAG,
-                    f"snap tap ({x},{y}) milli→({snap_x},{snap_y}) → ({sx},{sy}) "
-                    f"{extra.get('snap', {}).get('how')}",
-                )
-                return sx, sy, audit, "snap"
-        return px, py, audit, "fallback_xy" if audit else "xy"
+            return None, None, {"point_policy": "coordinate"}, "none"
+        try:
+            x, y = int(x), int(y)
+        except (TypeError, ValueError):
+            return None, None, {"point_policy": "coordinate"}, "none"
+        return x, y, {"point_policy": "coordinate"}, "xy"
 
     def _wm_size(self, serial: str) -> tuple[int, int]:
         hit = _WM_CACHE.get(serial)

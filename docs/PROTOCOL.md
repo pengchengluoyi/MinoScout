@@ -151,9 +151,21 @@ Nexus 收到后：`provides` ∩ 能力目录 → 该节点可执行的 capabili
   "device_workload": [
     {"sn": "R5CT30xxxx", "run_id": "run_20260902_153001_R5CT30", "step_idx": 3, "capability_id": "tap"}
   ],
-  "scout_version": "0.1.29"
+  "scout_version": "0.1.29",
+  "host": {
+    "mode": "running",
+    "power_source": "ac",
+    "charging": "not charging",
+    "battery_percent": 80,
+    "inhibit": true,
+    "cpu_percent": 3.2,
+    "rss_mb": 180.0,
+    "children": {"Chromium": 1, "caffeinate": 1, "adb": 2}
+  }
 }
 ```
+
+`host` 可省略。旧 Scout 不带时，列表功耗格显示「—」。`mode` 为 `running` 或 `asleep`。`power_source` 为 `ac` / `battery`。`charging` 为 `charging` / `not charging` / `charged` / `discharging`。`inhibit` 表示睡眠抑制还在（macOS 上即 `caffeinate` 还活着）。`children` 只数本进程的子进程。
 
 `device_delta` 只报**变化**的设备；无变化时可省略。Nexus 据此更新连通性，并在下一次组装菜单时生效。权威设备状态以心跳为准；`EXECUTE node.device_*` 是即时通知。
 
@@ -181,7 +193,7 @@ Nexus 收到后：`provides` ∩ 能力目录 → 该节点可执行的 capabili
 | 字段 | 规定 |
 |---|---|
 | `capability_id` | 能力或框架指令 id。Scout 不校验它是否存在于目录（目录在 Nexus），只看自己的 executor `supports()` 或内置框架 cap |
-| `params` | **坐标一律是 0–1000 归一化千分比，不是像素。** Scout 负责按实际分辨率换算。观察类能力可带 `compress_ratio` 等。点击可带 `point_policy`：`coordinate` 表示只用 `x,y`，禁止文案锚点、禁止吸附邻近节点；`node` 表示只用 `target` 锚点，锚点未命中则失败，禁止用坐标兜底。缺省保持旧行为（锚点优先，未命中再坐标并可能吸附） |
+| `params` | **坐标一律是 0–1000 归一化千分比，不是像素。** Scout 负责按实际分辨率换算。观察类能力可带 `compress_ratio` 等。点击带 `point_policy`，两条路径不混用。`coordinate`：只用 `x,y`，禁止文案锚点、禁止吸附邻近节点。`node`：只用 `target` 锚点，未命中则失败，禁止用坐标兜底。未带 `point_policy` 时，有 `x,y` 按 `coordinate` 处理，不锚点、不吸附 |
 | `device_id` | 可选。设备唯一 ID；空则回退 `sn` / `device_hint`。**dumps 时空字符串省略** |
 | `platform` | 可选。`android` \| `ios` \| `web` \| `playwright` \| `other`。空则从 `sn` / `device_hint` 猜测。**dumps 时空字符串省略** |
 | `sn` | 设备串号；web/playwright 可为槽位 sn 或字面 `playwright` |
@@ -205,6 +217,8 @@ Nexus 收到后：`provides` ∩ 能力目录 → 该节点可执行的 capabili
 | `probe`（别名 `probe_device`） | N→S | 重探连通性，结果在 `RESULT.data` / `extra.channels` |
 | `cancel_run` | N→S | 不再继续该 run，不回滚已发到设备的动作 |
 | `node.stop`（别名 `stop`） | N→S | 应答 RESULT 后 Scout 退出 |
+| `node.sleep` | N→S | 不退出。放开睡眠抑制并关掉 Chromium，心跳继续，`host.mode=asleep` |
+| `node.wake` | N→S | 节点仍连接时重新抑制睡眠。不在这一步开浏览器 |
 | `node.restart`（别名 `restart`） | N→S | 应答后自拉起再退出 |
 | `node.update`（别名 `update`） | N→S | 无远程装包路径则 `fail` |
 | `node.log_tail` | N→S | 读本机 Scout 日志 tail。`params.lines` 默认 200，上限 2000 |
@@ -216,7 +230,7 @@ Nexus 收到后：`provides` ∩ 能力目录 → 该节点可执行的 capabili
 | `node.update_progress` | S→N | 远程/本机自更新进度。`params.progress`：`stage` / `label` / `percent` / `layer` / `bytes_*` |
 | `tap_element` 等 | N→S | 仍走 executor；Nexus 给该 sn 的 `executor_order`，Scout 按 sn 执行 |
 
-`node.stop` / `node.restart`：Scout core 在 RESULT 的内部 extra 里打标记，transport 回完 RESULT 后再 shutdown。**不能靠 `node.stop` 启动一台已经离线的专机。**
+`node.stop` / `node.restart`：Scout core 在 RESULT 的内部 extra 里打标记，transport 回完 RESULT 后再 shutdown。**不能靠 `node.stop` 或 `node.wake` 启动一台已经离线的专机。** `node.sleep` 不打退出标记。
 
 S→N 的框架事件可丢（超时未等到 RESULT 时 Scout 只记 warn）；权威状态以 `HEARTBEAT.device_delta` 为准。
 
@@ -398,7 +412,7 @@ sequenceDiagram
 契约真源：`tests/fixtures/protocol/`。两仓必须一致。
 
 ```
-fixtures_sha256 = fa2116551ae76dc372d8c238dc4cdffd6e9f3051192aa6fa12985327742d6710
+fixtures_sha256 = fb6a27d117c15430087936cad6e92e34cf57b82c7531fa8996bbac9fd7b8fed3
 ```
 
 两仓各自确认：① `protocol.py` 能 round-trip 全部 fixture；② fixture 目录哈希与上面记录一致。

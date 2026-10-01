@@ -50,7 +50,10 @@ class EventStatus(str, Enum):
 
 
 # 框架层 capability_id。N→S 是节点指令，S→N 是节点事件，形状与设备能力相同。
-NODE_COMMAND_CAPS = frozenset({"node.stop", "node.restart", "node.update", "node.log_tail"})
+NODE_COMMAND_CAPS = frozenset({
+    "node.stop", "node.restart", "node.update", "node.log_tail",
+    "node.sleep", "node.wake",
+})
 NODE_EVENT_CAPS = frozenset({
     "node.device_lost",
     "node.device_found",
@@ -134,6 +137,7 @@ class Heartbeat:
     device_delta: list[DeviceManifest] = field(default_factory=list)
     device_workload: list[DeviceWorkload] = field(default_factory=list)
     scout_version: str = ""
+    host: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -223,6 +227,8 @@ def _encode(value: Any) -> Any:
             if f.name == "data" and not raw:
                 continue
             if f.name in ("device_id", "platform", "node_id", "node_token") and not raw:
+                continue
+            if f.name == "host" and not raw:
                 continue
             out[f.name] = _encode(raw)
         return out

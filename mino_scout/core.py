@@ -74,6 +74,8 @@ _NODE_COMMANDS = {
     "node.restart": "restart",
     "node.update": "update",
     "node.log_tail": "log_tail",
+    "node.sleep": "sleep",
+    "node.wake": "wake",
 }
 
 
@@ -127,6 +129,7 @@ class ScoutCore:
         self._done: dict[tuple[str, int], tuple[float, EventResult]] = {}
         self._active_runs: set[str] = set()
         self._run_seen: dict[str, float] = {}
+        self._asleep = False
         self._pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="scout-exec")
         # Playwright sync API 绑定线程：按 run_id 分片，同 run 固定在同一条 worker；路数固定 4。
         self._pw_shard_count = PLAYWRIGHT_PARALLEL_LANES
@@ -298,6 +301,30 @@ class ScoutCore:
                 event, status=EventStatus.PASS, executor_used="core",
                 started_at=started, elapsed_ms=0, summary=summary,
                 raw_response=extra,
+            )
+        if cmd == "sleep":
+            ok, summary = self.enter_sleep()
+            return make_event_result(
+                event,
+                status=EventStatus.PASS if ok else EventStatus.FAIL,
+                executor_used="core",
+                started_at=started,
+                elapsed_ms=0,
+                summary=summary,
+                error="" if ok else summary,
+                raw_response={"command": cmd, "mode": "asleep" if ok else "running"},
+            )
+        if cmd == "wake":
+            ok, summary = self.enter_wake()
+            return make_event_result(
+                event,
+                status=EventStatus.PASS if ok else EventStatus.FAIL,
+                executor_used="core",
+                started_at=started,
+                elapsed_ms=0,
+                summary=summary,
+                error="" if ok else summary,
+                raw_response={"command": cmd, "mode": "running"},
             )
         if cmd == "log_tail":
             from mino_scout.local_logs import tail_logs
@@ -609,6 +636,36 @@ class ScoutCore:
             SLog.w(TAG, f"playwright 退出清理: {exc}")
 
     # ---------------- 状态 ----------------
+
+    def host_mode(self) -> str:
+        with self._lock:
+            return "asleep" if self._asleep else "running"
+
+    def enter_sleep(self) -> tuple[bool, str]:
+        """放开睡眠抑制并关掉 Chromium。进程和心跳留着，网页才能再唤醒。"""
+        with self._lock:
+            if self._active_runs:
+                return False, "有任务在跑，先停任务再休眠"
+            if self._asleep:
+                return True, "已休眠"
+            self._asleep = True
+        from mino_scout.power import HOLDER_NEXUS, get_guard
+
+        get_guard().release(HOLDER_NEXUS)
+        try:
+            self.shutdown()
+        except Exception as exc:
+            SLog.w(TAG, f"休眠时关闭浏览器: {exc}")
+        return True, "已休眠"
+
+    def enter_wake(self) -> tuple[bool, str]:
+        """重新抑制睡眠。浏览器等下一次任务再开。"""
+        with self._lock:
+            self._asleep = False
+        from mino_scout.power import HOLDER_NEXUS, get_guard
+
+        get_guard().acquire(HOLDER_NEXUS)
+        return True, "已启动"
 
     def heartbeat(self) -> P.Heartbeat:
         from mino_scout.app_version import report_scout_version

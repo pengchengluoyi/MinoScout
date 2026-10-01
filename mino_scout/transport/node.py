@@ -155,7 +155,7 @@ class NodeTransport:
                     await asyncio.wait_for(self._stop.wait(), timeout=wait)
                 except asyncio.TimeoutError:
                     pass
-                guard.keepalive()
+                self._keep_power()
                 backoff = min(backoff * 2, _BACKOFF_MAX)
         finally:
             UP.set_progress_hook(None)
@@ -164,6 +164,14 @@ class NodeTransport:
             except Exception as exc:
                 SLog.w(TAG, f"playwright 退出清理: {exc}")
             guard.release(HOLDER_NEXUS)
+
+    def _keep_power(self) -> None:
+        """休眠时不要把 caffeinate 拉回来。"""
+        if self.core.host_mode() == "asleep":
+            return
+        from mino_scout.power import get_guard
+
+        get_guard().keepalive()
 
     def stop(self) -> None:
         self.request_shutdown()
@@ -353,9 +361,7 @@ class NodeTransport:
             self.request_shutdown()
             return
 
-        from mino_scout.power import get_guard
-
-        get_guard().keepalive()
+        self._keep_power()
         devices: Optional[list[P.DeviceManifest]]
         try:
             devices = await asyncio.to_thread(self.core.discover_devices)
@@ -365,7 +371,11 @@ class NodeTransport:
         delta: list[P.DeviceManifest] = []
         if devices is not None:
             delta = changed_devices(self._last_devices, devices)
+        from mino_scout.host_sample import sample_host
+
+        host = await asyncio.to_thread(sample_host, mode=self.core.host_mode())
         hb = self.core.heartbeat()
+        hb.host = host
         hb.device_delta = delta
         await self._send(P.MsgType.HEARTBEAT, hb)
         try:
