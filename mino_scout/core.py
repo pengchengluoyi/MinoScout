@@ -131,6 +131,8 @@ class ScoutCore:
         self._run_seen: dict[str, float] = {}
         self._asleep = False
         self._pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="scout-exec")
+        # 已取消的 run。随后到的截图不能再把它写回在途名单，否则休眠会误判还有任务。
+        self._cancelled_runs: dict[str, float] = {}
         # Playwright sync API 绑定线程：按 run_id 分片，同 run 固定在同一条 worker；路数固定 4。
         self._pw_shard_count = PLAYWRIGHT_PARALLEL_LANES
         self._pw_shards = [
@@ -221,9 +223,7 @@ class ScoutCore:
         token_run = current_run_id.set(req.run_id)
         token_step = current_step_idx.set(req.step_idx)
         if req.run_id:
-            with self._lock:
-                self._active_runs.add(req.run_id)
-                self._run_seen[req.run_id] = time.time()
+            self._remember_run(req.run_id)
         wl_sn = ""
         if req.run_id and req.step_idx >= 0:
             cap_preview = _canonical_cap(req.capability_id)
@@ -661,6 +661,8 @@ class ScoutCore:
                 self._done.pop(k, None)
             self._active_runs.discard(run_id)
             self._run_seen.pop(run_id, None)
+            if run_id:
+                self._cancelled_runs[str(run_id)] = time.time()
         SLog.i(TAG, f"cancel run={run_id}，清掉 {len(keys)} 条幂等缓存")
         rid = str(run_id or "").strip()
         if rid:
@@ -744,10 +746,31 @@ class ScoutCore:
             scout_version=report_scout_version(),
         )
 
+    def _remember_run(self, run_id: str) -> None:
+        """记入在途。取消之后的指令不再记，避免休眠一直看到旧任务。"""
+        rid = str(run_id or "").strip()
+        if not rid:
+            return
+        now = time.time()
+        with self._lock:
+            self._evict_cancelled(now)
+            if rid in self._cancelled_runs:
+                return
+            self._active_runs.add(rid)
+            self._run_seen[rid] = now
+
+    def _evict_cancelled(self, now: float | None = None) -> None:
+        """调用方已持有 self._lock。"""
+        cutoff = (now if now is not None else time.time()) - _IDEMPOTENT_TTL_SEC
+        for rid, ts in list(self._cancelled_runs.items()):
+            if ts < cutoff:
+                self._cancelled_runs.pop(rid, None)
+
     def _evict_idle_runs(self) -> None:
         """Nexus 不会发 RUN_DONE。超过幂等 TTL 没再来 EXECUTE 的 run 视为结束。"""
         cutoff = time.time() - _IDEMPOTENT_TTL_SEC
         with self._lock:
+            self._evict_cancelled()
             for rid, ts in list(self._run_seen.items()):
                 if ts < cutoff:
                     self._active_runs.discard(rid)
