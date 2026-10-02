@@ -252,6 +252,8 @@ class PlaywrightHub:
         self._local = threading.local()
         self._sessions: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
+        # 同一条 run 超时后 +1。旧线程晚到的写入对不上这个数，不能盖住新线程的页面。
+        self._run_tokens: dict[str, int] = {}
 
     def _playwright(self):
         pw = getattr(self._local, "pw", None)
@@ -351,15 +353,123 @@ class PlaywrightHub:
         url = normalize_goto_url(base_url)
         if url:
             goto_url(page, url, params=goto_params)
-        with self._lock:
-            self._sessions[key] = {"context": context, "page": page, "base_url": url}
+        self._publish_session(
+            key,
+            {"context": context, "page": page, "base_url": url},
+            run_id=str(run_id or ""),
+        )
         SLog.i(TAG, f"case context ready sn={key} url={url or 'about:blank'}")
         return page
 
+    def note_lane(self, run_id: str) -> None:
+        """本线程开始执行这条 run 时记下代次。超时换线程后再记一次新的。"""
+        rid = str(run_id or "")
+        with self._lock:
+            token = int(self._run_tokens.get(rid, 0))
+        self._local.lane_run = rid
+        self._local.lane_token = token
+
+    def retire_lane(self, run_id: str) -> None:
+        """这条 run 的页面作废。旧线程稍后回来也不能把页面写回去。"""
+        self._bump_runs([str(run_id or "")])
+
+    def retire_owner(self, owner: int) -> None:
+        """这条线程上打开的页面都作废。同一条 shard 上的其它 run 也不能再用它的 page。"""
+        ident = int(owner or 0)
+        if not ident:
+            return
+        with self._lock:
+            run_ids = []
+            for key, row in list(self._sessions.items()):
+                if int(row.get("owner_thread") or 0) != ident:
+                    continue
+                rid = key.split("::", 1)[1] if "::" in key else ""
+                run_ids.append(rid)
+                self._sessions.pop(key, None)
+        self._bump_runs(run_ids)
+
+    def _bump_runs(self, run_ids: list[str]) -> None:
+        with self._lock:
+            for rid in run_ids:
+                rid = str(rid or "")
+                self._run_tokens[rid] = int(self._run_tokens.get(rid, 0)) + 1
+                if not rid:
+                    self._sessions.clear()
+                    continue
+                suffix = f"::{rid}"
+                for key in [k for k in self._sessions if k.endswith(suffix)]:
+                    self._sessions.pop(key, None)
+
+    def release_this_lane(self) -> None:
+        """只关本线程启动的浏览器。别的线程上的页面不动。"""
+        ident = threading.get_ident()
+        with self._lock:
+            for key in [
+                k
+                for k, row in self._sessions.items()
+                if int(row.get("owner_thread") or 0) == ident
+            ]:
+                self._sessions.pop(key, None)
+        browsers: dict = getattr(self._local, "browsers", None) or {}
+        for browser in list(browsers.values()):
+            try:
+                browser.close()
+            except Exception:
+                pass
+        self._local.browsers = {}
+        self._local.browser_headed = {}
+        pw = getattr(self._local, "pw", None)
+        if pw is not None:
+            try:
+                pw.stop()
+            except Exception:
+                pass
+            self._local.pw = None
+
+    def _lane_open(self, run_id: str) -> bool:
+        rid = str(run_id or "")
+        local_run = str(getattr(self._local, "lane_run", "") or "")
+        local_token = getattr(self._local, "lane_token", None)
+        if local_token is None or local_run != rid:
+            return True
+        with self._lock:
+            return int(self._run_tokens.get(rid, 0)) == int(local_token)
+
+    def _replace_page(self, key: str, page: Any, *, run_id: str) -> None:
+        if not self._lane_open(run_id):
+            return
+        token = int(getattr(self._local, "lane_token", 0) or 0)
+        with self._lock:
+            row = self._sessions.get(key)
+            if not row:
+                return
+            if int(row.get("lane_token") or 0) != token:
+                return
+            row["page"] = page
+            row["owner_thread"] = threading.get_ident()
+
+    def _publish_session(self, key: str, row: dict[str, Any], *, run_id: str) -> None:
+        rid = str(run_id or "")
+        if not self._lane_open(rid):
+            SLog.w(TAG, f"丢弃过期页面写入 sn={key}")
+            return
+        row["owner_thread"] = threading.get_ident()
+        row["lane_token"] = int(getattr(self._local, "lane_token", 0) or 0)
+        with self._lock:
+            if int(self._run_tokens.get(rid, 0)) != int(row["lane_token"]):
+                return
+            self._sessions[key] = row
+
     def current_page(self, sn: str = "", *, run_id: str = "") -> Any:
         key = _session_key(sn, run_id)
+        rid = str(run_id or "")
         with self._lock:
-            row = self._sessions.get(key) or {}
+            row = dict(self._sessions.get(key) or {})
+            token = int(self._run_tokens.get(rid, 0))
+        if not row:
+            return None
+        if "lane_token" in row and int(row.get("lane_token") or 0) != token:
+            return None
         return row.get("page")
 
     def current_url(self, sn: str = "", *, run_id: str = "") -> str:
@@ -491,9 +601,7 @@ class PlaywrightHub:
             target.bring_to_front()
         except Exception:
             pass
-        with self._lock:
-            if key in self._sessions:
-                self._sessions[key]["page"] = target
+        self._replace_page(key, target, run_id=str(run_id or ""))
         return target
 
     def open_tab(
@@ -513,9 +621,7 @@ class PlaywrightHub:
         dest = normalize_goto_url(url)
         if dest:
             goto_url(page, dest)
-        with self._lock:
-            if key in self._sessions:
-                self._sessions[key]["page"] = page
+        self._replace_page(key, page, run_id=str(run_id or ""))
         return page
 
     def a11y_text(self, sn: str = "", *, run_id: str = "", max_chars: int = 4000) -> str:

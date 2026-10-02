@@ -137,6 +137,7 @@ class ScoutCore:
             ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"scout-pw-{i}")
             for i in range(self._pw_shard_count)
         ]
+        self._pw_lock = threading.Lock()
         self._adb_ime_last_check: dict[str, float] = {}
         self._device_workload: dict[str, P.DeviceWorkload] = {}
 
@@ -150,18 +151,71 @@ class ScoutCore:
             return cached
 
         timeout = float(req.timeout_sec or 0) or 30.0
-        pool = self._playwright_executor(req) if _use_playwright_thread(req) else self._pool
-        fut = pool.submit(self._execute_body, req)
+        on_playwright = _use_playwright_thread(req)
+        pool = self._playwright_executor(req) if on_playwright else self._pool
+        retired = threading.Event() if on_playwright else None
+        holder: dict[str, int] = {}
+        if on_playwright:
+            fut = pool.submit(self._execute_playwright, req, retired, holder)
+        else:
+            fut = pool.submit(self._execute_body, req)
         try:
             result = fut.result(timeout=timeout)
         except TimeoutError:
-            result = _timeout_result(req, timeout)
+            if retired is not None:
+                retired.set()
+                self._retire_playwright_shard(req, holder.get("ident"))
+            result = _timeout_result(req, timeout, lane_reset=retired is not None)
             SLog.w(TAG, f"execute timeout {timeout}s cap={req.capability_id} key={key}")
             self._put_cached(key, result)
             return result
 
         self._put_cached(key, result)
         return result
+
+    def _execute_playwright(
+        self, req: P.Execute, retired: threading.Event, holder: dict[str, int]
+    ) -> EventResult:
+        """Playwright 同步 API 绑在这条线程上。超时后调用方会换一条线程，这里只关自己的浏览器。"""
+        from mino_scout.playwright_hub import get_hub
+
+        holder["ident"] = threading.get_ident()
+        get_hub().note_lane(str(req.run_id or ""))
+        try:
+            return self._execute_body(req)
+        finally:
+            if retired.is_set():
+                try:
+                    get_hub().release_this_lane()
+                except Exception as exc:
+                    SLog.w(TAG, f"超时后关闭本线程浏览器: {exc}")
+
+    def _retire_playwright_shard(self, req: P.Execute, owner: int | None) -> None:
+        """卡住的 worker 不能杀。换一个空池，后续指令不再排在它后面空等。"""
+        from mino_scout.playwright_hub import get_hub
+
+        rid = str(req.run_id or "").strip()
+        n = len(self._pw_shards) or 1
+        idx = (hash(rid) & 0x7FFFFFFF) % n if rid else 0
+        with self._pw_lock:
+            self._pw_shards[idx] = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix=f"scout-pw-{idx}"
+            )
+        if owner:
+            get_hub().retire_owner(int(owner))
+        else:
+            get_hub().retire_lane(rid)
+        SLog.w(
+            TAG,
+            f"playwright shard {idx} 超时后已换新线程 run={rid or '-'} cap={req.capability_id}",
+        )
+
+    def _playwright_executor(self, req: P.Execute) -> ThreadPoolExecutor:
+        rid = str(req.run_id or "").strip()
+        with self._pw_lock:
+            n = len(self._pw_shards) or 1
+            idx = (hash(rid) & 0x7FFFFFFF) % n if rid else 0
+            return self._pw_shards[idx]
 
     def _execute_body(self, req: P.Execute) -> EventResult:
         token_run = current_run_id.set(req.run_id)
@@ -596,12 +650,6 @@ class ScoutCore:
 
     # ---------------- CANCEL ----------------
 
-    def _playwright_executor(self, req: P.Execute) -> ThreadPoolExecutor:
-        rid = str(req.run_id or "").strip()
-        n = len(self._pw_shards) or 1
-        idx = (hash(rid) & 0x7FFFFFFF) % n if rid else 0
-        return self._pw_shards[idx]
-
     def cancel_run(self, run_id: str) -> int:
         """丢掉该 run 的幂等缓存并标记不再继续。
 
@@ -630,7 +678,9 @@ class ScoutCore:
         进程一死就会刷 TargetClosedError。
         """
         try:
-            for shard in self._pw_shards:
+            with self._pw_lock:
+                shards = list(self._pw_shards)
+            for shard in shards:
                 shard.submit(_stop_playwright_hub).result(timeout=8.0)
         except Exception as exc:
             SLog.w(TAG, f"playwright 退出清理: {exc}")
@@ -652,11 +702,19 @@ class ScoutCore:
         from mino_scout.power import HOLDER_NEXUS, get_guard
 
         get_guard().release(HOLDER_NEXUS)
+        threading.Thread(
+            target=self._close_browsers_for_sleep,
+            name="scout-sleep-browser",
+            daemon=True,
+        ).start()
+        return True, "已休眠"
+
+    def _close_browsers_for_sleep(self) -> None:
+        """关浏览器不堵住这条指令。堵住的话网页要等关完才改状态，心跳也会显得断了。"""
         try:
             self.shutdown()
         except Exception as exc:
             SLog.w(TAG, f"休眠时关闭浏览器: {exc}")
-        return True, "已休眠"
 
     def enter_wake(self) -> tuple[bool, str]:
         """重新抑制睡眠。浏览器等下一次任务再开。"""
@@ -801,7 +859,11 @@ def _with_executor_order(
     return replace(req, executor_order=order)
 
 
-def _timeout_result(req: P.Execute, timeout: float) -> EventResult:
+def _timeout_result(req: P.Execute, timeout: float, *, lane_reset: bool = False) -> EventResult:
+    if lane_reset:
+        detail = "（这条 Playwright 线程还在跑，已换一条新线程接手后续指令）"
+    else:
+        detail = "（Python 线程无法强杀，底层 adb 可能仍在跑）"
     return make_event_result(
         _event_from_execute(req),
         status=EventStatus.FAIL,
@@ -809,11 +871,8 @@ def _timeout_result(req: P.Execute, timeout: float) -> EventResult:
         started_at=now_iso(),
         elapsed_ms=int(timeout * 1000),
         summary=f"timeout after {timeout}s",
-        error=(
-            f"动作超过 timeout_sec={timeout}s 已终止"
-            "（Python 线程无法强杀，底层 adb 可能仍在跑）"
-        ),
-        raw_response={"timeout": True, "timeout_sec": timeout},
+        error=f"动作超过 timeout_sec={timeout}s 已终止{detail}",
+        raw_response={"timeout": True, "timeout_sec": timeout, "lane_reset": lane_reset},
     )
 
 
