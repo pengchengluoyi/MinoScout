@@ -95,6 +95,7 @@ _SUPPORTED_CAPS: set[str] = {
     "switch_tab",
     "open_tab",
     "upload_file",
+    "reload_page",
 }
 
 
@@ -243,6 +244,12 @@ class PlaywrightExecutor:
                 return self._open_tab(event, hub, sn, run_id, started_at, t0)
             if cap == "upload_file":
                 return self._upload_file(event, page, started_at, t0)
+            if cap == "reload_page":
+                try:
+                    page.reload(wait_until="domcontentloaded", timeout=15_000)
+                    return self._ok(event, started_at, t0, "已刷新当前页面")
+                except Exception as exc:
+                    return self._fail(event, started_at, t0, f"刷新页面失败: {exc}")
             if cap == "tap_element":
                 return self._tap(event, page, started_at, t0)
             if cap == "multi_tap":
