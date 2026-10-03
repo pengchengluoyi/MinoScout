@@ -17,6 +17,13 @@ def _client(timeout: float) -> httpx.Client:
     )
 
 
+def fetch_bytes(url: str, *, timeout: float = 60.0) -> bytes:
+    with _client(timeout) as client:
+        resp = client.get(url)
+        resp.raise_for_status()
+        return resp.content
+
+
 def fetch_json(url: str, *, timeout: float = 120.0) -> dict[str, Any]:
     with _client(timeout) as client:
         resp = client.get(url, headers={"Accept": "application/json"})
