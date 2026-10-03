@@ -53,6 +53,7 @@ class EventStatus(str, Enum):
 NODE_COMMAND_CAPS = frozenset({
     "node.stop", "node.restart", "node.update", "node.log_tail",
     "node.sleep", "node.wake",
+    "node.plugin_install", "node.plugin_remove", "node.plugin_config",
 })
 NODE_EVENT_CAPS = frozenset({
     "node.device_lost",
@@ -61,6 +62,8 @@ NODE_EVENT_CAPS = frozenset({
     "node.engine_crashed",
     "node.shutting_down",
     "node.update_progress",
+    "node.plugin_progress",
+    "node.plugin_wechat_message",
 })
 FRAMEWORK_CAPS = NODE_COMMAND_CAPS | NODE_EVENT_CAPS
 
@@ -105,6 +108,8 @@ class Register:
     studio_id: str = ""
     executors: list[ExecutorManifest] = field(default_factory=list)
     devices: list[DeviceManifest] = field(default_factory=list)
+    # None：旧 Scout 没报。空列表也会编码出去，用来和「没这个字段」区分。
+    plugins: Optional[list[dict[str, Any]]] = None
 
 
 @dataclass
@@ -138,6 +143,7 @@ class Heartbeat:
     device_workload: list[DeviceWorkload] = field(default_factory=list)
     scout_version: str = ""
     host: dict[str, Any] = field(default_factory=dict)
+    plugins: Optional[list[dict[str, Any]]] = None
 
 
 @dataclass
@@ -229,6 +235,8 @@ def _encode(value: Any) -> Any:
             if f.name in ("device_id", "platform", "node_id", "node_token") and not raw:
                 continue
             if f.name == "host" and not raw:
+                continue
+            if f.name == "plugins" and raw is None:
                 continue
             out[f.name] = _encode(raw)
         return out

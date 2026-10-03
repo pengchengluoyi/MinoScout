@@ -136,6 +136,19 @@ class NodeTransport:
             asyncio.run_coroutine_threadsafe(self._emit_update_progress(payload), loop)
 
         UP.set_progress_hook(_progress_hook)
+        from mino_scout.plugins import progress as plugin_progress
+
+        def _plugin_progress_hook(payload: dict) -> None:
+            asyncio.run_coroutine_threadsafe(self._emit_plugin_progress(payload), loop)
+
+        plugin_progress.set_progress_hook(_plugin_progress_hook)
+        from mino_scout.plugins import wechat as wechat_plugin
+
+        def _wechat_hook(payload: dict) -> None:
+            asyncio.run_coroutine_threadsafe(self._emit_wechat_message(payload), loop)
+
+        wechat_plugin.set_message_hook(_wechat_hook)
+        wechat_plugin.bind_node(self.core.node_id)
         try:
             backoff = _BACKOFF_START
             while not self._stop.is_set():
@@ -159,6 +172,13 @@ class NodeTransport:
                 backoff = min(backoff * 2, _BACKOFF_MAX)
         finally:
             UP.set_progress_hook(None)
+            from mino_scout.plugins import progress as plugin_progress
+
+            plugin_progress.set_progress_hook(None)
+            from mino_scout.plugins import wechat as wechat_plugin
+
+            wechat_plugin.set_message_hook(None)
+            wechat_plugin.stop_listener()
             try:
                 self.core.shutdown()
             except Exception as exc:
@@ -262,6 +282,7 @@ class NodeTransport:
             studio_id=resolve_studio_id(),
             executors=execs,
             devices=devices,
+            plugins=self.core.heartbeat().plugins,
         )
         reply = await self._request(P.MsgType.REGISTER, payload)
         if reply is None:
@@ -517,6 +538,28 @@ class NodeTransport:
             SLog.w(TAG, f"{mtype.value} 等应答超时 {timeout}s")
             return None
 
+    async def _emit_wechat_message(self, payload: dict) -> None:
+        if self._ws is None:
+            return
+        await self._send_framework(
+            "node.plugin_wechat_message",
+            detail="wechat message",
+            extra={
+                "text": str(payload.get("text") or "")[:2000],
+                "from_user_id": str(payload.get("from_user_id") or ""),
+                "context_token": str(payload.get("context_token") or ""),
+            },
+        )
+
+    async def _emit_plugin_progress(self, payload: dict) -> None:
+        if self._ws is None:
+            return
+        await self._send_framework(
+            "node.plugin_progress",
+            detail=str(payload.get("label") or payload.get("stage") or ""),
+            progress=dict(payload),
+        )
+
     async def _emit_update_progress(self, payload: dict) -> None:
         if self._ws is None:
             return
@@ -535,6 +578,7 @@ class NodeTransport:
         detail: str = "",
         severity: str = "info",
         progress: dict | None = None,
+        extra: dict | None = None,
     ) -> None:
         """S→N 框架事件，形状与能力调用相同。等 RESULT；丢了靠心跳收敛。"""
         event = capability_id.split(".", 1)[-1] if capability_id.startswith("node.") else capability_id
@@ -546,6 +590,9 @@ class NodeTransport:
         }
         if progress:
             params["progress"] = dict(progress)
+        for key, value in (extra or {}).items():
+            if key not in params:
+                params[str(key)] = value
         req = P.Execute(
             run_id="",
             step_idx=-1,

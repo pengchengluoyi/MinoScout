@@ -76,6 +76,9 @@ _NODE_COMMANDS = {
     "node.log_tail": "log_tail",
     "node.sleep": "sleep",
     "node.wake": "wake",
+    "node.plugin_install": "plugin_install",
+    "node.plugin_remove": "plugin_remove",
+    "node.plugin_config": "plugin_config",
 }
 
 
@@ -269,6 +272,10 @@ class ScoutCore:
 
         if cap == "cancel_run":
             return self._dispatch_cancel(req)
+        if cap.startswith("plugin."):
+            from mino_scout.plugins.service import handle_plugin_cap
+
+            return handle_plugin_cap(self, req, cap)
         if cap.startswith("node."):
             if cap in _NODE_COMMANDS:
                 return self._dispatch_node(req, cap)
@@ -380,6 +387,10 @@ class ScoutCore:
                 error="" if ok else summary,
                 raw_response={"command": cmd, "mode": "running"},
             )
+        if cmd in ("plugin_install", "plugin_remove", "plugin_config"):
+            from mino_scout.plugins.service import handle_node_plugin
+
+            return handle_node_plugin(self, req, cmd, event, started)
         if cmd == "log_tail":
             from mino_scout.local_logs import tail_logs
 
@@ -737,6 +748,8 @@ class ScoutCore:
                 self._device_workload.values(),
                 key=lambda w: (w.sn, w.run_id, w.step_idx),
             )
+        from mino_scout.plugins.state import status_list
+
         return P.Heartbeat(
             node_id=self.node_id,
             uptime_sec=int(time.time() - self._started),
@@ -744,6 +757,7 @@ class ScoutCore:
             active_runs=active,
             device_workload=workload,
             scout_version=report_scout_version(),
+            plugins=status_list(self.node_id),
         )
 
     def _remember_run(self, run_id: str) -> None:

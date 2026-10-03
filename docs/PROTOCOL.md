@@ -161,11 +161,17 @@ Nexus 收到后：`provides` ∩ 能力目录 → 该节点可执行的 capabili
     "cpu_percent": 3.2,
     "rss_mb": 180.0,
     "children": {"Chromium": 1, "caffeinate": 1, "adb": 2}
-  }
+  },
+  "plugins": [
+    {"class": "mail", "id": "gmail", "installed": true, "configured": false},
+    {"class": "cli", "id": "feishu", "installed": false, "configured": false}
+  ]
 }
 ```
 
 `host` 可省略。旧 Scout 不带时，列表功耗格显示「—」。`mode` 为 `running` 或 `asleep`。`power_source` 为 `ac` / `battery`。`charging` 为 `charging` / `not charging` / `charged` / `discharging`。`inhibit` 表示睡眠抑制还在（macOS 上即 `caffeinate` 还活着）。`children` 只数本进程的子进程。
+
+`plugins` 可省略。省略表示这台 Scout 还不认识插件状态，网页显示「需更新后才能配置插件」。带了就只许有 `class` / `id` / `installed` / `configured`，没有密钥。`class` 为 `cli` / `mcp` / `bot` / `mail`。`REGISTER` 使用同一份列表。
 
 `device_delta` 只报**变化**的设备；无变化时可省略。Nexus 据此更新连通性，并在下一次组装菜单时生效。权威设备状态以心跳为准；`EXECUTE node.device_*` 是即时通知。
 
@@ -228,6 +234,16 @@ Nexus 收到后：`provides` ∩ 能力目录 → 该节点可执行的 capabili
 | `node.engine_crashed` | S→N | WDA / u2 agent 等崩溃 |
 | `node.shutting_down` | S→N | 人主动停。Nexus 立刻失败该节点在途 run。Scout 会在这条之前再发一帧 HEARTBEAT |
 | `node.update_progress` | S→N | 远程/本机自更新进度。`params.progress`：`stage` / `label` / `percent` / `layer` / `bytes_*` |
+| `node.plugin_install` | N→S | 按发布清单安装一个 CLI / MCP。`params.class` + `params.id`。不接受临时 URL |
+| `node.plugin_remove` | N→S | 卸掉该插件目录，并删掉它在本机保险库里的密钥 |
+| `node.plugin_config` | N→S | 写入该插件参数。密钥只留在 Scout 本机保险库，应答里不回显 |
+| `node.plugin_progress` | S→N | 插件安装进度。形状同 `node.update_progress`，另带 `class` / `id`，不写入自更新的 `update_job` |
+| `plugin.gmail.fetch_otp` | N→S | 用这台节点自己的 Gmail 应用专用密码取验证码。参数只有 To、时间、发件人过滤和轮询预算，没有密码 |
+| `plugin.cli.feishu` | N→S | 用这台节点的飞书应用凭证读文档。参数是 `action=read_doc` 和 `url`，没有 `app_secret` |
+| `plugin.cli.meego` | N→S | 用这台节点的 Meego 插件凭证换票或查工作项。参数没有 `plugin_secret` |
+| `plugin.bot.send` | N→S | 飞书机器人或企业微信 webhook 发文本。`kind` 为 `feishu_bot` / `wecom`，没有 webhook |
+| `plugin.bot.wechat` | N→S | 这台机器上的微信扫码、状态、发送。回执没有 `bot_token` |
+| `node.plugin_wechat_message` | S→N | 微信收到一条文本。Nexus 生成回复后再发 `plugin.bot.wechat`。不在日志里写正文 |
 | `tap_element` 等 | N→S | 仍走 executor；Nexus 给该 sn 的 `executor_order`，Scout 按 sn 执行 |
 
 `node.stop` / `node.restart`：Scout core 在 RESULT 的内部 extra 里打标记，transport 回完 RESULT 后再 shutdown。**不能靠 `node.stop` 或 `node.wake` 启动一台已经离线的专机。** `node.sleep` 不打退出标记。
@@ -412,7 +428,7 @@ sequenceDiagram
 契约真源：`tests/fixtures/protocol/`。两仓必须一致。
 
 ```
-fixtures_sha256 = fb6a27d117c15430087936cad6e92e34cf57b82c7531fa8996bbac9fd7b8fed3
+fixtures_sha256 = e0adca7a3fe9bc36ac0ab666351646e687d50c1e50bae6ce6cfcc097aade3883
 ```
 
 两仓各自确认：① `protocol.py` 能 round-trip 全部 fixture；② fixture 目录哈希与上面记录一致。
