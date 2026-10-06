@@ -46,7 +46,7 @@ def feishu_check(node_id: str) -> dict[str, Any]:
     app_id = plain_value("cli", "feishu", "app_id")
     app_secret = secret_value(node_id, "cli", "feishu", "app_secret")
     _feishu_tenant_token(app_id, app_secret)
-    return {"ok": True, "app_id": app_id}
+    return {"ok": True, "app_id": app_id, "summary": f"飞书鉴权通过，App ID {app_id}"}
 
 
 def meego_call(node_id: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -58,7 +58,7 @@ def meego_call(node_id: str, params: dict[str, Any]) -> dict[str, Any]:
     user_key = plain_value("cli", "meego", "user_key")
     token = _meego_token(base, plugin_id, plugin_secret)
     if action == "token":
-        return {"ok": True, "plugin_id": plugin_id}
+        return {"ok": True, "plugin_id": plugin_id, "summary": f"已用插件 {plugin_id} 向 Meego 换到访问凭证，没有改工作项"}
     if action != "work_item":
         raise PluginCallError(f"不支持的 Meego 动作 {action}")
     project_key = str(params.get("project_key") or "").strip()
@@ -101,7 +101,7 @@ def bot_send(node_id: str, kind: str, text: str) -> dict[str, Any]:
     code = data.get("errcode", data.get("code", data.get("StatusCode")))
     if code not in (0, None, "0"):
         raise PluginCallError(str(data.get("errmsg") or data.get("msg") or "发送失败"))
-    return {"ok": True, "kind": plugin_id}
+    return {"ok": True, "kind": plugin_id, "summary": "测试消息已发到群里"}
 
 
 def _invoke_bin(kind: str, plugin_id: str):

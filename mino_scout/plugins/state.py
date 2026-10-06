@@ -159,11 +159,27 @@ def status_list(node_id: str) -> list[dict[str, Any]]:
     for row in CATALOG:
         kind = str(row["class"])
         pid = str(row["id"])
+        item = _item(kind, pid)
+        values: dict[str, str] = {}
+        saved_secrets: list[str] = []
+        for field in row.get("fields") or []:
+            key = str(field.get("key") or "")
+            if not key:
+                continue
+            if field.get("secret"):
+                if item.get(f"has_{key}"):
+                    saved_secrets.append(key)
+            else:
+                text = str(item.get(key) or "").strip()
+                if text:
+                    values[key] = text
         out.append({
             "class": kind,
             "id": pid,
             "installed": installed(kind, pid),
             "configured": configured(node_id, kind, pid),
+            "values": values,
+            "saved_secrets": saved_secrets,
         })
     return out
 
