@@ -841,6 +841,8 @@ class AdbExecutor:
         if not text:
             return self._fail(event, started_at, t0, "input_text 缺 params.text")
         if str(params.get("target_mode") or "") == "current_focus":
+            if str(params.get("mode") or "replace").strip().lower() != "append":
+                return self._fail(event, started_at, t0, "contract_unsupported: ADB 当前焦点不支持 replace")
             ref = str(params.get("focus_ref") or "")
             if not ref or ref == "previous_focus_action":
                 return self._fail(event, started_at, t0, "contract_unsupported: current_focus 缺少有效 focus_ref")

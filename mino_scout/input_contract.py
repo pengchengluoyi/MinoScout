@@ -23,7 +23,7 @@ def runtime_input_capabilities() -> list[dict[str, Any]]:
             "platform": "android",
             "contract_version": 2,
             "supported_combinations": [
-                {"target_mode": "current_focus", "write_modes": ["replace", "append"]},
+                {"target_mode": "current_focus", "write_modes": ["append"]},
                 {"target_mode": "coordinate", "write_modes": ["replace"]},
             ],
         },
