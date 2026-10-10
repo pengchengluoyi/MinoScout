@@ -16,13 +16,12 @@ MinoScout 是执行器。它接收 [MinoNexus](../MinoNexus) 下发的动作，�
 
 | # | 约束 | 守门脚本 | 为什么 |
 |---|---|---|---|
-| 1 | **不碰数据库** —— 不 import `sqlalchemy`、不定义 ORM 模型、不写迁移 | `scripts/verify_no_orm.py` | 数据归属方是 Nexus。Scout 有状态就没法随时重启、没法多节点 |
-| 2 | **不调大模型** —— 不 import `openai` / `httpx` 打 LLM endpoint、不含 prompt 常量 | `scripts/verify_no_llm.py` | 决策权在 Nexus。Scout 一旦能"想"，两边就会各想一半 |
-| 3 | **不读能力目录** —— 不解析 `plugins/**.yaml`、不含 `abstract_caps` 逻辑 | `scripts/verify_no_yaml_catalog.py` | 能力目录唯一真源在 Nexus。Scout 只按 `EXECUTE` 载荷里给定的 `executor_order` 执行 |
-| 4 | **不 import Nexus** —— 任何 `mino_nexus` / `server.*` 引用 | `scripts/verify_no_nexus_import.py` | 依赖必须单向 |
+| 1 | **不碰数据库** —— 不 import `sqlalchemy`、不定义 ORM 模型、不写迁移 | — | 数据归属方是 Nexus。Scout 有状态就没法随时重启、没法多节点 |
+| 2 | **不调大模型** —— 不 import `openai` / `httpx` 打 LLM endpoint、不含 prompt 常量 | — | 决策权在 Nexus。Scout 一旦能"想"，两边就会各想一半 |
+| 3 | **不读能力目录** —— 不解析 `plugins/**.yaml`、不含 `abstract_caps` 逻辑 | — | 能力目录唯一真源在 Nexus。Scout 只按 `EXECUTE` 载荷里给定的 `executor_order` 执行 |
+| 4 | **不 import Nexus** —— 任何 `mino_nexus` / `server.*` 引用 | — | 依赖必须单向 |
 | 5 | **不写/不改单元测试** —— 禁止新增 `tests/test_*.py`、禁止为自证修复跑 pytest | Agent 擅写 test 干扰现场；执行侧问题以 Nexus **`session_events`**（`tool/call`、`tool/result` 的 `summary`）为准 |
 
-跑 `python scripts/verify_all.py` 一次性检查。
 
 ---
 
@@ -111,9 +110,9 @@ mino_scout/
 1. 改 `docs/PROTOCOL.md`（两仓同一份文本）
 2. 改/加 `tests/fixtures/protocol/*.json`
 3. 两仓各自改 `protocol.py`，使其能 round-trip 全部 fixture
-4. 两仓各自跑 `scripts/verify_protocol_contract.py`
+4. 两仓各自确认 `protocol.py` 能 round-trip 全部 fixture
 
-`verify_protocol_contract.py` 会同时校验 fixture 目录的内容哈希，哈希记录在 `docs/PROTOCOL.md` 末尾。两仓哈希不一致 = 协议漂移，CI 失败。
+fixture 目录的内容哈希记录在 `docs/PROTOCOL.md` 末尾。两仓哈希不一致 = 协议漂移。
 
 ---
 

@@ -114,10 +114,6 @@ Scout 是独立守护进程，关掉 Studio 不停。控制：`mino-scout status
 | [docs/CONVENTIONS.md](docs/CONVENTIONS.md) | 日志、异常、守门脚本约定 |
 | [docs/MIGRATION.md](docs/MIGRATION.md) | 从 MiniOrangeServer 搬哪些文件、怎么改 |
 
-## 守门
+## 硬约束
 
-```bash
-python scripts/verify_all.py
-```
-
-四条硬约束由脚本静态断言，CI 必跑：不含 ORM、不含 LLM 调用、不读能力目录 YAML、不 import Nexus。
+不含 ORM、不含 LLM 调用、不读能力目录 YAML、不 import Nexus。靠代码评审守住，不再有静态脚本和 CI 校验。

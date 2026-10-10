@@ -64,6 +64,7 @@ NODE_EVENT_CAPS = frozenset({
     "node.update_progress",
     "node.plugin_progress",
     "node.plugin_wechat_message",
+    "node.plugin_im_message",
 })
 FRAMEWORK_CAPS = NODE_COMMAND_CAPS | NODE_EVENT_CAPS
 

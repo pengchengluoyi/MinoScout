@@ -243,7 +243,10 @@ Nexus 收到后：`provides` ∩ 能力目录 → 该节点可执行的 capabili
 | `plugin.cli.meego` | N→S | 用这台节点的 Meego 插件凭证换票或查工作项。参数没有 `plugin_secret` |
 | `plugin.bot.send` | N→S | 飞书机器人或企业微信 webhook 发文本。`kind` 为 `feishu_bot` / `wecom`，没有 webhook |
 | `plugin.bot.wechat` | N→S | 这台机器上的微信扫码、状态、发送。回执没有 `bot_token` |
-| `node.plugin_wechat_message` | S→N | 微信收到一条文本。Nexus 生成回复后再发 `plugin.bot.wechat`。不在日志里写正文 |
+| `node.plugin_wechat_message` | S→N | **旧事件，仅为兼容旧版 Scout 保留**，新版 Scout 发 `node.plugin_im_message`。微信收到一条文本。Nexus 生成回复后再发 `plugin.bot.wechat`。不在日志里写正文 |
+| `node.plugin_im_message` | S→N | IM 收到一条消息（微信 iLink、LangBot 渠道）。`params.im` 为统一形状：`channel` / `tenant` / `chat_id` / `chat_type`(`private`\|`group`) / `sender_id` / `msg_id` / `text`(≤2000) / `mentioned` / `reply_ctx`(不透明的字符串字典，原样回传) / `recent_turns`(本会话最近至多 8 轮 `{role,text,ts}`，每条 ≤500 字，由 Scout 本地库取出)。Nexus 不落正文，不在日志里写正文 |
+| `plugin.im.send` | N→S | 经该节点向某个会话发一条消息。`channel` / `chat_id` / `sender_id` / `reply_ctx` / `text`。Scout 把发出的正文写入本地库。回执 `data.ok` |
+| `plugin.im.history` | N→S | 读这台节点本地库里某个会话的正文。`channel` / `chat_id` / `limit`(≤100)。回执 `data.messages=[{role,text,ts}]`。正文只经这个能力现取，Nexus 不缓存 |
 | `tap_element` 等 | N→S | 仍走 executor；Nexus 给该 sn 的 `executor_order`，Scout 按 sn 执行 |
 
 `node.stop` / `node.restart`：Scout core 在 RESULT 的内部 extra 里打标记，transport 回完 RESULT 后再 shutdown。**不能靠 `node.stop` 或 `node.wake` 启动一台已经离线的专机。** `node.sleep` 不打退出标记。
@@ -428,7 +431,7 @@ sequenceDiagram
 契约真源：`tests/fixtures/protocol/`。两仓必须一致。
 
 ```
-fixtures_sha256 = e0adca7a3fe9bc36ac0ab666351646e687d50c1e50bae6ce6cfcc097aade3883
+fixtures_sha256 = 58f4603fbac7343ff2e51e905bfaf37fa3163c29ac0b399d1439edfe28ed5320
 ```
 
 两仓各自确认：① `protocol.py` 能 round-trip 全部 fixture；② fixture 目录哈希与上面记录一致。

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+import uuid
 from typing import Any
 
 from mino_scout import protocol as P
@@ -26,11 +27,28 @@ def handle_node_plugin(core: Any, req: P.Execute, cmd: str, event: Any, started:
         if cmd == "plugin_config":
             values = params.get("values") if isinstance(params.get("values"), dict) else {}
             clear = [str(x) for x in (params.get("clear") or []) if str(x).strip()]
+            hold = params.get("im_hold", values.get("im_hold"))
+            platform = str(params.get("platform") or values.get("platform") or "")
+            values = {k: v for k, v in values.items() if k not in ("im_hold", "platform")}
             apply_config(core.node_id, kind, plugin_id, values, clear)
+            if hold is not None:
+                _apply_hold(kind, plugin_id, hold, platform)
+            elif kind == "im" and plugin_id == "langbot":
+                from mino_scout.plugins import langbot_host
+
+                langbot_host.reconcile(core.node_id)
             summary = "已保存" if configured(core.node_id, kind, plugin_id) else "已保存，还有必填项空着"
         elif cmd == "plugin_install":
             summary = install(core.node_id, kind, plugin_id)
+            if kind == "im" and plugin_id == "langbot":
+                from mino_scout.plugins import langbot_host
+
+                langbot_host.reconcile(core.node_id)
         elif cmd == "plugin_remove":
+            if kind == "im" and plugin_id == "langbot":
+                from mino_scout.plugins import langbot_host
+
+                langbot_host.shutdown()
             summary = remove(core.node_id, kind, plugin_id)
         else:
             summary = f"不支持的插件指令 {cmd}"
@@ -76,6 +94,12 @@ def handle_plugin_cap(core: Any, req: P.Execute, cap: str) -> EventResult:
             data = bot_send(core.node_id, str(params.get("kind") or ""), str(params.get("text") or ""))
         elif cap == "plugin.bot.wechat":
             data = _wechat(core, req)
+        elif cap == "plugin.im.send":
+            return _im_result(event, started, cap, _im_send(req))
+        elif cap == "plugin.im.history":
+            return _im_result(event, started, cap, _im_history(req))
+        elif cap == "plugin.im.upload_image":
+            return _im_result(event, started, cap, _im_upload_image(req))
         else:
             return _fail(event, started, f"这台节点还没有能力 {cap}", cap)
     except Exception as exc:
@@ -138,6 +162,128 @@ def _wechat(core: Any, req: P.Execute) -> dict[str, Any]:
     data.setdefault("summary", "微信状态已更新" if action != "send" else "已发送")
     data.pop("bot_token", None)
     return data
+
+
+def _im_senders() -> None:
+    """渠道模块 import 时各自注册发送函数。这里确保都已加载。"""
+    from mino_scout.plugins import langbot_host, wechat  # noqa: F401
+
+
+def _im_target(params: dict[str, Any]) -> tuple[str, str, str, dict[str, str]]:
+    channel = str(params.get("channel") or "").strip()
+    chat_id = str(params.get("chat_id") or "").strip()
+    sender_id = str(params.get("sender_id") or "").strip()
+    raw = params.get("reply_ctx") if isinstance(params.get("reply_ctx"), dict) else {}
+    return channel, chat_id, sender_id, {str(k): str(v) for k, v in raw.items()}
+
+
+def _im_send(req: P.Execute) -> dict[str, Any]:
+    from mino_scout.plugins import im_bridge, im_store
+
+    _im_senders()
+    params = dict(req.params or {})
+    channel, chat_id, sender_id, ctx = _im_target(params)
+    send = im_bridge.text_sender(channel)
+    if send is None:
+        raise ValueError(f"不支持的渠道 {channel or '(空)'}")
+    text = str(params.get("text") or "")
+    send(chat_id, sender_id, ctx, text)
+    try:
+        im_store.record(
+            channel, chat_id or sender_id, "", f"out-{uuid.uuid4().hex}", "assistant", text.strip(),
+            int(time.time()),
+        )
+    except Exception as exc:  # 已发出去了，落库失败不回报失败
+        SLog.w(TAG, f"im.send 已发送但落库失败: {type(exc).__name__}")
+    SLog.i(TAG, f"plugin.im.send channel={channel} len={len(text)}")
+    return {"ok": True, "summary": "已发送"}
+
+
+_IMAGE_MAX = 10 * 1024 * 1024
+
+
+def _im_upload_image(req: P.Execute) -> dict[str, Any]:
+    """发图片。渠道没有图片能力就明确失败，不伪造成功。"""
+    import base64
+    import mimetypes
+    from pathlib import Path
+
+    from mino_scout.plugins import im_bridge
+
+    _im_senders()
+    params = dict(req.params or {})
+    channel, chat_id, sender_id, ctx = _im_target(params)
+    send = im_bridge.image_sender(channel)
+    if send is None:
+        if im_bridge.text_sender(channel) is None:
+            raise ValueError(f"不支持的渠道 {channel or '(空)'}")
+        raise ValueError(f"渠道 {channel} 暂不支持发送图片")
+    path = str(params.get("path") or "").strip()
+    b64 = str(params.get("image_base64") or "").strip()
+    mime = "image/png"
+    if b64:
+        if b64.startswith("data:") and "," in b64:
+            head, b64 = b64.split(",", 1)
+            mime = head[5:].split(";", 1)[0] or mime
+        data = base64.b64decode(b64, validate=False)
+    elif path:
+        fp = Path(path).expanduser()
+        if not fp.is_file():
+            raise ValueError("图片文件不存在")
+        if fp.stat().st_size > _IMAGE_MAX:
+            raise ValueError("图片超过 10MB")
+        data = fp.read_bytes()
+        mime = mimetypes.guess_type(fp.name)[0] or mime
+    else:
+        raise ValueError("缺少 image_base64 或 path")
+    if not data or len(data) > _IMAGE_MAX:
+        raise ValueError("图片为空或超过 10MB")
+    send(chat_id, sender_id, ctx, data, mime)
+    SLog.i(TAG, f"plugin.im.upload_image channel={channel} bytes={len(data)}")
+    return {"ok": True, "summary": "图片已发送"}
+
+
+def _apply_hold(kind: str, plugin_id: str, hold: Any, platform: str) -> None:
+    """Nexus 持有仲裁：im_hold=false 停该渠道（不登出 / 不删配置），true 恢复。"""
+    want = hold if isinstance(hold, bool) else str(hold).strip().lower() in ("1", "true", "yes", "on")
+    if kind in ("bot", "im") and plugin_id == "wechat":
+        from mino_scout.plugins import wechat
+
+        wechat.set_hold(want)
+    elif kind == "im" and plugin_id == "langbot":
+        from mino_scout.plugins import langbot_host
+
+        langbot_host.set_hold(platform or None, want)
+    else:
+        raise ValueError(f"{kind}/{plugin_id} 不支持 im_hold")
+
+
+def _im_history(req: P.Execute) -> dict[str, Any]:
+    from mino_scout.plugins import im_store
+
+    params = dict(req.params or {})
+    channel = str(params.get("channel") or "").strip()
+    chat_id = str(params.get("chat_id") or "").strip()
+    if not channel or not chat_id:
+        raise ValueError("缺少 channel 或 chat_id")
+    try:
+        limit = int(params.get("limit") or 20)
+    except (TypeError, ValueError):
+        limit = 20
+    msgs = im_store.history(channel, chat_id, limit)
+    return {"messages": msgs, "summary": f"{len(msgs)} 条"}
+
+
+def _im_result(event: Any, started: str, cap: str, data: dict[str, Any]) -> EventResult:
+    return make_event_result(
+        event,
+        status=EventStatus.PASS,
+        executor_used="core",
+        started_at=started,
+        elapsed_ms=0,
+        summary=str(data.get("summary") or "完成"),
+        raw_response=_public_payload(data),
+    )
 
 
 def _public_payload(data: dict[str, Any]) -> dict[str, Any]:

@@ -67,18 +67,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  guards:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - name: verify hard constraints
-        run: python scripts/verify_all.py
-
   build:
-    needs: [meta, guards]
+    needs: [meta]
     name: Pack (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:

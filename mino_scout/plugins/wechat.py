@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import random
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import quote, urljoin
 
 import httpx
@@ -24,18 +26,15 @@ _lock = threading.RLock()
 _stop = threading.Event()
 _thread: threading.Thread | None = None
 _login: dict[str, Any] = {}
-_hook: Callable[[dict[str, Any]], None] | None = None
 _node_id = ""
+_HOLDER_IM = "im"  # power.PowerGuard 的 holder 名：监听线程在跑就保持防休眠
+_last_message_at = 0
+_last_error = ""
 
 
 def bind_node(node_id: str) -> None:
     global _node_id
     _node_id = str(node_id or "")
-
-
-def set_message_hook(fn: Callable[[dict[str, Any]], None] | None) -> None:
-    global _hook
-    _hook = fn
 
 
 def _now() -> str:
@@ -64,6 +63,27 @@ def public_status() -> dict[str, Any]:
         "error": err,
         "ilink_user_id": plain_value("bot", "wechat", "ilink_user_id"),
     }
+
+
+def channel_status() -> dict[str, Any]:
+    """随插件快照上报。不读钥匙串（心跳频繁），只看清单标记和线程。不含正文。"""
+    from mino_scout.plugins.state import _item
+
+    thread = _thread
+    has_token = bool(_item("bot", "wechat").get("has_bot_token"))
+    alive = thread is not None and thread.is_alive()
+    last = _last_message_at
+    if not last:
+        try:
+            last = int(plain_value("bot", "wechat", "last_message_at") or 0)
+        except ValueError:
+            last = 0
+    with _lock:
+        err = _last_error or str(_login.get("error") or "")
+    out = {"connected": bool(alive and has_token), "last_message_at": last, "error": err[:200]}
+    if is_held_off():
+        out["holding"] = False  # Nexus 仲裁让出持有；缺省视为持有
+    return out
 
 
 def start_qr() -> dict[str, Any]:
@@ -157,9 +177,24 @@ def send_text(*, to_user_id: str, context_token: str, text: str) -> None:
     )
 
 
+def is_held_off() -> bool:
+    """Nexus 仲裁让出持有（im_hold=false）。持久化，重启后仍然生效；没收到过指令就是 False。"""
+    return plain_value("bot", "wechat", "im_hold") == "0"
+
+
+def set_hold(hold: bool) -> None:
+    """hold=False：停监听线程但不登出、不清 token；hold=True：恢复监听。"""
+    remember_plain("bot", "wechat", {"im_hold": "" if hold else "0"})
+    if hold:
+        ensure_listener()
+    else:
+        stop_listener()
+    SLog.i(TAG, f"wechat im_hold={hold}")
+
+
 def ensure_listener() -> None:
     global _thread
-    if not _token():
+    if not _token() or is_held_off():
         return
     with _lock:
         if _thread is not None and _thread.is_alive():
@@ -195,6 +230,17 @@ def _apply_confirmed(data: dict[str, Any]) -> None:
 
 
 def _poll_loop() -> None:
+    from mino_scout.power import get_guard
+
+    get_guard().acquire(_HOLDER_IM)
+    try:
+        _poll_loop_inner()
+    finally:
+        get_guard().release(_HOLDER_IM)
+
+
+def _poll_loop_inner() -> None:
+    global _last_error
     cursor = plain_value("bot", "wechat", "get_updates_buf")
     try:
         _post("ilink/bot/msg/notifystart", {}, timeout=10)
@@ -204,6 +250,7 @@ def _poll_loop() -> None:
         try:
             data = _post("ilink/bot/getupdates", {"get_updates_buf": cursor}, timeout=40)
             cursor = str(data.get("get_updates_buf") or cursor)
+            _last_error = ""
             remember_plain("bot", "wechat", {"get_updates_buf": cursor})
             for msg in data.get("msgs") or []:
                 if isinstance(msg, dict):
@@ -212,6 +259,7 @@ def _poll_loop() -> None:
             continue
         except Exception as exc:
             SLog.w(TAG, f"wechat poll: {exc}")
+            _last_error = str(exc)[:200]
             if "过期" in str(exc):
                 break
             _stop.wait(3)
@@ -219,6 +267,7 @@ def _poll_loop() -> None:
 
 
 def _on_message(msg: dict[str, Any]) -> None:
+    global _last_message_at
     if int(msg.get("message_type") or 0) == 2:
         return
     text = _message_text(msg)
@@ -226,14 +275,33 @@ def _on_message(msg: dict[str, Any]) -> None:
     context = str(msg.get("context_token") or "").strip()
     if not text or not user_id or not context:
         return
-    hook = _hook
-    if hook is None:
-        return
-    hook({
-        "text": text[:2000],
-        "from_user_id": user_id,
-        "context_token": context,
-    })
+    from mino_scout.plugins import im_bridge
+
+    _last_message_at = int(time.time())
+    try:
+        remember_plain("bot", "wechat", {"last_message_at": _last_message_at})
+    except Exception:
+        pass
+    im_bridge.ingest(
+        channel="wechat",
+        chat_id=user_id,
+        chat_type="private",
+        sender_id=user_id,
+        msg_id=_message_uid(msg, user_id, text),
+        text=text,
+        mentioned=True,
+        reply_ctx={"context_token": context},
+    )
+
+
+def _message_uid(msg: dict[str, Any], user_id: str, text: str) -> str:
+    """去重键：优先 iLink 自带的唯一字段，都没有才退回 用户+正文+时间 的哈希。"""
+    for key in ("message_id", "msg_id", "svr_msg_id", "seq", "client_id"):
+        val = msg.get(key)
+        if val not in (None, "", 0):
+            return f"{user_id}:{key}:{val}"
+    stamp = msg.get("create_time_ms") or msg.get("create_time") or int(time.time())
+    return "h:" + hashlib.sha1(f"{user_id}\n{text}\n{stamp}".encode()).hexdigest()[:24]
 
 
 def _message_text(msg: dict[str, Any]) -> str:
@@ -317,3 +385,17 @@ def _as_image_src(raw: str) -> str:
         mime = "image/jpeg" if compact.startswith("/9j/") else "image/png"
         return f"data:{mime};base64,{compact}"
     return text
+
+
+def _im_text_sender(chat_id: str, sender_id: str, ctx: dict[str, str], text: str) -> None:
+    send_text(
+        to_user_id=chat_id or sender_id,
+        context_token=str(ctx.get("context_token") or ""),
+        text=text,
+    )
+
+
+# iLink 现有发送链路只有文本（item type=1），没有图片上传，所以不注册 image sender
+from mino_scout.plugins import im_bridge as _im_bridge  # noqa: E402
+
+_im_bridge.register_sender("wechat", _im_text_sender)

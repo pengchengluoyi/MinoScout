@@ -8,15 +8,65 @@ from typing import Any
 from mino_scout.config import config_dir
 from mino_scout.plugins.secret_store import account_name, delete_secret, get_secret, put_secret
 
-# 本轮四类里已经定下的条目。MCP 还没有具体项。
+# 插件类别。MCP 还没有具体项。im = 对话渠道（收 + 发），bot = 只发通知。
+PLUGIN_CLASSES = ("cli", "bot", "mail", "mcp", "im")
+
+
+def _f(key: str, label: str, placeholder: str = "", *, secret: bool = False,
+       optional: bool = False, ftype: str = "text", group: str = "") -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "key": key, "label": label, "placeholder": placeholder,
+        "secret": secret, "optional": optional,
+    }
+    if ftype != "text":
+        row["type"] = ftype
+    if group:
+        row["group"] = group
+    return row
+
+
+# LangBot 托管的平台。字段 key 在 CATALOG 里展开成 `<平台>.<字段>`，group 即平台 id。
+IM_PLATFORMS: list[dict[str, Any]] = [
+    {"id": "lark", "label": "飞书", "adapter": "lark", "channel": "feishu", "fields": [
+        _f("app_id", "App ID", "cli_xxx"),
+        _f("app_secret", "App Secret", "", secret=True),
+        _f("bot_name", "机器人名称", "Mino"),
+    ]},
+    {"id": "dingtalk", "label": "钉钉", "adapter": "dingtalk", "channel": "dingtalk", "fields": [
+        _f("client_id", "Client ID（AppKey）", "ding_xxx"),
+        _f("client_secret", "Client Secret（AppSecret）", "", secret=True),
+        _f("robot_code", "Robot Code", "通常与 Client ID 相同"),
+        _f("robot_name", "机器人名称", "Mino"),
+    ]},
+    {"id": "wecombot", "label": "企业微信智能机器人", "adapter": "wecombot", "channel": "wecom", "fields": [
+        _f("BotId", "Bot ID", "aib_xxx"),
+        _f("Secret", "Secret", "", secret=True),
+        _f("robot_name", "机器人名称", "Mino"),
+    ]},
+]
+
+
+def _im_fields() -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for plat in IM_PLATFORMS:
+        out.append(_f(f"{plat['id']}.enabled", f"启用{plat['label']}", "", optional=True,
+                      ftype="bool", group=plat["id"]))
+        for fld in plat["fields"]:
+            row = dict(fld)
+            row["key"] = f"{plat['id']}.{fld['key']}"
+            row["group"] = plat["id"]
+            out.append(row)
+    return out
+
+
 CATALOG: list[dict[str, Any]] = [
     {
         "class": "cli",
         "id": "feishu",
         "needs_install": True,
         "fields": [
-            {"key": "app_id", "secret": False},
-            {"key": "app_secret", "secret": True},
+            _f("app_id", "App ID", "cli_xxx"),
+            _f("app_secret", "App Secret", "", secret=True),
         ],
     },
     {
@@ -24,18 +74,19 @@ CATALOG: list[dict[str, Any]] = [
         "id": "meego",
         "needs_install": True,
         "fields": [
-            {"key": "base_url", "secret": False, "optional": True},
-            {"key": "plugin_id", "secret": False},
-            {"key": "user_key", "secret": False, "optional": True},
-            {"key": "plugin_secret", "secret": True},
+            _f("base_url", "Base URL", "https://project.feishu.cn", optional=True),
+            _f("plugin_id", "Plugin ID", ""),
+            _f("user_key", "User Key", "", optional=True),
+            _f("plugin_secret", "Plugin Secret", "", secret=True),
         ],
     },
     {
         "class": "bot",
         "id": "wechat",
+        "label": "微信 iLink",
         "needs_install": False,
         "fields": [
-            {"key": "bot_token", "secret": True},
+            _f("bot_token", "Bot Token（扫码登录后自动保存）", "", secret=True),
         ],
     },
     {
@@ -43,7 +94,7 @@ CATALOG: list[dict[str, Any]] = [
         "id": "feishu_bot",
         "needs_install": False,
         "fields": [
-            {"key": "webhook_url", "secret": True},
+            _f("webhook_url", "Webhook 地址", "https://open.feishu.cn/open-apis/bot/v2/hook/...", secret=True),
         ],
     },
     {
@@ -51,7 +102,7 @@ CATALOG: list[dict[str, Any]] = [
         "id": "wecom",
         "needs_install": False,
         "fields": [
-            {"key": "webhook_url", "secret": True},
+            _f("webhook_url", "Webhook 地址", "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...", secret=True),
         ],
     },
     {
@@ -59,9 +110,15 @@ CATALOG: list[dict[str, Any]] = [
         "id": "gmail",
         "needs_install": False,
         "fields": [
-            {"key": "inbox_address", "secret": False},
-            {"key": "app_password", "secret": True},
+            _f("inbox_address", "收件邮箱", "name@gmail.com"),
+            _f("app_password", "应用专用密码", "", secret=True),
         ],
+    },
+    {
+        "class": "im",
+        "id": "langbot",
+        "needs_install": True,
+        "fields": _im_fields(),
     },
 ]
 
@@ -114,6 +171,8 @@ def _item(kind: str, plugin_id: str) -> dict[str, Any]:
     root = load_state()
     items = root.get("items") if isinstance(root.get("items"), dict) else {}
     row = items.get(_key(kind, plugin_id))
+    if not isinstance(row, dict) and kind == "im" and plugin_id == "wechat":
+        row = items.get(_key("bot", "wechat"))
     return dict(row) if isinstance(row, dict) else {}
 
 
@@ -122,7 +181,10 @@ def plain_value(kind: str, plugin_id: str, field: str) -> str:
 
 
 def secret_value(node_id: str, kind: str, plugin_id: str, field: str) -> str:
-    return get_secret(account_name(node_id, kind, plugin_id, field))
+    value = get_secret(account_name(node_id, kind, plugin_id, field))
+    if not value and kind == "im" and plugin_id == "wechat":
+        value = get_secret(account_name(node_id, "bot", plugin_id, field))
+    return value
 
 
 def installed(kind: str, plugin_id: str) -> bool:
@@ -142,6 +204,9 @@ def configured(node_id: str, kind: str, plugin_id: str) -> bool:
     if row is None or not row.get("fields"):
         return False
     item = _item(kind, plugin_id)
+    if kind == "im" and plugin_id == "langbot":
+        # 只要有一个平台把必填项填全就算已配置（每个平台独立，没填的平台不影响）
+        return any(platform_filled(item, p["id"]) for p in IM_PLATFORMS)
     for field in row["fields"]:
         key = str(field.get("key") or "")
         if field.get("optional"):
@@ -152,6 +217,24 @@ def configured(node_id: str, kind: str, plugin_id: str) -> bool:
         elif not str(item.get(key) or "").strip():
             return False
     return True
+
+
+def platform_filled(item: dict[str, Any], platform_id: str) -> bool:
+    """某个 LangBot 平台的必填项（含密钥标记）是否填全。item 是 `_item()` 的结果。"""
+    for plat in IM_PLATFORMS:
+        if plat["id"] != platform_id:
+            continue
+        for fld in plat["fields"]:
+            key = f"{platform_id}.{fld['key']}"
+            if fld.get("optional"):
+                continue
+            if fld.get("secret"):
+                if not item.get(f"has_{key}"):
+                    return False
+            elif not str(item.get(key) or "").strip():
+                return False
+        return True
+    return False
 
 
 def status_list(node_id: str) -> list[dict[str, Any]]:
@@ -173,14 +256,37 @@ def status_list(node_id: str) -> list[dict[str, Any]]:
                 text = str(item.get(key) or "").strip()
                 if text:
                     values[key] = text
-        out.append({
+        entry: dict[str, Any] = {
             "class": kind,
             "id": pid,
             "installed": installed(kind, pid),
             "configured": configured(node_id, kind, pid),
             "values": values,
             "saved_secrets": saved_secrets,
-        })
+            "fields": [dict(f) for f in row.get("fields") or []],
+        }
+        if row.get("label"):
+            entry["label"] = str(row["label"])
+        if kind == "im" and pid == "langbot":
+            entry["groups"] = [{"id": p["id"], "label": p["label"]} for p in IM_PLATFORMS]
+        if pid == "wechat":
+            try:
+                from mino_scout.plugins import wechat
+
+                entry["status"] = wechat.channel_status()
+            except Exception:
+                entry["status"] = {"connected": False, "last_message_at": 0, "error": "status unavailable"}
+        if kind == "im" and pid == "langbot":
+            try:
+                from mino_scout.plugins import langbot_host
+
+                snap = langbot_host.channel_status()
+                entry["status"] = snap["status"]
+                entry["platforms"] = snap["platforms"]
+            except Exception:
+                entry["status"] = {"state": "error", "healthy": False, "error": "status unavailable"}
+                entry["platforms"] = {}
+        out.append(entry)
     return out
 
 
@@ -216,6 +322,9 @@ def apply_config(
         if key not in incoming:
             continue
         text = str(incoming.get(key) or "").strip()
+        if _field_type(row, key) == "bool":
+            current[key] = "1" if text.lower() in ("1", "true", "yes", "on") else "0"
+            continue
         if secret:
             if text:
                 put_secret(account_name(node_id, kind, plugin_id, key), text)
@@ -227,6 +336,13 @@ def apply_config(
             current.pop(key, None)
     items[_key(kind, plugin_id)] = current
     save_state(root)
+
+
+def _field_type(row: dict[str, Any], key: str) -> str:
+    for field in row.get("fields") or []:
+        if field.get("key") == key:
+            return str(field.get("type") or "text")
+    return "text"
 
 
 def remember_secret(node_id: str, kind: str, plugin_id: str, field: str, secret: str) -> None:

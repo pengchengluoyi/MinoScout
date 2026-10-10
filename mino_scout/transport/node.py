@@ -118,6 +118,7 @@ class NodeTransport:
         self._waiters: dict[str, asyncio.Future] = {}
         # 在途的请求处理任务。必须持强引用，否则会被 GC（见 _on_frame）
         self._inflight: set[asyncio.Task] = set()
+        self._im_lock: Optional[asyncio.Lock] = None
 
     # ---------------- 生命周期 ----------------
 
@@ -142,13 +143,21 @@ class NodeTransport:
             asyncio.run_coroutine_threadsafe(self._emit_plugin_progress(payload), loop)
 
         plugin_progress.set_progress_hook(_plugin_progress_hook)
+        from mino_scout.plugins import im_bridge
         from mino_scout.plugins import wechat as wechat_plugin
 
-        def _wechat_hook(payload: dict) -> None:
-            asyncio.run_coroutine_threadsafe(self._emit_wechat_message(payload), loop)
+        def _im_hook(im: dict) -> None:
+            asyncio.run_coroutine_threadsafe(self._emit_im_message(im), loop)
 
-        wechat_plugin.set_message_hook(_wechat_hook)
+        im_bridge.set_hook(_im_hook)
         wechat_plugin.bind_node(self.core.node_id)
+        wechat_plugin.ensure_listener()  # 重启后自动恢复监听；没登录时是空操作
+        try:
+            from mino_scout.plugins import langbot_host
+
+            langbot_host.reconcile(self.core.node_id)  # 已安装且有启用的平台就拉起；否则空操作
+        except Exception as exc:
+            SLog.w(TAG, f"LangBot 启动检查失败: {type(exc).__name__}")
         try:
             backoff = _BACKOFF_START
             while not self._stop.is_set():
@@ -175,10 +184,18 @@ class NodeTransport:
             from mino_scout.plugins import progress as plugin_progress
 
             plugin_progress.set_progress_hook(None)
+            from mino_scout.plugins import im_bridge
             from mino_scout.plugins import wechat as wechat_plugin
 
-            wechat_plugin.set_message_hook(None)
+            im_bridge.set_hook(None)
             wechat_plugin.stop_listener()
+            try:
+                from mino_scout.plugins import langbot_host
+
+                langbot_host.shutdown()
+                im_bridge.stop_loopback()
+            except Exception as exc:
+                SLog.w(TAG, f"LangBot 退出清理: {type(exc).__name__}")
             try:
                 self.core.shutdown()
             except Exception as exc:
@@ -321,6 +338,10 @@ class NodeTransport:
             await self._emit_device_delta(self._last_devices, devices)
         self._seen_register = True
         self._last_devices = {d.sn: d for d in devices}
+        # 重连成功：补发 Nexus 不可达期间暂存的入站事件（不阻塞注册流程）
+        task = asyncio.create_task(self._emit_im_message(None))
+        self._inflight.add(task)
+        task.add_done_callback(self._inflight.discard)
 
     async def _emit_device_delta(
         self, prev: dict[str, P.DeviceManifest], now: list[P.DeviceManifest],
@@ -538,18 +559,33 @@ class NodeTransport:
             SLog.w(TAG, f"{mtype.value} 等应答超时 {timeout}s")
             return None
 
-    async def _emit_wechat_message(self, payload: dict) -> None:
-        if self._ws is None:
-            return
-        await self._send_framework(
-            "node.plugin_wechat_message",
-            detail="wechat message",
-            extra={
-                "text": str(payload.get("text") or "")[:2000],
-                "from_user_id": str(payload.get("from_user_id") or ""),
-                "context_token": str(payload.get("context_token") or ""),
-            },
-        )
+    async def _emit_im_message(self, im: Optional[dict]) -> None:
+        """发 node.plugin_im_message。ws 不可用 / 没拿到 RESULT 就进 im_pending；
+        任何一次调用（含重连后的 im=None）都会先按时间顺序补发积压。
+        """
+        from mino_scout.plugins import im_store
+
+        if self._im_lock is None:
+            self._im_lock = asyncio.Lock()
+        async with self._im_lock:
+            if self._ws is None:
+                if im is not None:
+                    await asyncio.to_thread(im_store.push, im)
+                return
+            backlog = await asyncio.to_thread(im_store.pop_all)
+            if backlog:
+                SLog.i(TAG, f"补发暂存的 IM 事件 {len(backlog)} 条")
+            queue = [(ts, row) for ts, row in backlog]
+            if im is not None:
+                queue.append((int(time.time()), im))
+            for i, (ts, row) in enumerate(queue):
+                ok = self._ws is not None and await self._send_framework(
+                    "node.plugin_im_message", detail="im message", extra={"im": row},
+                )
+                if not ok:
+                    for ts2, row2 in queue[i:]:
+                        await asyncio.to_thread(im_store.push, row2, ts2)
+                    return
 
     async def _emit_plugin_progress(self, payload: dict) -> None:
         if self._ws is None:
@@ -579,8 +615,11 @@ class NodeTransport:
         severity: str = "info",
         progress: dict | None = None,
         extra: dict | None = None,
-    ) -> None:
-        """S→N 框架事件，形状与能力调用相同。等 RESULT；丢了靠心跳收敛。"""
+    ) -> bool:
+        """S→N 框架事件，形状与能力调用相同。等 RESULT；丢了靠心跳收敛。
+
+        返回是否拿到了 RESULT（IM 入站用它决定要不要暂存）。
+        """
         event = capability_id.split(".", 1)[-1] if capability_id.startswith("node.") else capability_id
         params: dict[str, Any] = {
             "node_id": self.core.node_id,
@@ -607,8 +646,10 @@ class NodeTransport:
             reply = await self._request(P.MsgType.EXECUTE, req, timeout=5.0)
             if reply is None:
                 SLog.w(TAG, f"{capability_id} 未获 RESULT，等心跳收敛")
+                return False
+            return True
         except Exception:
-            pass
+            return False
 
 
 _SKIP_EXTRA_KEYS = frozenset(

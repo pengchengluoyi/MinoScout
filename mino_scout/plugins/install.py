@@ -228,8 +228,8 @@ def install(node_id: str, kind: str, plugin_id: str) -> str:
         raise PluginInstallError(f"未知插件 {kind}/{plugin_id}")
     if not row.get("needs_install"):
         raise PluginInstallError("这个插件不需要单独安装")
-    if kind not in ("cli", "mcp"):
-        raise PluginInstallError("只有 CLI 和 MCP 按需安装")
+    if kind not in ("cli", "mcp", "im"):
+        raise PluginInstallError("只有 CLI、MCP 和对话渠道层按需安装")
     from mino_scout import update_progress as UP
 
     if UP.snapshot().get("active"):
@@ -239,6 +239,16 @@ def install(node_id: str, kind: str, plugin_id: str) -> str:
     dest = plugin_dir(kind, plugin_id)
     staging = dest.with_name(dest.name + ".staging")
     archive = staging.with_name(staging.name + ".pkg")
+    if kind == "im" and plugin_id == "langbot":
+        # LangBot 走 pip + 独立 venv，不是下载压缩包；进度仍走同一套 plugin_progress
+        try:
+            from mino_scout.plugins import langbot_host
+
+            return langbot_host.install(node_id)
+        except Exception as exc:
+            raise PluginInstallError(str(exc).strip() or "LangBot 安装失败") from exc
+        finally:
+            _lock.release()
     try:
         PP.emit("plan", kind=kind, plugin_id=plugin_id, label="查找安装包", percent=5)
         release = _resolve(kind, plugin_id)
@@ -305,9 +315,23 @@ def remove(node_id: str, kind: str, plugin_id: str) -> str:
                 )
             except HostExecError as exc:
                 SLog.w(TAG, f"uninstall {kind}/{plugin_id}: {exc}")
+        shutil.rmtree(dest, onerror=_force_writable)  # LangBot 的依赖环境目录是只读的
         shutil.rmtree(dest, ignore_errors=True)
     clear_plugin_secrets(node_id, kind, plugin_id)
     return "已移除"
+
+
+def _force_writable(func, path, _exc) -> None:
+    import os
+    import stat
+
+    try:
+        os.chmod(path, stat.S_IRWXU)
+        parent = os.path.dirname(path)
+        os.chmod(parent, os.stat(parent).st_mode | stat.S_IWUSR)
+        func(path)
+    except OSError:
+        pass
 
 
 def os_name_is_windows() -> bool:
