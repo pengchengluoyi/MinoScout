@@ -81,6 +81,10 @@ def channel_status() -> dict[str, Any]:
     with _lock:
         err = _last_error or str(_login.get("error") or "")
     out = {"connected": bool(alive and has_token), "last_message_at": last, "error": err[:200]}
+    # 扫码账号的 iLink id：不是密钥，Nexus 用它把「扫码的人」自动绑到节点所有者
+    account = plain_value("bot", "wechat", "ilink_user_id")
+    if account:
+        out["account_id"] = account
     if is_held_off():
         out["holding"] = False  # Nexus 仲裁让出持有；缺省视为持有
     return out
