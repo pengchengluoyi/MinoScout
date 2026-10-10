@@ -397,11 +397,43 @@ def _shim_dir() -> str:
     return str(d)
 
 
+def _ca_bundle() -> str:
+    """venv 里 certifi 的根证书。python.org 安装的 macOS Python 默认没有 CA 文件，
+    不给的话 LangBot 连飞书（wss://）和任何 HTTPS 都是 CERTIFICATE_VERIFY_FAILED，而且是静默失败。"""
+    try:
+        out = subprocess.run(
+            [str(venv_python()), "-c", "import certifi,sys;sys.stdout.write(certifi.where())"],
+            capture_output=True, text=True, timeout=20,
+        )
+        path = out.stdout.strip()
+        return path if out.returncode == 0 and os.path.isfile(path) else ""
+    except Exception:
+        return ""
+
+
+def _port_in_use(port: int) -> bool:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sk:
+        sk.settimeout(0.5)
+        return sk.connect_ex(("127.0.0.1", port)) == 0
+
+
+# 插件运行时的调试口，LangBot 以 stdio 拉起它时写死 5401，改不了；被占用则运行时起不来，
+# 表现为 mino-bridge 装不上、平台一直未连接。
+RUNTIME_DEBUG_PORT = 5401
+
+
 def _build_env(url: str, token: str) -> dict[str, str]:
     env = dict(os.environ)
     shim = _shim_dir()
     if shim:
         env["PYTHONPATH"] = shim + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    ca = _ca_bundle()
+    if ca:
+        env.setdefault("SSL_CERT_FILE", ca)
+        env.setdefault("REQUESTS_CA_BUNDLE", ca)
+        env.setdefault("CURL_CA_BUNDLE", ca)
     env.update({
         "LANGBOT_DATA_ROOT": str(data_dir()),
         "API__PORT": str(_port),
@@ -448,6 +480,42 @@ def _wait_ready(proc: subprocess.Popen, timeout: float = 180.0) -> bool:
     return False
 
 
+def _sync_once() -> bool:
+    """装 mino-bridge、同步 bot、刷新各平台真实状态。成功返回 True；失败写进 _error，调用方会重试。"""
+    global _error, _llm_warning
+    try:
+        _retry(ensure_bridge, tries=20, delay=2.0)  # healthz 先于插件运行时就绪，首次要等一会儿
+        sync_bots(_node_id)
+        refresh_platform_health()
+        _llm_warning = check_no_llm()
+    except ApiError as exc:
+        SLog.w(TAG, f"同步失败，稍后重试: {exc}")
+        with _lock:
+            _error = f"同步配置失败: {exc}"[:200]
+        return False
+    with _lock:
+        bad = [f"{pid}: {e}" for pid, e in _plat_err.items() if e]
+        _error = _llm_warning or ("；".join(bad)[:200] if bad else "")
+    return True
+
+
+def refresh_platform_health() -> None:
+    """读每个 bot 的事件日志，看适配器有没有报错。连不上飞书时错误会出现在这里，
+    不能只因为 LangBot 进程活着就报「已连接」。"""
+    for pid, bot in list(_bots.items()):
+        if not bot:
+            continue
+        try:
+            data = _api("POST", f"/api/v1/platform/bots/{bot}/logs", {"from_index": -1, "max_count": 20}) or {}
+        except ApiError:
+            continue
+        errs = [str(l.get("text") or "") for l in (data.get("logs") or []) if str(l.get("level")) == "error"]
+        if errs:
+            _plat_err[pid] = errs[-1][:160]
+        elif _plat_err.get(pid, "").startswith("适配器"):
+            _plat_err.pop(pid, None)
+
+
 def _supervise() -> None:
     global _proc, _port, _api_key, _state, _error, _restarts, _started_at, _llm_warning
     fails = 0
@@ -471,6 +539,10 @@ def _supervise() -> None:
                 with _lock:
                     _state, _error = "starting", ""
                 data_dir().mkdir(parents=True, exist_ok=True)
+                if _port_in_use(RUNTIME_DEBUG_PORT):
+                    raise RuntimeError(
+                        f"端口 {RUNTIME_DEBUG_PORT} 被别的进程占用（LangBot 插件运行时需要它），"
+                        "请先关掉占用它的程序，Scout 会自动重试")
                 proc = subprocess.Popen(
                     [str(venv_python()), "-m", "langbot"],
                     cwd=str(data_dir()), env=_build_env(url, token),
@@ -482,21 +554,22 @@ def _supervise() -> None:
                 threading.Thread(target=_pump_log, args=(proc,), daemon=True).start()
                 ready = _wait_ready(proc)
                 if ready:
-                    try:
-                        _retry(ensure_bridge)  # healthz 先于插件 runtime 就绪（实测），要重试
-                        sync_bots(_node_id)
-                        _llm_warning = check_no_llm()
-                    except ApiError as exc:
-                        SLog.w(TAG, f"首次同步失败: {exc}")
-                        _error = f"同步配置失败: {exc}"[:200]
+                    synced = _sync_once()
                     with _lock:
-                        _state = "error" if _llm_warning else "running"
-                        if _llm_warning:
-                            _error = _llm_warning
+                        _state = "running" if synced else "error"
                     fails = 0
-                    SLog.i(TAG, f"running port={_port}")
+                    SLog.i(TAG, f"started port={_port} synced={synced}")
+                    last_try = time.time()
                     while proc.poll() is None and not _stop.is_set():
                         time.sleep(1)
+                        # 没同步成功就每 15 秒再试一次，直到成功；成功后每分钟核对一次平台连接
+                        every = 60 if synced else 15
+                        if time.time() - last_try >= every:
+                            last_try = time.time()
+                            synced = _sync_once()
+                            with _lock:
+                                if _state in ("running", "error"):
+                                    _state = "running" if synced else "error"
                 else:
                     proc.wait(timeout=1) if proc.poll() is not None else None
                 code = proc.poll()
