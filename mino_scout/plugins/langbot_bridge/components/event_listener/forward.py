@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import urllib.request
+from pathlib import Path
 
 from langbot_plugin.api.definition.components.common.event_listener import EventListener
 from langbot_plugin.api.entities import context, events
@@ -45,10 +46,30 @@ def _is_at(chain, bot_ids: set[str]) -> bool:
     return False
 
 
-def _post(payload: dict) -> int:
+def _endpoint() -> tuple[str, str]:
+    """回环地址。插件跑在 LangBot 单独拉起的进程里，继承不到 LangBot 的环境变量，
+    所以优先读环境变量，没有就沿代码目录往上找 Scout 写的 mino-bridge.json。"""
     url = os.environ.get("MINO_BRIDGE_URL", "")
     token = os.environ.get("MINO_BRIDGE_TOKEN", "")
+    if url and token:
+        return url, token
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        cand = parent / "mino-bridge.json"
+        if not cand.is_file():
+            continue
+        try:
+            data = json.loads(cand.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        return str(data.get("url") or ""), str(data.get("token") or "")
+    return "", ""
+
+
+def _post(payload: dict) -> int:
+    url, token = _endpoint()
     if not url or not token:
+        print("[mino-bridge] endpoint missing", flush=True)
         return 0
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"), method="POST",

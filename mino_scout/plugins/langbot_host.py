@@ -458,7 +458,18 @@ def _port_in_use(port: int) -> bool:
 RUNTIME_DEBUG_PORT = 5401
 
 
+def _write_bridge_endpoint(url: str, token: str) -> None:
+    """插件进程继承不到这份环境变量，把回环地址写到插件目录，转发时自己读。"""
+    path = root() / "mino-bridge.json"
+    path.write_text(json.dumps({"url": url, "token": token}, ensure_ascii=False), encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
 def _build_env(url: str, token: str) -> dict[str, str]:
+    _write_bridge_endpoint(url, token)
     env = dict(os.environ)
     shim = _shim_dir()
     if shim:
