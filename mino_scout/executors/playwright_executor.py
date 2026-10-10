@@ -152,16 +152,79 @@ class PlaywrightExecutor:
     id = "playwright"
 
     def __init__(self) -> None:
-        # 每个运行只保留最近一次成功点击的目标；旧 handle 在覆盖/结束时释放。
-        self._focus_actions: dict[tuple[str, str], tuple[str, Any, Any]] = {}
+        self._focus_actions: dict[tuple[str, str], tuple[Any, list[tuple[Any, str, Any]]]] = {}
 
     def _forget_focus(self, key: tuple[str, str]) -> None:
         old = self._focus_actions.pop(key, None)
-        if old is not None and old[2] is not None:
+        if old is not None:
+            for _, _, document in old[1]:
+                try:
+                    document.dispose()
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _focused_element(page):
+        frame = page.main_frame
+        frames = []
+        for _ in range(32):
+            frames.append(frame)
+            active = frame.evaluate_handle("""() => {
+                let element = document.activeElement;
+                while (element && element.shadowRoot && element.shadowRoot.activeElement) {
+                    element = element.shadowRoot.activeElement;
+                }
+                return element;
+            }""")
+            element = active.as_element()
+            if element is None:
+                active.dispose()
+                return None, frames
             try:
-                old[2].dispose()
+                child = element.content_frame()
             except Exception:
-                pass
+                element.dispose()
+                raise
+            if child is None:
+                return element, frames
+            element.dispose()
+            frame = child
+        raise RuntimeError("focus_frame_depth_exceeded")
+
+    def _remember_focus_page(self, key, page) -> None:
+        documents = []
+        element = None
+        try:
+            element, frames = self._focused_element(page)
+            for frame in frames:
+                documents.append((frame, frame.url, frame.evaluate_handle("document")))
+            self._focus_actions[key] = (page, documents)
+        except Exception:
+            for _, _, document in documents:
+                try:
+                    document.dispose()
+                except Exception:
+                    pass
+        finally:
+            if element is not None:
+                try:
+                    element.dispose()
+                except Exception:
+                    pass
+
+    def _focus_page_error(self, key, page) -> str:
+        record = self._focus_actions.get(key)
+        if record is None:
+            return "focus_unavailable: page_context_missing"
+        if record[0] is not page:
+            return "focus_unavailable: page_changed"
+        for frame, url, document in record[1]:
+            try:
+                if frame.is_detached() or frame.url != url or not document.evaluate("saved => saved === document"):
+                    return "focus_unavailable: document_changed"
+            except Exception:
+                return "focus_unavailable: document_check_failed"
+        return ""
 
     # 与 MiniOrangeServer 的 plugins/executors/playwright.yaml 保持一致。
     # Web 端按名字点/填，不先 VLM locate —— 所以 cost 比 VLM 路径低。
@@ -270,31 +333,19 @@ class PlaywrightExecutor:
                 self._forget_focus(focus_key)
                 result = self._tap(event, page, started_at, t0)
                 if result.status == EventStatus.PASS:
-                    try:
-                        handle = page.locator(":focus").element_handle(timeout=1000)
-                        if handle and handle.evaluate("el => el.matches('input:not([disabled]):not([readonly]), textarea:not([disabled]):not([readonly])') || el.isContentEditable"):
-                            self._focus_actions[focus_key] = (f"focus:{run_id}:{event.seq}", page, handle)
-                        elif handle:
-                            handle.dispose()
-                    except Exception:
-                        pass
+                    self._remember_focus_page(focus_key, page)
                 return result
             if cap == "multi_tap":
                 return self._multi_tap(event, page, started_at, t0)
             if cap == "long_press_element":
                 return self._long_press(event, page, started_at, t0)
             if cap == "input_text":
-                if str((event.params or {}).get("target_mode") or "") == "current_focus":
-                    record = self._focus_actions.get(focus_key)
-                    requested = str((event.params or {}).get("focus_ref") or "")
-                    try:
-                        valid = bool(record and record[0] == requested and record[1] is page
-                                     and record[2].evaluate("el => document.activeElement === el"))
-                    except Exception:
-                        valid = False
-                    if not valid:
+                params = event.params or {}
+                if params.get("target_mode") == "current_focus" and params.get("point_policy") != "node":
+                    focus_error = self._focus_page_error(focus_key, page)
+                    if focus_error:
                         self._forget_focus(focus_key)
-                        return self._fail(event, started_at, t0, "contract_unsupported: 焦点目标已变化或引用失效")
+                        return self._fail(event, started_at, t0, focus_error)
                 result = self._input(event, ctx, page, started_at, t0)
                 self._forget_focus(focus_key)
                 return result
@@ -814,17 +865,31 @@ class PlaywrightExecutor:
     def _input_focused(self, event, page, started_at, t0, text: str, tag: str, params: dict) -> EventResult:
         """写入当前焦点。不点击、不按坐标再找输入框。"""
         mode = str(params.get("mode") or "replace").strip().lower()
-        # 焦点引用由 Nexus 关联点击；设备侧还须确认目前确实落在可编辑控件上。
+        target = None
         try:
-            editable = page.evaluate("""() => {
-              const el = document.activeElement;
-              return !!el && (el.matches('input:not([disabled]):not([readonly]), textarea:not([disabled]):not([readonly])')
-                || el.isContentEditable);
+            target, _ = self._focused_element(page)
+            reason = "no_active_element" if target is None else target.evaluate("""element => {
+                if (element === document.body || element === document.documentElement) {
+                    if (!element.isContentEditable) return 'no_active_element';
+                }
+                if (element.matches(':disabled') || element.readOnly || element.closest('[inert]')) {
+                    return 'not_editable';
+                }
+                if (element.isContentEditable || element.tagName === 'TEXTAREA') return '';
+                if (element.tagName === 'INPUT' &&
+                    ['text', 'search', 'email', 'url', 'tel', 'password', 'number'].includes(element.type)) return '';
+                return 'not_editable';
             }""")
         except Exception:
-            editable = False
-        if not editable:
-            return self._fail(event, started_at, t0, "contract_unsupported: 当前焦点不是可编辑控件")
+            reason = "active_element_check_failed"
+        finally:
+            if target is not None:
+                try:
+                    target.dispose()
+                except Exception:
+                    pass
+        if reason:
+            return self._fail(event, started_at, t0, f"focus_unavailable: {reason}")
         try:
             if mode != "append":
                 page.keyboard.press("ControlOrMeta+A")
