@@ -147,6 +147,26 @@ def _runnable_low_level(low_level: Optional[dict[str, Any]]) -> bool:
 class AdbExecutor:
     id = "adb"
 
+    def __init__(self) -> None:
+        self._focus_actions: dict[tuple[str, str], tuple[str, str, str, tuple[int, int, int, int]]] = {}
+
+    @staticmethod
+    def _focused_input(serial: str, *, point: tuple[int, int] | None = None):
+        from mino_scout.hierarchy import dump_ui_nodes
+
+        dump = dump_ui_nodes(serial, force_fresh=True)
+        if not dump.ok:
+            return None
+        for node in dump.nodes:
+            if not node.focused or not node.enabled or "EditText" not in node.cls:
+                continue
+            if point is not None:
+                left, top, right, bottom = node.bounds
+                if not (left <= point[0] < right and top <= point[1] < bottom):
+                    continue
+            return node
+        return None
+
     # 上报给 Nexus 的 abstract cap（协议 §4.1 的 executors[].provides）。
     # 词表真源是 Nexus 的 abstract_caps.yaml —— 本仓只报字符串，不解释含义。
     # 与 MiniOrangeServer 的 plugins/executors/adb.yaml 保持一致。
@@ -183,6 +203,9 @@ class AdbExecutor:
         started_at = _now_iso()
         t0 = time.time()
         cap = event.capability_id
+        focus_key = (str(ctx.device.sn or ""), str(ctx.run_id or ""))
+        if cap not in ("tap_element", "input_text", "wait_ms", "get_foreground_app"):
+            self._focus_actions.pop(focus_key, None)
         # 上游是 ctx.run_context.adb["serial"]（RunContext 查库 + 跑 connectivity_probe
         # 得来）。Scout 不查库，serial 由 Nexus 在 EXECUTE.device_hint 里注入。
         serial = str(ctx.device.adb_serial or "")
@@ -222,13 +245,35 @@ class AdbExecutor:
             if cap == "set_clipboard":
                 return self._set_clipboard(event, ctx, serial, started_at, t0)
             if cap == "tap_element":
-                return self._tap_element(event, ctx, serial, started_at, t0)
+                self._focus_actions.pop(focus_key, None)
+                result = self._tap_element(event, ctx, serial, started_at, t0)
+                if result.status == EventStatus.PASS and ctx.run_id:
+                    receipt = result.raw_response if isinstance(result.raw_response, dict) else {}
+                    try:
+                        point = (int(receipt["x"]), int(receipt["y"]))
+                    except (KeyError, TypeError, ValueError):
+                        point = None
+                    node = self._focused_input(serial, point=point) if point is not None else None
+                    if node is not None:
+                        self._focus_actions[focus_key] = (
+                            f"focus:{ctx.run_id}:{event.seq}", node.package, node.resource_id, node.bounds,
+                        )
+                return result
             if cap == "multi_tap":
                 return self._multi_tap(event, ctx, serial, started_at, t0)
             if cap == "long_press_element":
                 return self._long_press_element(event, ctx, serial, started_at, t0)
             if cap == "input_text":
-                return self._input_text(event, ctx, serial, started_at, t0)
+                if str((event.params or {}).get("target_mode") or "") == "current_focus":
+                    focus = self._focus_actions.get(focus_key)
+                    node = self._focused_input(serial)
+                    if (not focus or focus[0] != str((event.params or {}).get("focus_ref") or "")
+                            or node is None or (node.package, node.resource_id, node.bounds) != focus[1:]):
+                        self._focus_actions.pop(focus_key, None)
+                        return self._fail(event, started_at, t0, "contract_unsupported: 焦点点击引用失效")
+                result = self._input_text(event, ctx, serial, started_at, t0)
+                self._focus_actions.pop(focus_key, None)
+                return result
             if cap == "exec_script":
                 return self._exec_script(event, ctx, serial, started_at, t0)
             if cap == "set_input_method":
@@ -844,7 +889,7 @@ class AdbExecutor:
             if str(params.get("mode") or "replace").strip().lower() != "append":
                 return self._fail(event, started_at, t0, "contract_unsupported: ADB 当前焦点不支持 replace")
             ref = str(params.get("focus_ref") or "")
-            if not ref or ref == "previous_focus_action":
+            if not ctx.run_id or not ref.startswith(f"focus:{ctx.run_id}:") or not ref.rsplit(":", 1)[-1].isdigit():
                 return self._fail(event, started_at, t0, "contract_unsupported: current_focus 缺少有效 focus_ref")
             safe_text = str(text).replace(" ", "%s")
             rc, out, err = self._adb_shell(serial, "input", "text", safe_text)

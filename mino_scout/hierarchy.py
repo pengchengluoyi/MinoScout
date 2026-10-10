@@ -54,6 +54,7 @@ class UiNode:
     package: str = ""
     clickable: bool = False
     enabled: bool = True
+    focused: bool = False
     bounds: tuple[int, int, int, int] = (0, 0, 0, 0)
     parent: Optional["UiNode"] = field(default=None, repr=False)
 
@@ -258,6 +259,7 @@ def _parse_xml(xml_text: str) -> UiDump:
                 package=(a.get("package") or "").strip(),
                 clickable=(a.get("clickable") == "true"),
                 enabled=(a.get("enabled") != "false"),
+                focused=(a.get("focused") == "true"),
                 bounds=_parse_bounds(a.get("bounds") or ""),
                 parent=parent,
             )

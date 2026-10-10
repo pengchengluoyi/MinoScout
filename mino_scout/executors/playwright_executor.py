@@ -151,6 +151,18 @@ def _login_field_from_params(params: dict | None) -> str:
 class PlaywrightExecutor:
     id = "playwright"
 
+    def __init__(self) -> None:
+        # 每个运行只保留最近一次成功点击的目标；旧 handle 在覆盖/结束时释放。
+        self._focus_actions: dict[tuple[str, str], tuple[str, Any, Any]] = {}
+
+    def _forget_focus(self, key: tuple[str, str]) -> None:
+        old = self._focus_actions.pop(key, None)
+        if old is not None and old[2] is not None:
+            try:
+                old[2].dispose()
+            except Exception:
+                pass
+
     # 与 MiniOrangeServer 的 plugins/executors/playwright.yaml 保持一致。
     # Web 端按名字点/填，不先 VLM locate —— 所以 cost 比 VLM 路径低。
     provides = ("ui_native_input", "ui_input_text", "ui_screenshot")
@@ -178,12 +190,16 @@ class PlaywrightExecutor:
         cap = event.capability_id
         sn = str(ctx.device.sn or "")
         run_id = str(ctx.run_id or "")
+        focus_key = (sn, run_id)
         if not ctx.device.is_web:
             return make_event_result(
                 event, status=EventStatus.DECLINED, executor_used=self.id,
                 started_at=started_at, elapsed_ms=0,
                 summary="playwright 只服务 web 槽，让位给真机通道",
             )
+        if cap not in ("tap_element", "input_text", "wait_ms", "wait_screen_ready",
+                       "get_foreground_app", "read_web_auth"):
+            self._forget_focus(focus_key)
         hub = get_hub()
         headed = headed_from_hint(ctx.device.extra)
         try:
@@ -251,13 +267,37 @@ class PlaywrightExecutor:
                 except Exception as exc:
                     return self._fail(event, started_at, t0, f"刷新页面失败: {exc}")
             if cap == "tap_element":
-                return self._tap(event, page, started_at, t0)
+                self._forget_focus(focus_key)
+                result = self._tap(event, page, started_at, t0)
+                if result.status == EventStatus.PASS:
+                    try:
+                        handle = page.locator(":focus").element_handle(timeout=1000)
+                        if handle and handle.evaluate("el => el.matches('input:not([disabled]):not([readonly]), textarea:not([disabled]):not([readonly])') || el.isContentEditable"):
+                            self._focus_actions[focus_key] = (f"focus:{run_id}:{event.seq}", page, handle)
+                        elif handle:
+                            handle.dispose()
+                    except Exception:
+                        pass
+                return result
             if cap == "multi_tap":
                 return self._multi_tap(event, page, started_at, t0)
             if cap == "long_press_element":
                 return self._long_press(event, page, started_at, t0)
             if cap == "input_text":
-                return self._input(event, page, started_at, t0)
+                if str((event.params or {}).get("target_mode") or "") == "current_focus":
+                    record = self._focus_actions.get(focus_key)
+                    requested = str((event.params or {}).get("focus_ref") or "")
+                    try:
+                        valid = bool(record and record[0] == requested and record[1] is page
+                                     and record[2].evaluate("el => document.activeElement === el"))
+                    except Exception:
+                        valid = False
+                    if not valid:
+                        self._forget_focus(focus_key)
+                        return self._fail(event, started_at, t0, "contract_unsupported: 焦点目标已变化或引用失效")
+                result = self._input(event, ctx, page, started_at, t0)
+                self._forget_focus(focus_key)
+                return result
             if cap == "press_key":
                 p = event.params or {}
                 key = str(p.get("key") or p.get("keycode") or "Escape")
@@ -706,7 +746,7 @@ class PlaywrightExecutor:
         page.mouse.up()
         return self._ok(event, started_at, t0, f"长按 ({x},{y})")
 
-    def _input(self, event: PlanEvent, page, started_at: str, t0: float) -> EventResult:
+    def _input(self, event: PlanEvent, ctx: ExecutorContext, page, started_at: str, t0: float) -> EventResult:
         params = event.params or {}
         text = str(params.get("text") or "")
         login_field = _login_field_from_params(params)
@@ -734,7 +774,7 @@ class PlaywrightExecutor:
             return self._ok(event, started_at, t0, f"输入({tag})「{name[:40]}」")
         focus_ref = str(params.get("focus_ref") or "")
         if str(params.get("target_mode") or "") == "current_focus":
-            if not focus_ref or focus_ref == "previous_focus_action":
+            if not ctx.run_id or not focus_ref.startswith(f"focus:{ctx.run_id}:") or not focus_ref.rsplit(":", 1)[-1].isdigit():
                 return self._fail(
                     event, started_at, t0,
                     "contract_unsupported: current_focus 缺少有效 focus_ref",
@@ -774,6 +814,17 @@ class PlaywrightExecutor:
     def _input_focused(self, event, page, started_at, t0, text: str, tag: str, params: dict) -> EventResult:
         """写入当前焦点。不点击、不按坐标再找输入框。"""
         mode = str(params.get("mode") or "replace").strip().lower()
+        # 焦点引用由 Nexus 关联点击；设备侧还须确认目前确实落在可编辑控件上。
+        try:
+            editable = page.evaluate("""() => {
+              const el = document.activeElement;
+              return !!el && (el.matches('input:not([disabled]):not([readonly]), textarea:not([disabled]):not([readonly])')
+                || el.isContentEditable);
+            }""")
+        except Exception:
+            editable = False
+        if not editable:
+            return self._fail(event, started_at, t0, "contract_unsupported: 当前焦点不是可编辑控件")
         try:
             if mode != "append":
                 page.keyboard.press("ControlOrMeta+A")
