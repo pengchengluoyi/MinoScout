@@ -3,7 +3,7 @@ kind: Plugin
 metadata:
   author: mino
   name: mino-bridge
-  version: 0.1.1
+  version: 0.1.2
   label:
     en_US: Mino Bridge
     zh_Hans: Mino 桥接

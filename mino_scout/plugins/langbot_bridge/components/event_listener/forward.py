@@ -17,17 +17,12 @@ from langbot_plugin.api.entities import context, events
 _CHANNELS = {"lark": "feishu", "dingtalk": "dingtalk", "wecombot": "wecom", "wecom": "wecom"}
 
 
-def _adapter_channel(ctx) -> str:
-    """适配器名 -> Mino channel。取不到就按 launcher/事件里的 adapter 字段猜，猜不到用 adapter 原名。"""
-    ev = getattr(ctx.event, "query", None)
-    name = ""
-    for obj in (getattr(ev, "adapter", None), getattr(ev, "bot_adapter", None)):
-        if obj is not None:
-            name = type(obj).__name__.lower()
-    for k, v in _CHANNELS.items():
-        if k in name:
-            return v
-    return name or "unknown"
+def _map_channel(name: str) -> str:
+    low = name.lower()
+    for key, channel in _CHANNELS.items():
+        if key in low:
+            return channel
+    return ""
 
 
 def _elements(chain):
@@ -114,7 +109,7 @@ class ForwardListener(EventListener):
         if not msg_id:
             msg_id = hashlib.sha1(f"{bot_uuid}|{chat_id}|{sender}|{text}".encode()).hexdigest()[:24]
         payload = {
-            "channel": _adapter_channel(ctx), "tenant": "", "chat_id": chat_id,
+            "channel": "", "tenant": "", "chat_id": chat_id,
             "chat_type": "group" if kind == "group" else "private",
             "sender_id": sender, "msg_id": msg_id, "text": text, "mentioned": mentioned,
             "bot_uuid": bot_uuid,
@@ -123,8 +118,28 @@ class ForwardListener(EventListener):
         if kind == "group" and not mentioned:
             ctx.prevent_default()
             return
+        payload["channel"] = await self._channel(ctx, bot_uuid)
+        if not payload["channel"]:
+            print("[mino-bridge] channel unknown", flush=True)
         try:
-            _post(payload)
+            code = _post(payload)
+            if code and code != 200:
+                print(f"[mino-bridge] forward status={code} channel={payload['channel']}", flush=True)
         except Exception as exc:  # 转发失败也要阻止默认处理，否则 pipeline 会去找模型
-            print(f"[mino-bridge] forward failed: {type(exc).__name__}", flush=True)
+            print(
+                f"[mino-bridge] forward failed: {type(exc).__name__} channel={payload['channel']}",
+                flush=True,
+            )
         ctx.prevent_default()
+
+    async def _channel(self, ctx: context.EventContext, bot_uuid: str) -> str:
+        """事件模型里没有适配器。用 bot 的 adapter（lark / dingtalk / wecombot）映射渠道。"""
+        name = ""
+        if bot_uuid:
+            try:
+                info = await self.plugin.get_bot_info(bot_uuid)
+                if isinstance(info, dict):
+                    name = str(info.get("adapter") or info.get("name") or "")
+            except Exception as exc:
+                print(f"[mino-bridge] bot info failed: {type(exc).__name__}", flush=True)
+        return _map_channel(name)

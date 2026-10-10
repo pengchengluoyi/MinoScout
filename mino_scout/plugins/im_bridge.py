@@ -160,6 +160,7 @@ def _handle_ingest(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     channel = str(body.get("channel") or "")
     chat_id = str(body.get("chat_id") or "")
     if channel not in _CHANNELS or not chat_id:
+        SLog.w(TAG, f"loopback reject channel={channel or '-'} has_chat={bool(chat_id)}")
         return 400, {"ok": False, "error": "bad channel or chat_id"}
     chat_type = "group" if body.get("chat_type") == "group" else "private"
     mentioned = bool(body.get("mentioned"))
