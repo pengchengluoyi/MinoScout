@@ -52,6 +52,8 @@ _started_at = 0.0
 _holds: dict[str, bool] = {}  # platform id -> 是否被 Nexus 仲裁停掉（False=停）
 _bots: dict[str, str] = {}  # platform id -> bot uuid
 _plat_err: dict[str, str] = {}
+# 上次成功写给 LangBot 的 bot 签名。没变化就不要 PUT：LangBot 收到更新会重建适配器，飞书长连接会被掐断。
+_applied_sig: dict[str, str] = {}
 _last_msg: dict[str, int] = {}  # channel -> ts
 _llm_warning = ""
 _node_id = ""
@@ -300,8 +302,32 @@ def _ensure_pipeline() -> str:
     return str((created or {}).get("uuid") or "")
 
 
+def _bot_signature(body: dict[str, Any]) -> str:
+    payload = {
+        "name": body.get("name"),
+        "description": body.get("description"),
+        "adapter": body.get("adapter"),
+        "adapter_config": body.get("adapter_config") or {},
+        "enable": bool(body.get("enable")),
+        "use_pipeline_uuid": body.get("use_pipeline_uuid"),
+    }
+    return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _remote_matches(cur: dict[str, Any], body: dict[str, Any]) -> bool:
+    """远端 bot 的开关、适配器和 pipeline 已经是期望值。密钥以本地上次写入的签名为准。"""
+    return (
+        bool(cur.get("enable")) == bool(body.get("enable"))
+        and str(cur.get("adapter") or "") == str(body.get("adapter") or "")
+        and str(cur.get("use_pipeline_uuid") or "") == str(body.get("use_pipeline_uuid") or "")
+    )
+
+
 def sync_bots(node_id: str) -> None:
-    """让 LangBot 里的 bot 与期望状态一致：期望启用的 enable=true，其余 enable=false。"""
+    """让 LangBot 里的 bot 与期望状态一致：期望启用的 enable=true，其余 enable=false。
+
+    配置没变就跳过 PUT。LangBot 每次更新 bot 都会拆掉适配器再连，飞书长连接会被掐断。
+    """
     want = set(wanted_platforms())
     pipeline = _ensure_pipeline()
     existing = {}
@@ -313,6 +339,7 @@ def sync_bots(node_id: str) -> None:
         on = pid in want
         cur = existing.get(name)
         if cur is None and not on:
+            _applied_sig.pop(name, None)
             continue
         body = {
             "name": name,
@@ -326,14 +353,21 @@ def sync_bots(node_id: str) -> None:
             if cur is None:
                 created = _api("POST", "/api/v1/platform/bots", body)
                 _bots[pid] = str((created or {}).get("uuid") or "")
+                _applied_sig[name] = _bot_signature(body)
             else:
                 if not on:
                     body.pop("adapter_config")
                     cfg_now = cur.get("adapter_config")
                     if isinstance(cfg_now, dict):
                         body["adapter_config"] = cfg_now
+                sig = _bot_signature(body)
+                if _applied_sig.get(name) == sig and _remote_matches(cur, body):
+                    _bots[pid] = str(cur["uuid"])
+                    _plat_err.pop(pid, None)
+                    continue
                 _api("PUT", f"/api/v1/platform/bots/{cur['uuid']}", body)
                 _bots[pid] = str(cur["uuid"])
+                _applied_sig[name] = sig
             _plat_err.pop(pid, None)
         except ApiError as exc:
             _plat_err[pid] = str(exc)
@@ -562,7 +596,7 @@ def _supervise() -> None:
                     last_try = time.time()
                     while proc.poll() is None and not _stop.is_set():
                         time.sleep(1)
-                        # 没同步成功就每 15 秒再试一次，直到成功；成功后每分钟核对一次平台连接
+                        # 没同步成功就每 15 秒再试一次。成功后每分钟再看一眼，配置没变不会重写 bot。
                         every = 60 if synced else 15
                         if time.time() - last_try >= every:
                             last_try = time.time()
