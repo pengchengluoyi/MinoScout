@@ -748,6 +748,7 @@ class ScoutCore:
                 self._device_workload.values(),
                 key=lambda w: (w.sn, w.run_id, w.step_idx),
             )
+        from mino_scout.input_contract import runtime_input_capabilities
         from mino_scout.plugins.state import status_list
 
         return P.Heartbeat(
@@ -758,6 +759,7 @@ class ScoutCore:
             device_workload=workload,
             scout_version=report_scout_version(),
             plugins=status_list(self.node_id),
+            runtime_capabilities=runtime_input_capabilities(),
         )
 
     def _remember_run(self, run_id: str) -> None:

@@ -289,6 +289,8 @@ class NodeTransport:
         execs, devices = await asyncio.to_thread(self.core.manifest)
         from mino_scout.config import resolve_hostname, resolve_studio_id
 
+        from mino_scout.input_contract import runtime_input_capabilities
+
         payload = P.Register(
             node_id=self.core.node_id,
             token=self.token,
@@ -300,6 +302,7 @@ class NodeTransport:
             executors=execs,
             devices=devices,
             plugins=self.core.heartbeat().plugins,
+            runtime_capabilities=runtime_input_capabilities(),
         )
         reply = await self._request(P.MsgType.REGISTER, payload)
         if reply is None:

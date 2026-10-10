@@ -840,6 +840,24 @@ class AdbExecutor:
         text = params.get("text") or ""
         if not text:
             return self._fail(event, started_at, t0, "input_text 缺 params.text")
+        if str(params.get("target_mode") or "") == "current_focus":
+            ref = str(params.get("focus_ref") or "")
+            if not ref or ref == "previous_focus_action":
+                return self._fail(event, started_at, t0, "contract_unsupported: current_focus 缺少有效 focus_ref")
+            safe_text = str(text).replace(" ", "%s")
+            rc, out, err = self._adb_shell(serial, "input", "text", safe_text)
+            elapsed = int((time.time() - t0) * 1000)
+            self._invalidate_hierarchy(serial)
+            if rc == 0:
+                return make_event_result(
+                    event, status=EventStatus.PASS, executor_used=self.id, started_at=started_at,
+                    elapsed_ms=elapsed, summary=f"输入 {len(text)} 字 已写入当前焦点",
+                )
+            return make_event_result(
+                event, status=EventStatus.FAIL, executor_used=self.id, started_at=started_at,
+                elapsed_ms=elapsed, summary="输入失败（中文需要 IME 协助，建议改 remote）",
+                error=err or out,
+            )
         policy = str(params.get("point_policy") or "").strip().lower()
         x, y, audit, how = self._point_for(event, serial)
         if x is None or y is None:

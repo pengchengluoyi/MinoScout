@@ -732,6 +732,14 @@ class PlaywrightExecutor:
                 return self._fail(event, started_at, t0, f"DOM 输入锚点未命中：{exc}")
             loc.fill(text)
             return self._ok(event, started_at, t0, f"输入({tag})「{name[:40]}」")
+        focus_ref = str(params.get("focus_ref") or "")
+        if str(params.get("target_mode") or "") == "current_focus":
+            if not focus_ref or focus_ref == "previous_focus_action":
+                return self._fail(
+                    event, started_at, t0,
+                    "contract_unsupported: current_focus 缺少有效 focus_ref",
+                )
+            return self._input_focused(event, page, started_at, t0, text, tag, params)
         try:
             x, y = resolve_viewport_xy(params, page)
         except ValueError:
@@ -762,6 +770,17 @@ class PlaywrightExecutor:
             t0,
             f"输入({tag})@({x},{y}) {_input_summary_snippet(text)}（焦点未确认）",
         )
+
+    def _input_focused(self, event, page, started_at, t0, text: str, tag: str, params: dict) -> EventResult:
+        """写入当前焦点。不点击、不按坐标再找输入框。"""
+        mode = str(params.get("mode") or "replace").strip().lower()
+        try:
+            if mode != "append":
+                page.keyboard.press("ControlOrMeta+A")
+            page.keyboard.insert_text(text)
+        except Exception as exc:
+            return self._fail(event, started_at, t0, f"输入({tag}) 写入当前焦点失败：{type(exc).__name__}")
+        return self._ok(event, started_at, t0, f"输入({tag}) 已写入当前焦点")
 
     @staticmethod
     def _read_editable_value(target) -> str:
