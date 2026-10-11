@@ -760,11 +760,15 @@ def channel_status() -> dict[str, Any]:
         err = _plat_err.get(pid, "")
         if enabled and not platform_filled(item, pid):
             err = err or "必填项未填完"
+        last_message = _last_msg.get(p["channel"], 0)
+        verified = bool(running and not err and last_message >= _started_at and 0 <= time.time() - last_message <= 120)
         platforms[pid] = {
             "enabled": enabled,
             "holding": _holds.get(pid, True),
             "connected": bool(running and pid in wanted_platforms() and not err),
-            "last_message_at": _last_msg.get(p["channel"], 0),
+            "connection_verified": verified,
+            "connection_source": "recent_message" if verified else "unconfirmed",
+            "last_message_at": last_message,
             "error": err[:200],
         }
     return {

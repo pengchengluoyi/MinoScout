@@ -79,6 +79,8 @@ present 的层就装，不 present 的层原地不动。
 
 ## 5. 安装布局
 
+`bootstrap.sh`（macOS/Linux）和 `bootstrap.ps1`（Windows PowerShell）随 Release 同时发布，使用 manifest 的精确系统/架构条目，缺包或不支持的架构明确失败，不回退为其他架构。两种入口均在启动服务前合并配置，保留已有身份、长期凭证和其他设置；短期安装凭证只写入待绑定字段，注册确认后才替换长期凭证。Windows 配置以 APPDATA 为默认目录，兼容已存在的 LOCALAPPDATA 配置；计划任务明确使用同一配置目录。安装成功仅代表文件和服务完成，账号接入结果在 Workbench 查看。
+
 ```
 $PREFIX/bin/
 ├── mino-scout          ← runtime 层

@@ -63,6 +63,10 @@ def _apply_registered_credentials(reg: P.Registered, core: ScoutCore, transport:
     if new_tok:
         cfg["token"] = new_tok
         transport.token = new_tok
+        if cfg.get("pending_nexus_url"):
+            cfg["nexus_url"] = cfg["pending_nexus_url"]
+        cfg.pop("pending_install_token", None)
+        cfg.pop("pending_nexus_url", None)
         changed = True
     if changed:
         save_config(cfg)
@@ -309,6 +313,17 @@ class NodeTransport:
             raise RuntimeError("REGISTER 没等到 REGISTERED")
         reg: P.Registered = reply.payload
         if not reg.accepted:
+            from mino_scout.config import load_config, nexus_ws_url, save_config
+
+            cfg = load_config()
+            if cfg.get("pending_install_token") == self.token:
+                cfg.pop("pending_install_token", None)
+                cfg.pop("pending_nexus_url", None)
+                save_config(cfg)
+                self.token = str(cfg.get("token") or "")
+                self.nexus_url = nexus_ws_url(str(cfg.get("nexus_url") or "")) or self.nexus_url
+                if not self.token:
+                    self.request_shutdown()
             # 不要立刻重试 —— 退避由 run_forever 负责（协议 §4.2）
             raise RuntimeError(f"Nexus 拒绝注册: {reg.reason or '未给原因'}")
         if reg.protocol_version != P.PROTOCOL_VERSION:

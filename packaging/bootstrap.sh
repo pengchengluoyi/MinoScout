@@ -29,7 +29,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$TOKEN" ]]; then
-  echo "缺少 --token（在 Mino Studio 复制安装命令）" >&2
+  echo "缺少 --token（在 Workbench 的 Scout 节点页复制安装命令）" >&2
   exit 2
 fi
 
@@ -57,7 +57,7 @@ OS="$(uname -s)"
 case "$OS" in
   Darwin) SCOUT_OS="darwin" ;;
   Linux) SCOUT_OS="linux" ;;
-  MINGW*|MSYS*|CYGWIN*) SCOUT_OS="win32" ;;
+  MINGW*|MSYS*|CYGWIN*) echo "Windows 请使用 PowerShell 安装命令" >&2; exit 1 ;;
   *) echo "暂不支持 OS: $OS" >&2; exit 1 ;;
 esac
 
@@ -74,13 +74,16 @@ trap 'rm -f "$MANIFEST_JSON" "${ZIP_PATH:-}"' EXIT
 curl -fsSL "$MANIFEST_URL" -o "$MANIFEST_JSON"
 
 if command -v jq >/dev/null 2>&1; then
-  IFS=$'\t' read -r ZIP_URL ZIP_SHA ZIP_NAME APP_VER <<<"$(jq -r --arg os "$SCOUT_OS" --arg arch "$SCOUT_ARCH" '
+  IFS='|' read -r ZIP_URL ZIP_SHA ZIP_NAME APP_VER <<<"$(jq -r --arg os "$SCOUT_OS" --arg arch "$SCOUT_ARCH" '
+    def norm_os: ascii_downcase | if . == "macos" or . == "mac" then "darwin" elif . == "windows" or . == "win" then "win32" else . end;
+    def norm_arch: ascii_downcase | if . == "aarch64" then "arm64" elif . == "amd64" or . == "x86_64" then "x64" else . end;
+    .version as $version |
     (.items // [.])[]
-    | select((.os|ascii_downcase)==($os|ascii_downcase) and ((.arch|ascii_downcase)==($arch|ascii_downcase) or (.arch|ascii_downcase)=="x64"))
-    | [.url, (.sha256//""), (.filename//"scout-installer"), (.version//"")]
-    | @tsv' "$MANIFEST_JSON" | head -1)"
+    | select((.os|norm_os)==$os and (.arch|norm_arch)==$arch)
+    | [.url, (.sha256//""), (.filename//"scout-installer"), (.version//$version//"")]
+    | join("|")' "$MANIFEST_JSON" | head -1)"
 else
-IFS=$'\t' read -r ZIP_URL ZIP_SHA ZIP_NAME APP_VER <<<"$(python3 - "$MANIFEST_JSON" "$SCOUT_OS" "$SCOUT_ARCH" <<'PY'
+IFS='|' read -r ZIP_URL ZIP_SHA ZIP_NAME APP_VER <<<"$(python3 - "$MANIFEST_JSON" "$SCOUT_OS" "$SCOUT_ARCH" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -100,7 +103,9 @@ def norm_arch(v):
     v = str(v or "").lower()
     if v in ("arm64", "aarch64"):
         return "arm64"
-    return "x64"
+    if v in ("x64", "amd64", "x86_64"):
+        return "x64"
+    return v
 
 def pick(row):
     if not row or not row.get("url"):
@@ -115,7 +120,8 @@ if isinstance(items, list):
             row = pick(it)
             break
 else:
-    row = pick(manifest)
+    if norm_os(manifest.get("os")) == want_os and norm_arch(manifest.get("arch")) == want_arch:
+        row = pick(manifest)
 
 if not row:
     raise SystemExit(f"manifest 里没有 {want_os}-{want_arch} 安装包")
@@ -124,13 +130,13 @@ url = str(row["url"])
 sha = str(row.get("sha256") or "")
 name = str(row.get("filename") or url.split("?")[0].split("/")[-1])
 ver = str(row.get("version") or version)
-print("\t".join([url, sha, name, ver]))
+print("|".join([url, sha, name, ver]))
 PY
 )"
 fi
 
 if [[ -z "$ZIP_URL" ]]; then
-  echo "无法从 manifest 解析安装包 URL" >&2
+  echo "manifest 里没有 ${SCOUT_OS}-${SCOUT_ARCH} 安装包，请选择受支持的目标电脑" >&2
   exit 1
 fi
 
@@ -164,21 +170,22 @@ if [[ -z "$INSTALL_ROOT" ]]; then
 fi
 INSTALL_DIR="$(dirname "$INSTALL_ROOT")"
 
-echo "→ 安装到 ${PREFIX}"
-( cd "$INSTALL_DIR" && ./install.sh )
-
 CONFIG_PATH="${PREFIX}/config.json"
 mkdir -p "$PREFIX"
 if command -v jq >/dev/null 2>&1; then
   CFG_BASE="{}"
   [[ -f "$CONFIG_PATH" ]] && CFG_BASE="$(cat "$CONFIG_PATH")"
+  if ! jq -e 'type == "object"' <<<"$CFG_BASE" >/dev/null; then
+    echo "现有 Scout 配置无法解析，请检查 ${CONFIG_PATH}；原配置已保留" >&2
+    exit 1
+  fi
   STUDIO_CLEAN=""
   if [[ -n "$STUDIO_ID" ]]; then
     STUDIO_CLEAN="$(printf '%s' "$STUDIO_ID" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]')"
   fi
   jq --arg nexus "$NEXUS_URL" --arg token "$TOKEN" --arg ver "$APP_VER" --arg studio "$STUDIO_CLEAN" '
-    .nexus_url = ($nexus | rtrimstr("/"))
-    | .token = $token
+    .pending_nexus_url = ($nexus | rtrimstr("/"))
+    | .pending_install_token = $token
     | .version = $ver
     | (if $studio != "" then .studio_id = $studio else . end)
   ' <<<"$CFG_BASE" > "${CONFIG_PATH}.tmp"
@@ -193,11 +200,13 @@ cfg = {}
 p = Path(path)
 if p.is_file():
     try:
-        cfg = json.loads(p.read_text(encoding="utf-8"))
+        cfg = json.loads(p.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
-        cfg = {}
-cfg["nexus_url"] = nexus.rstrip("/")
-cfg["token"] = token
+        raise SystemExit("现有 Scout 配置无法解析；原配置已保留")
+if not isinstance(cfg, dict):
+    raise SystemExit("Scout 配置必须是对象；原配置已保留")
+cfg["pending_nexus_url"] = nexus.rstrip("/")
+cfg["pending_install_token"] = token
 if studio:
     cfg["studio_id"] = "".join(c for c in studio.lower() if c.isalnum())
 cfg["version"] = version
@@ -210,6 +219,9 @@ PY
 fi
 
 echo "→ 配置已写入 ${CONFIG_PATH}"
+chmod 600 "$CONFIG_PATH"
+echo "→ 安装到 ${PREFIX}"
+( cd "$INSTALL_DIR" && bash ./install.sh )
 
 SCOUT_BIN="${PREFIX}/bin/mino-scout"
 if [[ -x "$SCOUT_BIN" ]]; then
@@ -226,4 +238,4 @@ if [[ -x "$SCOUT_BIN" ]]; then
 fi
 
 echo "→ 执行 ${SCOUT_BIN} status 查看服务状态"
-echo "Mino Scout ${APP_VER} 安装完成（runtime+app）。Chromium / ADB Keyboard 将在 Scout 首次连上 Nexus 后自动下载。"
+echo "Mino Scout ${APP_VER} 安装完成。账号绑定结果请在 Workbench 查看；拒绝原因见 Scout 日志。Chromium / ADB Keyboard 将在首次接入后自动下载。"

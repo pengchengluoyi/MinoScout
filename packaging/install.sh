@@ -18,6 +18,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 
+case "$(uname -s)" in
+  Darwin|Linux) ;;
+  *) echo "此脚本仅支持 macOS / Linux；Windows 请使用 install.ps1" >&2; exit 1 ;;
+esac
+
 if [[ "$(uname -s)" == "Darwin" ]]; then
   PREFIX="${MINO_SCOUT_HOME:-$HOME/Library/Application Support/MinoScout}"
   LOG_DIR="$HOME/Library/Logs/MinoScout"
@@ -431,6 +436,6 @@ if [[ -f "$DEST/layers.txt" ]]; then
   echo "Installed layers:"
   sed 's/^/  /' "$DEST/layers.txt"
 fi
-echo "Config file (written by Mino Studio): $PREFIX/config.json"
+echo "Config file (existing identity and credentials preserved): $PREFIX/config.json"
 echo "Binary: $BIN"
 echo "Control: $BIN status | $BIN stop"

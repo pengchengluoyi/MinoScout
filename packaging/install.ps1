@@ -13,10 +13,15 @@
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+if ($env:OS -ne "Windows_NT") { throw "此脚本仅支持 Windows" }
 if ($env:MINO_SCOUT_HOME) {
   $Prefix = $env:MINO_SCOUT_HOME
 } else {
   $Prefix = Join-Path $env:APPDATA "MinoScout"
+  $legacyPrefix = Join-Path $env:LOCALAPPDATA "MinoScout"
+  if (-not (Test-Path (Join-Path $Prefix "config.json")) -and (Test-Path (Join-Path $legacyPrefix "config.json"))) {
+    $Prefix = $legacyPrefix
+  }
 }
 
 $Logs = Join-Path $Prefix "logs"
@@ -238,7 +243,11 @@ if ($env:MINO_SCOUT_UPDATING) {
   } catch { $isAdmin = $false }
 
   try {
-    $action = New-ScheduledTaskAction -Execute $Bin -WorkingDirectory $Prefix
+    $launcher = Join-Path $Prefix "run-scout.ps1"
+    $homeLiteral = $Prefix.Replace("'", "''")
+    $binLiteral = $Bin.Replace("'", "''")
+    "`$env:MINO_SCOUT_HOME = '$homeLiteral'`r`n& '$binLiteral' run" | Set-Content -LiteralPath $launcher -Encoding UTF8
+    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`"" -WorkingDirectory $Prefix
     if ($isAdmin) {
       $trigger = New-ScheduledTaskTrigger -AtStartup
       $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0
@@ -269,6 +278,6 @@ if (Test-Path -LiteralPath $installed) {
   Write-Host "Installed layers:"
   foreach ($line in Get-Content -LiteralPath $installed) { Write-Host "  $line" }
 }
-Write-Host "Config file (written by Mino Studio): $(Join-Path $Prefix 'config.json')"
+Write-Host "Config file (existing identity and credentials preserved): $(Join-Path $Prefix 'config.json')"
 Write-Host "Binary: $Bin"
 Write-Host "Control: $Bin status | $Bin stop"

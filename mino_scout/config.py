@@ -26,7 +26,11 @@ def config_dir() -> Path:
     if override:
         return Path(override).expanduser().resolve()
     if os.name == "nt":
-        return Path(os.environ.get("APPDATA") or Path.home()) / "MinoScout"
+        current = Path(os.environ.get("APPDATA") or Path.home()) / "MinoScout"
+        legacy = Path(os.environ.get("LOCALAPPDATA") or current.parent) / "MinoScout"
+        if not (current / "config.json").is_file() and (legacy / "config.json").is_file():
+            return legacy
+        return current
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / "MinoScout"
     xdg = str(os.environ.get("XDG_CONFIG_HOME") or "").strip()
@@ -44,7 +48,7 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
     if not target.is_file():
         return {}
     try:
-        data = json.loads(target.read_text(encoding="utf-8"))
+        data = json.loads(target.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -171,10 +175,10 @@ def resolve_runtime(*, nexus: str = "", token: str = "", config: dict[str, Any] 
     if flag_nexus:
         ws = nexus_ws_url(flag_nexus)
     else:
-        ws = nexus_ws_url(str(cfg.get("nexus_url") or ""))
+        ws = nexus_ws_url(str(cfg.get("pending_nexus_url") or cfg.get("nexus_url") or ""))
     if not ws:
         ws = DEFAULT_NEXUS_WS
-    tok = flag_token or str(cfg.get("token") or "").strip()
+    tok = flag_token or str(cfg.get("pending_install_token") or cfg.get("token") or "").strip()
     return ws, tok
 
 

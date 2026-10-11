@@ -135,6 +135,10 @@ Nexus 收到后：`provides` ∩ 能力目录 → 该节点可执行的 capabili
 | `node_id` | 可选。Nexus 重分配 id 时下发；Scout 写入 `config.scout_id` |
 | `node_token` | 可选。首次用安装凭证 REGISTER 成功后换发的长期 token；Scout 写入 `config.token` 并替换安装凭证 |
 
+安装凭证由登录账号签发，15 分钟有效。首次注册在 SQLite 同一事务内绑定账号和节点、消费凭证并生成独立长期凭证；重复登记仅允许同一节点在有效期内恢复同一长期凭证。不同节点使用已消费凭证、无效/过期/吊销凭证、长期凭证与 node_id 不匹配及跨账号重装必须拒绝。拒绝后关闭连接（1008），不接受任意非空或共享环境 token。`studio_id` 仅兼容，不授予账号权限。
+
+Scout 重装保留 `scout_id` 和已有长期 token，先以 `pending_install_token`、`pending_nexus_url` 尝试本次绑定；成功持久化长期凭证后清理临时字段。明确拒绝时清理临时字段并恢复原账号连接；新机器没有旧凭证则停止等待用户重新生成命令。这里复用现有 REGISTER/REGISTERED 字段，协议版本及 golden fixtures 不变。
+
 `accepted: false` 时必须给 `reason`，Scout 记录后按退避重连（不要立刻重试，避免打爆）。
 
 ### 4.3 `HEARTBEAT`（S→N，不需 ACK）
@@ -171,7 +175,9 @@ Nexus 收到后：`provides` ∩ 能力目录 → 该节点可执行的 capabili
 
 `host` 可省略。旧 Scout 不带时，列表功耗格显示「—」。`mode` 为 `running` 或 `asleep`。`power_source` 为 `ac` / `battery`。`charging` 为 `charging` / `not charging` / `charged` / `discharging`。`inhibit` 表示睡眠抑制还在（macOS 上即 `caffeinate` 还活着）。`children` 只数本进程的子进程。
 
-`plugins` 可省略。省略表示这台 Scout 还不认识插件状态，网页显示「需更新后才能配置插件」。每项必有 `class` / `id` / `installed` / `configured`。非密钥明文放在 `values`（如 Gmail `inbox_address`），已写入保险库的字段名放在 `saved_secrets`。密钥值不上报。`class` 为 `cli` / `mcp` / `bot` / `mail`。`REGISTER` 使用同一份列表。
+`plugins` 可省略。省略表示这台 Scout 还不认识插件状态，网页显示「需更新后才能配置插件」。每项必有 `class` / `id` / `installed` / `configured`。非密钥明文放在 `values`（如 Gmail `inbox_address`），已写入保险库的字段名放在 `saved_secrets`。密钥值不上报。`class` 为 `cli` / `mcp` / `bot` / `mail` / `im`。`REGISTER` 使用同一份列表。
+
+LangBot（`class=im,id=langbot`）的 `status` 描述进程，`platforms[平台]` 描述渠道，各含 `enabled/holding/connected/error/last_message_at`。新增可选的 `connection_verified: bool` 和 `connection_source: recent_message|unconfirmed`：`connected` 保留旧客户端的进程与配置判定，只有 `connection_verified=true` 才能展示真实连接；字段缺失或 false 时显示「待确认」，不能仅凭配置、安装或进程推断在线。当前确认来源为本次进程启动后 120 秒内收到的真实渠道消息，超期重新待确认；不能提供适配器持续连接保证。Nexus 原样保留这些字段，再统一输出规范化 `im_channels`。微信与普通通知机器人不混算。此为可选字段扩展，协议版本保持 2。
 
 `runtime_capabilities` 可省略。省略表示这台正在运行的进程没有上报输入契约，Nexus 不凭版本号猜测它是否支持当前焦点输入。列表只含执行器实际实现的组合：`id`、`executor`、`platform`、`contract_version`、`supported_combinations`（`target_mode` + `write_modes`）。`REGISTER` 与 `HEARTBEAT` 使用同一份列表；心跳带上它，重启后的新进程才会被当成支持新契约。
 
@@ -433,7 +439,9 @@ sequenceDiagram
 契约真源：`tests/fixtures/protocol/`。两仓必须一致。
 
 ```
-fixtures_sha256 = 58f4603fbac7343ff2e51e905bfaf37fa3163c29ac0b399d1439edfe28ed5320
+fixtures_sha256 = 1d84d3b234a00b5f91c3eee1db426d9dff6fbcad76fc4f4f227493af4303a771
 ```
 
 两仓各自确认：① `protocol.py` 能 round-trip 全部 fixture；② fixture 目录哈希与上面记录一致。
+
+哈希算法：按 JSON 文件名字典序拼接每份 `文件名 UTF-8 + 换行 + 原始文件字节`，再取 SHA-256。
