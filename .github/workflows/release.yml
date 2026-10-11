@@ -74,10 +74,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 稳定前只打本机 Studio 会用的包：Apple Silicon → darwin-arm64。
-        # 恢复全平台时改回：
-        # os: [macos-latest, macos-15-intel, windows-latest, ubuntu-latest]
-        os: [macos-latest]
+        # 在各自平台原生冻结：macOS Apple Silicon + Windows x64。
+        os: [macos-latest, windows-latest]
 
     steps:
       - uses: actions/checkout@v5
