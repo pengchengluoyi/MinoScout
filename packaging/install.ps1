@@ -1,4 +1,4 @@
-# Install Mino Scout next to config.json and register a startup task.
+﻿# Install Mino Scout next to config.json and register a startup task.
 #
 # 分层安装：zip 里带哪几层就装哪几层，没带的层原地不动。与 install.sh 一一对应。
 #
@@ -9,6 +9,7 @@
 #
 # **刻意不再整体删掉 bin**：浏览器层实测 781 MB、占安装体积 78%，而它几乎从不变。
 # 层与目录的映射见 scripts/layers.py 的 PAYLOAD_DIRS —— 改那里要同步改这里和 install.sh。
+# Keep UTF-8 BOM: Windows PowerShell 5.1 otherwise reads this file as ANSI.
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
