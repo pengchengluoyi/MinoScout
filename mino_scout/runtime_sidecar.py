@@ -47,6 +47,13 @@ def note_connection(state: str, *, error: str = "", connected=False, registered=
         write_runtime_sidecar()
 
 
+def note_plugin_access(ready: bool, warning: str = "") -> None:
+    with _lock:
+        _connection["plugins_ready"] = bool(ready)
+        _connection["plugin_warning"] = warning[:200] if not ready else ""
+        write_runtime_sidecar()
+
+
 def read_runtime_sidecar(*, expect_pid: int = 0) -> dict[str, Any]:
     try:
         data = json.loads(sidecar_path().read_text(encoding="utf-8"))

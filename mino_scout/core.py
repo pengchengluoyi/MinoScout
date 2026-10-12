@@ -127,6 +127,7 @@ class ScoutCore:
         self.node_id = sanitize_scout_id(node_id) or resolve_scout_id()
         self.scout_id = self.node_id
         self.executors = executors
+        self._plugins_ready = False
         self.router = Router(executors)
         self._started = time.time()
         self._lock = threading.Lock()
@@ -768,7 +769,7 @@ class ScoutCore:
             active_runs=active,
             device_workload=workload,
             scout_version=report_scout_version(),
-            plugins=status_list(self.node_id),
+            plugins=status_list(self.node_id) if self._plugins_ready else [],
             runtime_capabilities=runtime_input_capabilities(),
         )
 

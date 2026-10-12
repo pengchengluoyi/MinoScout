@@ -116,3 +116,7 @@ Windows 计划任务使用安装用户的 `Interactive` 登录态和 `Limited` �
 `mino-scout status` 的 `running` 仅表示进程存活；网页在线需要该进程成功连接并注册到 Nexus。检查 `connection.state`、`connected`、`registered`、`last_error` 与最近心跳。`registered` / `heartbeat` 表示完成注册；`registration_rejected` 保留拒绝原因，`stale` 表示诊断超过 90 秒未更新，旧进程未上报时显示 `unknown`。升级磁盘载荷后还需要重启才能使用新诊断。不要因此重新建库、重绑账号或清空配置。
 
 `mino-scout probe` 显示完整设备描述及桌面会话、权限和执行能力。macOS 需要当前登录桌面以及辅助功能、屏幕录制权限；Windows 需要目标用户的交互桌面，SYSTEM 后台任务不能执行 PC 操作。Linux 本版本仅显示真实可用能力，不宣称已实现原生桌面执行。
+
+## 0.1.77 旧插件隔离与节点在线
+
+本版本修正已接受 REGISTER 后因本地旧插件配置待认领而断线的问题：保留节点身份和旧插件文件，节点继续连接并上报心跳；旧插件保持停用，不上传历史插件清单或消息，插件操作返回 blocked。管理员需通过明确的插件归属维护流程处理旧配置，重装或删除配置不是解法。

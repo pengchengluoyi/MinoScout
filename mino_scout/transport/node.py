@@ -52,9 +52,6 @@ def _apply_registered_credentials(reg: P.Registered, core: ScoutCore, transport:
     from mino_scout.config import load_config, sanitize_scout_id, save_config
 
     cfg = load_config()
-    owner = str(getattr(reg, "owner_user_id", "") or "").strip()
-    from mino_scout.plugins.state import verify_local_owner
-    verify_local_owner(owner, transport.nexus_url)
     changed = False
     new_id = sanitize_scout_id(str(getattr(reg, "node_id", "") or ""))
     if new_id and new_id != core.node_id:
@@ -298,6 +295,8 @@ class NodeTransport:
     async def _register(self) -> None:
         import platform
 
+        self.core._plugins_ready = False
+
         def _reexec_if_stale() -> bool:
             from mino_scout.stale_process import ensure_process_matches_app_layer
 
@@ -356,7 +355,6 @@ class NodeTransport:
                 f"协议版本不一致：Scout v{P.PROTOCOL_VERSION} vs Nexus v{reg.protocol_version}。"
                 "按协议 §7 不做降级协商"
             )
-        self._connection("registered", connected=True, registered=True)
         self._session_token = reg.session_token
         self.heartbeat_sec = reg.heartbeat_interval_sec or self.heartbeat_sec
         avail = [e.id for e in execs if e.available]
@@ -367,11 +365,32 @@ class NodeTransport:
         )
         for w in reg.warnings or []:
             SLog.w(TAG, f"Nexus: {w}")
+        from mino_scout.plugins.state import verify_local_owner
+
+        plugin_warning = ""
+        try:
+            verify_local_owner(str(getattr(reg, "owner_user_id", "") or ""), self.nexus_url)
+        except PermissionError as exc:
+            plugin_warning = str(exc)
+            SLog.w(TAG, f"仅隔离历史插件；节点继续在线: {exc}")
+        else:
+            self.core._plugins_ready = True
         _apply_registered_credentials(reg, self.core, self)
+        self._connection("registered", connected=True, registered=True)
+        from mino_scout.runtime_sidecar import note_plugin_access
+
+        try:
+            note_plugin_access(self.core._plugins_ready, plugin_warning)
+        except OSError as exc:
+            SLog.w(TAG, f"插件状态写入失败: {type(exc).__name__}")
         from mino_scout.plugins import wechat as wechat_plugin, langbot_host
         wechat_plugin.bind_node(self.core.node_id)
-        wechat_plugin.ensure_listener()
-        langbot_host.reconcile(self.core.node_id)
+        if self.core._plugins_ready:
+            wechat_plugin.ensure_listener()
+            langbot_host.reconcile(self.core.node_id)
+        else:
+            wechat_plugin.stop_listener()
+            langbot_host.shutdown()
         try:
             from mino_scout.runtime_sidecar import write_runtime_sidecar
 
@@ -387,9 +406,10 @@ class NodeTransport:
         self._seen_register = True
         self._last_devices = {d.sn: d for d in devices}
         # 重连成功：补发 Nexus 不可达期间暂存的入站事件（不阻塞注册流程）
-        task = asyncio.create_task(self._emit_im_message(None))
-        self._inflight.add(task)
-        task.add_done_callback(self._inflight.discard)
+        if self.core._plugins_ready:
+            task = asyncio.create_task(self._emit_im_message(None))
+            self._inflight.add(task)
+            task.add_done_callback(self._inflight.discard)
 
     async def _emit_device_delta(
         self, prev: dict[str, P.DeviceManifest], now: list[P.DeviceManifest],
@@ -623,6 +643,8 @@ class NodeTransport:
         """发 node.plugin_im_message。ws 不可用 / 没拿到 RESULT 就进 im_pending；
         任何一次调用（含重连后的 im=None）都会先按时间顺序补发积压。
         """
+        if not self.core._plugins_ready:
+            return
         from mino_scout.plugins import im_store
 
         if self._im_lock is None:
@@ -648,7 +670,7 @@ class NodeTransport:
                     return
 
     async def _emit_plugin_progress(self, payload: dict) -> None:
-        if self._ws is None:
+        if self._ws is None or not self.core._plugins_ready:
             return
         await self._send_framework(
             "node.plugin_progress",
