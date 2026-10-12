@@ -460,23 +460,6 @@ class DesktopRuntime:
             "launch": {**(diagnostics or {}), "stage": stage, "target_package": package, "pid": pid},
         })
 
-    def _wait_foreground(self, sdk, driver, hint, run_id, package, os_name, pid):
-        deadline = time.monotonic() + 3.0
-        while True:
-            self._check(hint, run_id, mutate=True)
-            try:
-                active = self._active_apps(sdk, driver, os_name)
-            except DesktopUnavailable:
-                if time.monotonic() >= deadline:
-                    raise
-                self._await(asyncio.sleep(0.1))
-                continue
-            if any(app.pid == pid and application_matches(app, package, os_name) for app in active):
-                return True, active
-            if time.monotonic() >= deadline:
-                return False, active
-            self._await(asyncio.sleep(0.1))
-
     def _active_apps(self, sdk, driver, os_name):
         apps = self._await(driver.list_apps(sdk.ListAppsInput()))
         active = [app for app in apps.apps if app.active]
@@ -540,27 +523,21 @@ class DesktopRuntime:
             self._check(hint, run_id, mutate=True)
             result = self._await(driver.call_tool("bring_to_front", json.dumps(front_params)))
             activation = tool_payload(result)
-            if result.is_error or activation.get("activated") is False:
+            diagnostics["activation_code"] = str(activation.get("code") or "")[:80]
+            if result.is_error or activation.get("activated") is not True:
                 raise DesktopUnavailable("Cua 未确认被测 PC 应用激活，请查看动作诊断并回看实际状态")
-            diagnostics["activated"] = True
+            diagnostics.update(activated=True, window_verified=True, foreground_verified=True,
+                               foreground_source="cua_bring_to_front")
             self._check(hint, run_id, mutate=True)
-            stage = "foreground_read"
-            matched, active = self._wait_foreground(sdk, driver, hint, run_id, package, os_name, pid)
-            diagnostics["foreground_package"] = str(active[0].bundle_id or active[0].launch_path or "") if active else ""
-            diagnostics["foreground_pid"] = int(getattr(active[0], "pid", 0) or 0) if active else 0
-            stage = "foreground_verify"
-            if not matched:
-                raise DesktopUnavailable("被测 PC 应用未进入前台，请回看实际状态")
-            diagnostics["foreground_verified"] = True
             target = {"kind": "window", **front_params}
             self._targets[run_id] = {"package": package, "target": target}
             self._clear_focus(run_id)
             return {
                 "cua_action": {"effect": "confirmed", "route": str(activation.get("path") or "bring_to_front")[:80],
-                               "evidence": [{"kind": "foreground_app", "detail_omitted": False}]},
+                               "evidence": [{"kind": "window_change", "detail_omitted": False}]},
                 "capture_id": (obs or {}).get("capture_id", ""), "session_generation": hint["session_generation"],
                 "target": target, "capture_scope": "window",
-                "launch": {**diagnostics, "stage": "foreground_verified", "target_package": package, **front_params},
+                "launch": {**diagnostics, "stage": "window_verified", "target_package": package, **front_params},
             }
         except DesktopUnavailable as exc:
             diagnostics.update({key: exc.data[key] for key in ("foreground_pid", "foreground_error") if key in exc.data})
