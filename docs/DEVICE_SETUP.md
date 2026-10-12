@@ -111,6 +111,19 @@ Windows 计划任务使用安装用户的 `Interactive` 登录态和 `Limited` �
 
 当前完成的是协议、HTTP/WebSocket 与 SDK 替身的隔离联调，尚未验收真实原生应用截图、点击、输入和跨 OS 部署，不能标为全部 PC 已支持。
 
+### 在 Workbench 启动 PC 应用测试
+
+1. 在 Scout 所在电脑登录并解锁桌面，确认被测应用已经安装。执行 `mino-scout status` 检查 Nexus 连接和注册，再执行 `mino-scout probe`。PC 设备必须同时显示 `desktop_state=ready` 和 `channels.desktop=connected`；节点在线或进程存活不足以开始桌面测试。
+2. macOS 若显示 `permission_required`，在系统设置中给实际运行 Scout 的程序授权屏幕录制和辅助功能，再按系统提示重启。`driver_missing` / `driver_incompatible` 表示需要包含匹配 Cua Driver 0.34.1 的发行包；源码开发使用 `pip install ".[desktop]"`。Windows 在测试用户的已登录交互桌面运行，RDP 保持连接。
+3. 在 Workbench 打开应用的配置页，添加 macOS 或 Windows 被测应用渠道，填写“启动标识”并保存。macOS 填 bundle ID，例如 `com.apple.TextEdit`；可用 `defaults read /System/Applications/TextEdit.app/Contents/Info CFBundleIdentifier` 查询，第三方应用替换为其实际 `.app` 路径。Windows 填实际完整 EXE 路径，例如 `C:\Windows\System32\notepad.exe`，或已安装打包应用的 AUMID；可用 PowerShell `Get-StartApps` 查找。显示名称、`.app` 路径和模糊进程名不能替代 macOS bundle ID。
+4. 先建一条冒烟用例：前置条件为应用已安装且桌面已解锁；步骤写“启动并聚焦被测应用，确认主窗口出现，点击输入框并输入测试文本，再核对显示内容”。测试应用的空白文档可用作输入目标，避免首次就在真实业务数据上操作。Desktop 的 `launch_app` 由 Scout 调用原生驱动启动和聚焦，并回读前台身份；PC 不使用 Android 的清缓存或 force-stop。
+5. 在用例运行栏或“新建任务”中，选择对应被测应用渠道和运行环境，执行方式选择“看图 visual”，设备选择该节点的“PC 桌面”，勾选用例并启动。首版 Desktop 不支持 DOM 模式，同一桌面一次只运行一个任务。
+6. 在任务详情查看截图和动作结果，在 session log 查看 `tool/call` / `tool/result`；结果中的 `executor_used=desktop` 以及 `scout` / `attempts` / `desktop` 元数据可用于核对派单节点和会话。Scout 的进程启动、注册与重连日志在本机，不属于某条用例的 session log。
+
+## 0.1.78 macOS 图形会话检测
+
+macOS 会话探测读取系统返回的 `kCGSSessionUserIDKey`、`kCGSSessionOnConsoleKey` 和 `kCGSSessionAuditIDKey`，登录完成字段为 `kCGSessionLoginDoneKey`。前三项拼写少一个 `S` 会将已登录的桌面误判为 `no_session`。修复源码后，已安装的 app 层还需更新并重启进程才会生效；不能用重新绑定节点或清空配置处理这一问题。
+
 ## 0.1.76 连接与桌面诊断
 
 `mino-scout status` 的 `running` 仅表示进程存活；网页在线需要该进程成功连接并注册到 Nexus。检查 `connection.state`、`connected`、`registered`、`last_error` 与最近心跳。`registered` / `heartbeat` 表示完成注册；`registration_rejected` 保留拒绝原因，`stale` 表示诊断超过 90 秒未更新，旧进程未上报时显示 `unknown`。升级磁盘载荷后还需要重启才能使用新诊断。不要因此重新建库、重绑账号或清空配置。

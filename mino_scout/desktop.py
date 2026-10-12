@@ -70,9 +70,9 @@ def _mac_session() -> dict[str, Any]:
             cf.CFRelease(data)
         cf.CFRelease(ref)
     # A background service belonging to another user may not inject into console.
-    uid = session.get("kCGSessionUserIDKey")
-    identity = f"{uid}:{session.get('kCGSessionAuditIDKey', '')}"
-    if uid != os.getuid() or not session.get("kCGSessionOnConsoleKey") or not session.get("kCGSessionLoginDoneKey"):
+    uid = session.get("kCGSSessionUserIDKey")
+    identity = f"{uid}:{session.get('kCGSSessionAuditIDKey', '')}"
+    if uid != os.getuid() or not session.get("kCGSSessionOnConsoleKey") or not session.get("kCGSessionLoginDoneKey"):
         return {"state": "no_session", "identity": identity}
     if session.get("CGSSessionScreenIsLocked"):
         return {"state": "locked", "identity": identity + ":locked"}
