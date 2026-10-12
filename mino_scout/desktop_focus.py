@@ -74,3 +74,35 @@ class MacFocus:
 
 def probe_focus():
     return WindowsFocus() if platform.system() == 'Windows' else MacFocus()
+
+
+def mac_foreground_pid():
+    cf = ctypes.CDLL('/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation')
+    ax = ctypes.CDLL('/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices')
+    cf.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
+    cf.CFStringCreateWithCString.restype = ctypes.c_void_p
+    cf.CFRelease.argtypes = [ctypes.c_void_p]
+    ax.AXUIElementCreateSystemWide.restype = ctypes.c_void_p
+    ax.AXUIElementCopyAttributeValue.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+    ax.AXUIElementCopyAttributeValue.restype = ctypes.c_int32
+    ax.AXUIElementGetPid.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int32)]
+    ax.AXUIElementGetPid.restype = ctypes.c_int32
+    root = ax.AXUIElementCreateSystemWide()
+    name = cf.CFStringCreateWithCString(None, b'AXFocusedApplication', 0x08000100)
+    app = ctypes.c_void_p()
+    pid = ctypes.c_int32()
+    try:
+        if not root or not name:
+            raise RuntimeError('Cannot inspect native foreground application')
+        if ax.AXUIElementCopyAttributeValue(root, name, ctypes.byref(app)) != 0 or not app.value:
+            raise RuntimeError('Cannot confirm native foreground application')
+        if ax.AXUIElementGetPid(app, ctypes.byref(pid)) != 0 or pid.value <= 0:
+            raise RuntimeError('Cannot confirm native foreground process')
+        return pid.value
+    finally:
+        if app.value:
+            cf.CFRelease(app)
+        if name:
+            cf.CFRelease(name)
+        if root:
+            cf.CFRelease(root)

@@ -281,7 +281,30 @@ def capture(
         from mino_scout.desktop import get_desktop_runtime
         try:
             data = get_desktop_runtime().observe(device.extra, str(device.extra.get("run_id") or ""))
-            shot = CapturedScreen(ok=True, source="desktop", image_base64=data["image_base64"], image_mime=data["image_mime"], width=data["width"], height=data["height"], remote_detail={"capture_id": data["capture_id"], "session_generation": data["session_generation"]})
+            from PIL import Image
+            ratio = float(compress_ratio)
+            if not 1.0 <= ratio <= 10.0:
+                raise ValueError("PC 压缩比必须在 1 到 10 之间")
+            image_base64, mime = data["image_base64"], data["image_mime"]
+            width, height = data["width"], data["height"]
+            if ratio > 1.0:
+                with Image.open(BytesIO(base64.b64decode(image_base64))) as original:
+                    image = original.convert("RGB").resize(
+                        (max(1, round(original.width / ratio)), max(1, round(original.height / ratio))),
+                        Image.Resampling.LANCZOS,
+                    )
+                    output = BytesIO()
+                    image.save(output, format="JPEG", quality=90)
+                    image_base64, mime = base64.b64encode(output.getvalue()).decode("ascii"), "image/jpeg"
+                    width, height = image.size
+            shot = CapturedScreen(
+                ok=True, source="desktop", image_base64=image_base64, image_mime=mime,
+                width=width, height=height,
+                remote_detail={
+                    "capture_id": data["capture_id"], "session_generation": data["session_generation"],
+                    "capture_width": data["width"], "capture_height": data["height"], "compress_ratio": ratio,
+                },
+            )
         except Exception as exc:
             shot = CapturedScreen(ok=False, source="desktop", error=str(exc))
     elif device.is_web:

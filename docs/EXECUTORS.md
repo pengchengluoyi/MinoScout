@@ -108,3 +108,13 @@ Nexus 将 Desktop 渠道映射为 `desktop_visual`，PC 输入只派给 `desktop
 Windows 被测应用标识为完整 EXE 路径或 AUMID，macOS 为 bundle ID；不执行任意启动命令。Android 清缓存、force-stop、reset 等恢复动作不用于 Desktop。
 
 Session Log 的 `tool/result` 包含节点、实际 executor、尝试链、capture_id、session_generation、驱动 effect/route 和安全的原生 evidence 类型；恢复子动作同样记录执行诊断。`observe/screen` 保留捕获引用，Workbench 可关联前后图和请求落点。自由文本 evidence detail 不展示，避免泄露输入内容。驱动局部 verify_state 未采集时明确标注，不能把动作投递成功等同于业务断言通过。
+
+### 2026-10-12 看图模式兼容性修正
+
+macOS 启动先等待目标进程的普通窗口，再按 `pid + window_id` 调用 `bring_to_front`；调用参数遵循已锁定 SDK 的工具 schema，不向不接受 session 的启动和激活工具附加该字段。检查激活回执，再在有界等待内读回目标应用的前台状态，不重复提交启动或激活请求。Windows 继续按系统支持的 EXE/AUMID 目标及进程激活路径执行。
+
+macOS 前台读回使用 AXFocusedApplication 的原生 PID 与 Cua 返回的应用身份交叉匹配，不仅依赖 list_apps 的 active 标记；启动验证、get_foreground_app 及每次输入前采用同一读取路径，返回来源为 macos_ax。原生读回失败就阻塞，不回退到陈旧的 active 标记，也不读取控件正文。
+
+点击的 typed `ActionResult` 与输入/按键的 `ToolResult.action`、JSON 回执分别解析。`unverifiable` 表示动作已投递但效果待回看，不视作已完成业务，也不当作投递失败；额外返回 `verification_required=true`。输入摘要明确标记“已写入当前焦点”，与 Nexus 的输入投递契约一致，业务结论由下一张截图确认。拒绝、部分执行、疑似无效果仍保留各自的驱动证据。启动失败的诊断保留 stage、pid、窗口与前台标识。
+
+Desktop 图像的 `compress_ratio` 为 1–10，作用于输出图像；运行时保存的 capture 像素尺寸保持不变。截图结果保留 capture_id、session_generation、capture_width、capture_height 与实际压缩比。新截图失败会使旧观察引用失效，不能继续按陈旧图点击。

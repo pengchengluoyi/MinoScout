@@ -15,6 +15,7 @@ import ntpath
 import os
 import platform
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, is_dataclass
@@ -37,7 +38,9 @@ _REASONS = {
 
 
 class DesktopUnavailable(RuntimeError):
-    pass
+    def __init__(self, message: str, *, data: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.data = dict(data or {})
 
 
 def _mac_session() -> dict[str, Any]:
@@ -93,8 +96,9 @@ def host_session() -> dict[str, Any]:
             session = windows_session()
         else:
             session = {"state": "unsupported", "identity": os.environ.get("XDG_SESSION_ID", "unknown")}
-    except Exception:
-        session = {"state": "probe_failed", "identity": "unknown"}
+    except Exception as exc:
+        session = {"state": "probe_failed", "identity": "unknown",
+                   "probe_error": f"桌面会话检查异常（{type(exc).__name__}）；请查看 Scout 日志"}
     if session["state"] == "ready" and arch not in ("arm64", "aarch64", "x86_64", "amd64"):
         session["state"] = "unsupported"
     return {"os": os_name, "arch": arch, "hostname": platform.node(), **session}
@@ -153,7 +157,10 @@ def key_input(params: dict[str, Any], os_name: str) -> tuple[str, list[str]]:
 
 
 def action_evidence(result: Any) -> dict[str, Any]:
-    record = public_record(getattr(result, "action", None))
+    action = getattr(result, "action", None)
+    if action is None and hasattr(result, "effect"):
+        action = result
+    record = public_record(action)
     if not isinstance(record, dict):
         try:
             record = json.loads(getattr(result, "structured_json", None) or getattr(result, "raw_json", None) or "{}")
@@ -169,11 +176,21 @@ def action_evidence(result: Any) -> dict[str, Any]:
     out = {"evidence": [{"kind": str(row.get("kind") or "")[:80], "detail_omitted": bool(row.get("detail"))}
                         for row in evidence[:16] if isinstance(row, dict)]} if isinstance(evidence, list) else {}
     out.update({name: record[name] for name in ("effect", "route") if isinstance(record.get(name), str)})
+    if "route" not in out and isinstance(record.get("path"), str):
+        out["route"] = record["path"][:80]
     for name, fields in (("delivery", ("mode", "delivered_count")), ("error", ("code",)), ("escalation", ("target", "reason"))):
         child = record.get(name)
         if isinstance(child, dict):
             out[name] = {field: child[field] for field in fields if isinstance(child.get(field), (str, int))}
     return out
+
+
+def tool_payload(result: Any) -> dict[str, Any]:
+    try:
+        record = json.loads(getattr(result, "structured_json", None) or getattr(result, "raw_json", None) or "{}")
+    except (ValueError, TypeError):
+        return {}
+    return record if isinstance(record, dict) else {}
 
 
 def public_record(value: Any) -> Any:
@@ -193,10 +210,11 @@ def public_record(value: Any) -> Any:
 
 
 class DesktopRuntime:
-    def __init__(self, *, session_probe=host_session, focus_probe=None):
-        from mino_scout.desktop_focus import probe_focus
+    def __init__(self, *, session_probe=host_session, focus_probe=None, foreground_probe=None):
+        from mino_scout.desktop_focus import mac_foreground_pid, probe_focus
         self._probe = session_probe
         self._focus_probe = focus_probe or probe_focus
+        self._foreground_probe = foreground_probe or mac_foreground_pid
         self._focus = {}
         self._boot = uuid.uuid4().hex
         self._identity = ""
@@ -253,8 +271,9 @@ class DesktopRuntime:
                     state["state"] = "driver_missing"
             if self._disabled:
                 state["state"] = "probe_failed"
+                state["probe_error"] = "桌面健康检查超时且结果未知；请确认桌面状态后重启 Scout"
             return {**state, "session_key": "console", "session_generation": self._generation,
-                    "blocked_reason": _REASONS[state["state"]]}
+                    "blocked_reason": state.get("probe_error") or _REASONS[state["state"]]}
 
     def manifest(self, node_id: str) -> P.DeviceManifest:
         state = self.state()
@@ -262,8 +281,13 @@ class DesktopRuntime:
         if state["state"] == "ready":
             try:
                 self._submit(self._health, timeout=8)
-            except Exception:
-                state.update(state="probe_failed", blocked_reason=_REASONS["probe_failed"])
+            except DesktopUnavailable as exc:
+                state.update(state="probe_failed", blocked_reason=str(exc))
+            except Exception as exc:
+                from mino_scout.log import SLog
+                SLog.w("DesktopRuntime", f"桌面健康检查异常: {type(exc).__name__}")
+                state.update(state="probe_failed",
+                             blocked_reason=f"桌面健康检查异常（{type(exc).__name__}）；请查看 Scout 日志")
         ready = state["state"] == "ready"
         return P.DeviceManifest(
             sn=f"desktop:{node_id}:console", platform="desktop", model="PC 桌面",
@@ -340,22 +364,25 @@ class DesktopRuntime:
         return self._submit(self._observe, hint, run_id)
 
     def _observe(self, hint, run_id):
+        self._observations.pop(run_id, None)
         self._check(hint, run_id)
         sdk, driver = self._session(run_id or "mino-observe")
         result = self._await(driver.get_desktop_state(sdk.GetDesktopStateInput(session=run_id or "mino-observe", screenshot_out_file=None)))
         if result.is_error or not result.images:
             raise DesktopUnavailable("Cua 截图失败")
-        data = json.loads(result.structured_json or result.raw_json or "{}")
+        data = tool_payload(result)
         capture = data.get("capture_id") or (data.get("capture") or {}).get("capture_id")
-        width = data.get("screenshot_width") or data.get("width")
-        height = data.get("screenshot_height") or data.get("height")
         image = result.images[0]
-        if not width or not height:
-            from PIL import Image
-            from io import BytesIO
-            width, height = Image.open(BytesIO(base64.b64decode(image.data_base64))).size
+        from PIL import Image
+        from io import BytesIO
+        with Image.open(BytesIO(base64.b64decode(image.data_base64))) as captured:
+            width, height = captured.size
+        if (data.get("screenshot_width") not in (None, width)
+                or data.get("screenshot_height") not in (None, height)):
+            raise DesktopUnavailable("Cua 捕获尺寸与图像不一致，不能安全映射桌面坐标")
         if not capture:
             raise DesktopUnavailable("Cua 未返回捕获引用，不能安全执行桌面动作")
+        self._check(hint, run_id)
         obs = {"capture_id": capture, "width": width, "height": height,
                "image_base64": image.data_base64, "image_mime": image.mime_type,
                "session_generation": hint["session_generation"]}
@@ -363,7 +390,42 @@ class DesktopRuntime:
         return dict(obs)
 
     def action(self, capability: str, params: dict[str, Any], hint: dict[str, Any], run_id: str):
-        return self._submit(self._action, capability, params, hint, run_id)
+        return self._submit(self._action, capability, params, hint, run_id,
+                            timeout=25 if capability == "launch_app" else 15)
+
+    def _launch_failure(self, message, result, hint, obs, *, stage, package, pid=0):
+        payload = tool_payload(result)
+        evidence = action_evidence(result)
+        if not evidence.get("effect"):
+            evidence["effect"] = "partial" if payload.get("request_accepted") else "unverifiable"
+        code = str(getattr(result, "error_code", None) or payload.get("code") or payload.get("error") or stage)[:80]
+        evidence["error"] = {"code": code}
+        return DesktopUnavailable(message, data={
+            "cua_action": evidence, "capture_id": (obs or {}).get("capture_id", ""),
+            "session_generation": hint["session_generation"],
+            "launch": {"stage": stage, "target_package": package, "pid": pid},
+        })
+
+    def _wait_foreground(self, sdk, driver, hint, run_id, package, os_name):
+        deadline = time.monotonic() + 3.0
+        while True:
+            self._check(hint, run_id, mutate=True)
+            active = self._active_apps(sdk, driver, os_name)
+            if any(application_matches(app, package, os_name) for app in active):
+                return True, active
+            if time.monotonic() >= deadline:
+                return False, active
+            self._await(asyncio.sleep(0.1))
+
+    def _active_apps(self, sdk, driver, os_name):
+        apps = self._await(driver.list_apps(sdk.ListAppsInput()))
+        if os_name == "macos":
+            try:
+                pid = self._foreground_probe()
+            except Exception as exc:
+                raise DesktopUnavailable("无法读取 Mac 原生前台进程，请检查辅助功能权限并重新观察") from exc
+            return [app for app in apps.apps if app.pid == pid]
+        return [app for app in apps.apps if app.active]
 
     def _action(self, capability, params, hint, run_id):
         self._check(hint, run_id, mutate=capability != "get_foreground_app")
@@ -371,19 +433,21 @@ class DesktopRuntime:
         sdk, driver = self._session(run_id)
         target = sdk.ActionTarget.DESKTOP("primary")
         if capability == "get_foreground_app":
-            apps = self._await(driver.list_apps(sdk.ListAppsInput()))
-            active = [a for a in apps.apps if a.active]
+            active = self._active_apps(sdk, driver, os_name)
             package = str(hint.get("target_package") or "")
-            return {"apps": [public_record(a) for a in active],
+            return {"apps": [{**public_record(a), "active": True} for a in active],
                     "target_active": bool(package and any(application_matches(a, package, os_name) for a in active)),
+                    "foreground_source": "macos_ax" if os_name == "macos" else "cua",
                     "foreground_package": str(getattr(active[0], "bundle_id", "") or "") if active else ""}
         obs = self._observations.pop(run_id, None)  # every attempt consumes it
+        if capability != "input_text":
+            self._clear_focus(run_id)
         if capability != "launch_app" and (not obs or obs["session_generation"] != hint["session_generation"]):
             raise DesktopUnavailable("桌面动作需要重新截图，旧捕获引用已消费或失效")
         if capability != "launch_app":
             package = str(hint.get("target_package") or "")
-            apps = self._await(driver.list_apps(sdk.ListAppsInput()))
-            if not package or not any(a.active and application_matches(a, package, os_name) for a in apps.apps):
+            active = self._active_apps(sdk, driver, os_name)
+            if not package or not any(application_matches(a, package, os_name) for a in active):
                 raise DesktopUnavailable("不能确认被测应用处于前台，请检查应用标识和权限，再重新观察并激活目标应用")
             self._check(hint, run_id, mutate=True)
         if capability in ("tap_xy", "tap_element"):
@@ -422,26 +486,63 @@ class DesktopRuntime:
             package = str(hint.get("target_package") or "")
             if not package or str(params.get("package") or package) != package:
                 raise DesktopUnavailable("请配置被测 PC 应用标识，不能切换到其他应用")
-            result = self._await(driver.call_tool("launch_app", json.dumps({**application_target(package, os_name), "session": run_id})))
+            result = self._await(driver.call_tool("launch_app", json.dumps(application_target(package, os_name))))
             if result.is_error:
-                raise DesktopUnavailable("Cua 无法启动被测应用")
-            launched = json.loads(result.structured_json or result.raw_json or "{}")
+                raise self._launch_failure("Cua 无法启动被测应用，请查看启动诊断", result, hint, obs,
+                                           stage="launch_app", package=package)
+            launched = tool_payload(result)
             pid = launched.get("pid")
-            if not pid:
-                raise DesktopUnavailable("Cua 未确认被测应用进程，请回看实际状态")
+            if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+                raise self._launch_failure("Cua 未确认被测应用进程，请回看实际状态", result, hint, obs,
+                                           stage="process_not_ready", package=package)
             self._check(hint, run_id, mutate=True)
-            result = self._await(driver.call_tool("bring_to_front", json.dumps({"pid": pid, "session": run_id})))
+            front_params = {"pid": pid}
+            if os_name == "macos":
+                windows = launched.get("windows") if isinstance(launched.get("windows"), list) else []
+                deadline = time.monotonic() + 3.0
+                while not windows:
+                    self._check(hint, run_id, mutate=True)
+                    listed = self._await(driver.list_windows(sdk.ListWindowsInput(pid=pid, on_screen_only=False)))
+                    windows = [public_record(window) for window in listed.windows
+                               if window.pid == pid and window.layer in (None, 0)]
+                    if windows or time.monotonic() >= deadline:
+                        break
+                    self._await(asyncio.sleep(0.1))
+                window = next((window for window in windows if isinstance(window, dict)
+                               and window.get("pid", pid) == pid and window.get("layer", 0) in (None, 0)
+                               and isinstance(window.get("window_id"), int) and window["window_id"] > 0), None)
+                if window is None:
+                    raise self._launch_failure("被测 Mac 应用尚无可激活窗口，请回看实际状态", result, hint, obs,
+                                               stage="window_not_ready", package=package, pid=pid)
+                front_params["window_id"] = window["window_id"]
+            result = self._await(driver.call_tool("bring_to_front", json.dumps(front_params)))
+            activation = tool_payload(result)
+            if result.is_error or (os_name == "macos" and activation.get("activated") is not True):
+                raise self._launch_failure("Cua 未确认被测 PC 应用激活，请查看动作诊断并回看实际状态", result, hint, obs,
+                                           stage="bring_to_front", package=package, pid=pid)
             self._check(hint, run_id, mutate=True)
-            apps = self._await(driver.list_apps(sdk.ListAppsInput()))
-            if not any(app.active and application_matches(app, package, os_name) for app in apps.apps):
-                raise DesktopUnavailable("被测 PC 应用未进入前台，请回看实际状态")
+            matched, active = self._wait_foreground(sdk, driver, hint, run_id, package, os_name)
+            if not matched:
+                failure = self._launch_failure("被测 PC 应用未进入前台，请回看实际状态", result, hint, obs,
+                                               stage="foreground_verify", package=package, pid=pid)
+                failure.data["launch"]["foreground_package"] = str(getattr(active[0], "bundle_id", "") or "") if active else ""
+                raise failure
+            return {
+                "cua_action": {"effect": "confirmed", "route": str(activation.get("path") or "bring_to_front")[:80],
+                               "evidence": [{"kind": "foreground_app", "detail_omitted": False}]},
+                "capture_id": (obs or {}).get("capture_id", ""), "session_generation": hint["session_generation"],
+                "launch": {"stage": "foreground_verified", "target_package": package,
+                           "foreground_source": "macos_ax" if os_name == "macos" else "cua", **front_params},
+            }
         else:
             raise DesktopUnavailable("Desktop 未实现这项能力")
         evidence = action_evidence(result)
+        if not evidence.get("effect"):
+            evidence["effect"] = "unverifiable"
         if capability in ("tap_xy", "tap_element"):
             self._clear_focus(run_id)
             ref = str(params.get("focus_ref") or "")
-            if ref.startswith(f"focus:{run_id}:") and ref.rsplit(":", 1)[-1].isdigit() and not getattr(result, "is_error", False) and evidence.get("effect") not in ("refused", "partial", "suspected_noop"):
+            if ref.startswith(f"focus:{run_id}:") and ref.rsplit(":", 1)[-1].isdigit() and not getattr(result, "is_error", False) and evidence.get("effect") in ("confirmed", "unverifiable"):
                 try:
                     self._focus[run_id] = {"ref": ref, "native": self._focus_probe()}
                 except Exception:

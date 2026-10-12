@@ -31,11 +31,14 @@ class DesktopExecutor:
                 status, error = EventStatus.BLOCKED, "桌面驱动拒绝操作，请查看 Session Log 中的动作证据"
             elif effect in ("suspected_noop", "partial"):
                 status, error = EventStatus.FAIL, f"桌面动作效果：{effect}，需要重新观察"
+            data["verification_required"] = effect in ("unverifiable", "partial", "suspected_noop")
         except DesktopUnavailable as exc:
             status, error = EventStatus.BLOCKED, str(exc)
+            data = exc.data
         except Exception as exc:
             SLog.e("DesktopExecutor", f"run={ctx.run_id} cap={event.capability_id} error={type(exc).__name__}")
             status, error = EventStatus.FAIL, "Cua 桌面执行失败，请查看节点日志并重新观察"
+        summary = "已写入当前焦点；输入效果待下一张截图确认" if event.capability_id == "input_text" else "桌面动作已投递；业务结果待下一张截图确认"
         return make_event_result(event, status=status, executor_used=self.id, started_at=started,
                                  elapsed_ms=int((time.monotonic() - tick) * 1000),
-                                 summary=error or "桌面动作已执行；业务结果需后续回看", error=error, raw_response=data)
+                                 summary=error or summary, error=error, raw_response=data)

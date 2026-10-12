@@ -939,6 +939,7 @@ def _screen_to_result(shot: CapturedScreen) -> tuple[EventStatus, dict[str, Any]
         "width": shot.width,
         "height": shot.height,
         "elapsed_ms": shot.elapsed_ms,
+        "extra": dict(shot.remote_detail or {}),
     }
 
 
