@@ -95,15 +95,15 @@ class Executor(Protocol):
 
 ## Desktop 执行器（V4）
 
-`desktop` 只处理 `platform=desktop`，不在 Android/Web 执行器中 fallback。支持 `screenshot/tap_xy/tap_element/input_text/press_key/launch_app/get_foreground_app`，其中截图复用 ScreenCapture 的 Desktop 分支。Cua Driver 0.34.1 是可选 native 依赖；权限、会话、版本和实际捕获未就绪时 manifest 明确报告不可用。
+`desktop` 只处理 `platform=desktop`，不在 Android/Web 执行器中 fallback。支持 `screenshot/tap_xy/tap_element/input_text/press_key/launch_app/get_foreground_app`，其中截图复用 ScreenCapture 的 Desktop 分支。Cua Driver 0.34.1 是可选 native 依赖；manifest 消费 Cua `health_report` 的版本、会话、权限和 AX 状态，实际窗口捕获还须取得有效捕获引用。
 
-Desktop 首版只接受 visual 流程。截图坐标按 Mino 的千分比转换成捕获像素，再带 capture ID 交给 SDK。输入与按键也需要本任务的新截图、未变化的会话代际、独占租约及目标应用前台确认。macOS 启动使用已配置 bundle ID，Windows 使用完整 EXE 路径或 AUMID，经结构化 launch/focus 调用并回读前台，不执行 shell。组合键和 modifiers 按目标 OS 规范化。动作证据保留 Cua effect/route/delivery/error.code；拒绝为 blocked，疑似无效果或部分执行为 fail，不标成功；无业务回读的动作仍需后续截图确认。
+Desktop 首版只接受 visual 流程。截图坐标按 Mino 的千分比转换成当前窗口图像像素，再带 capture ID 和 `ActionTarget.WINDOW(pid, window_id)` 交给 SDK；窗口到屏幕及 Retina/缩图坐标映射由 Cua 处理。输入与按键也需要本任务的新截图、未变化的会话代际和独占租约；精确窗口的前台激活、投递及校验由 Cua `delivery_mode=foreground` 负责。macOS 启动使用已配置 bundle ID，Windows 使用完整 EXE 路径或 AUMID，经结构化 launch/focus 调用并回读前台，不执行 shell。组合键和 modifiers 按目标 OS 规范化。动作证据保留 Cua effect/route/delivery/error.code；拒绝为 blocked，疑似无效果或部分执行为 fail，不标成功；无业务回读的动作仍需后续截图确认。
 
 能力实现配置由 Nexus 的目录决定；Scout 不读取 YAML，也不让“在线”替代 readiness。
 
 ## Desktop 输入契约（0.1.76）
 
-Nexus 将 Desktop 渠道映射为 `desktop_visual`，PC 输入只派给 `desktop`，不进入 Android / ADB 前台恢复。支持 `current_focus` 下的 `replace` 与 `append`；`replace` 使用 macOS Command+A / Windows Ctrl+A，再发送正文。成功点击后由 Nexus 提供 `focus:<run_id>:<seq>`，Scout 保存当时的原生键盘焦点并在输入前重验。焦点变化、代际变化、取消、输入后或超时会使引用失效；无法确认焦点时拒绝发送正文。
+Nexus 将 Desktop 渠道映射为 `desktop_visual`，PC 输入只派给 `desktop`，不进入 Android / ADB 前台恢复。支持 `current_focus` 下的 `replace` 与 `append`；成功点击后由 Nexus 提供 `focus:<run_id>:<seq>`，Scout 只保存字段落点、窗口目标和窗口尺寸。输入前以新窗口截图的 capture ID 在 Cua 中重新点击该字段；窗口或尺寸变化、代际变化、取消、输入后或超时使引用失效。`replace` 经 Cua 发送 macOS Command+A / Windows Ctrl+A；`append` 发送 Command+Down / Ctrl+End 定位末尾，再输入正文。全部输入绑定相同窗口与 foreground 模式，不自行读取原生键盘焦点。
 
 Windows 被测应用标识为完整 EXE 路径或 AUMID，macOS 为 bundle ID；不执行任意启动命令。Android 清缓存、force-stop、reset 等恢复动作不用于 Desktop。
 
@@ -111,12 +111,12 @@ Session Log 的 `tool/result` 包含节点、实际 executor、尝试链、captu
 
 ### 2026-10-12 看图模式兼容性修正
 
-macOS 启动先等待目标进程的普通窗口，再按 `pid + window_id` 调用 `bring_to_front`；调用参数遵循已锁定 SDK 的工具 schema，不向不接受 session 的启动和激活工具附加该字段。检查激活回执，再在有界等待内读回目标应用的前台状态，不重复提交启动或激活请求。Windows 继续按系统支持的 EXE/AUMID 目标及进程激活路径执行。
+macOS 和 Windows 启动均先等待目标进程的普通窗口，再按 `pid + window_id` 调用 `bring_to_front`；调用参数遵循已锁定 SDK 的工具 schema，不向不接受 session 的启动和激活工具附加该字段。检查激活回执，再在有界等待内读回目标应用的前台状态，不重复提交启动或激活请求。
 
-macOS 前台读回使用 NSWorkspace.frontmostApplication 的 processIdentifier 与 Cua 返回的应用身份交叉匹配；启动验证、get_foreground_app 及每次输入前采用同一读取路径，返回来源为 macos_workspace。前台应用身份与 AX 键盘控件焦点分开读取，键盘焦点保护及辅助功能权限要求保留。原生读回失败或 Cua 无法关联该 PID/bundle ID 时明确为身份未知并阻塞，不判为目标已离开前台，也不读取控件正文。
+前台身份只消费 Cua `list_apps.active` 和配置的应用标识，不再调用自研 NSWorkspace/AX/Win32 探针。前台结果不能唯一确认或缺少应用身份时阻塞；不会把未知状态当作应用已离开前台。健康检查统一调用 Cua `health_report`，跳过 `screen_capture_capability`，避免健康探测顺带抓整屏或申请权限。
 
-启动固定执行 Cua launch_app → 等待有效目标窗口 → bring_to_front → 前台校验。窗口列表非空但没有可激活普通窗口时继续有界等待；前台读回暂时不可用时只重读，不重复启动或激活。launch 诊断始终保留 stage、launched、activated、foreground_verified、目标 pid/window_id、实际前台 pid/bundle ID 及读取错误类型。原生读回失败也保留此前 Cua 激活回执，避免把“已激活但校验失败”混为“未启动”。
+启动执行 Cua launch_app（已绑定且进程仍在则复用）→ 等待有效目标窗口 → bring_to_front → Cua 前台校验。窗口列表非空但没有可激活普通窗口时继续有界等待；前台读回暂时不可用时只重读，不重复启动或激活。launch 诊断始终保留 stage、launched、activated、foreground_verified、目标 pid/window_id、实际前台 pid/应用标识及读取错误类型。多个窗口优先选择当前可见窗口，并仅在完整 z_index 可唯一确定最前窗口时自动选择；否则要求明确 window_id，不随意选择列表首项。
 
 点击的 typed `ActionResult` 与输入/按键的 `ToolResult.action`、JSON 回执分别解析。`unverifiable` 表示动作已投递但效果待回看，不视作已完成业务，也不当作投递失败；额外返回 `verification_required=true`。输入摘要明确标记“已写入当前焦点”，与 Nexus 的输入投递契约一致，业务结论由下一张截图确认。拒绝、部分执行、疑似无效果仍保留各自的驱动证据。启动失败的诊断保留 stage、pid、窗口与前台标识。
 
-Desktop 图像的 `compress_ratio` 为 1–10，作用于输出图像；运行时保存的 capture 像素尺寸保持不变。截图结果保留 capture_id、session_generation、capture_width、capture_height 与实际压缩比。新截图失败会使旧观察引用失效，不能继续按陈旧图点击。
+Desktop 图像的 `compress_ratio` 为 1–10，默认 1。通过 SDK 通用 `get_window_state(pid, window_id, include_accessibility_tree=false, include_screenshot=true, display_only=false)` 获取注册窗口捕获，保留 typed 输出未暴露的 capture_id。比值大于 1 时先校准原尺寸，再由 Cua `max_image_dimension` 生成并注册最终缩图；Scout 不自行缩放、裁切或重编码图像。最终图像尺寸等于 capture_width/capture_height，原尺寸记录在 native_width/native_height。截图和动作诊断保留 capture_scope=window、target、pid/window_id、capture_id、snapshot_id 和 session_generation。新截图失败会使旧观察引用失效，窗口丢失、所有者改变或捕获拒绝不回退整屏。

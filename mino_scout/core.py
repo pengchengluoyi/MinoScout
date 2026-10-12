@@ -452,7 +452,8 @@ class ScoutCore:
     def _dispatch_screenshot(self, req: P.Execute) -> EventResult:
         device = _device_from_execute(req, node_id=self.node_id)
         params = dict(req.params or {})
-        compress = float(params.get("compress_ratio") or 2.0)
+        ratio = params.get("compress_ratio")
+        compress = float(ratio if ratio is not None else (1.0 if device.platform == "desktop" else 2.0))
         shot = SCREEN.capture(
             device,
             timeout_sec=float(req.timeout_sec or 15.0),

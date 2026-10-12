@@ -280,29 +280,18 @@ def capture(
     if device.platform == "desktop":
         from mino_scout.desktop import get_desktop_runtime
         try:
-            data = get_desktop_runtime().observe(device.extra, str(device.extra.get("run_id") or ""))
-            from PIL import Image
             ratio = float(compress_ratio)
             if not 1.0 <= ratio <= 10.0:
                 raise ValueError("PC 压缩比必须在 1 到 10 之间")
-            image_base64, mime = data["image_base64"], data["image_mime"]
-            width, height = data["width"], data["height"]
-            if ratio > 1.0:
-                with Image.open(BytesIO(base64.b64decode(image_base64))) as original:
-                    image = original.convert("RGB").resize(
-                        (max(1, round(original.width / ratio)), max(1, round(original.height / ratio))),
-                        Image.Resampling.LANCZOS,
-                    )
-                    output = BytesIO()
-                    image.save(output, format="JPEG", quality=90)
-                    image_base64, mime = base64.b64encode(output.getvalue()).decode("ascii"), "image/jpeg"
-                    width, height = image.size
+            data = get_desktop_runtime().observe(device.extra, str(device.extra.get("run_id") or ""), ratio)
             shot = CapturedScreen(
-                ok=True, source="desktop", image_base64=image_base64, image_mime=mime,
-                width=width, height=height,
+                ok=True, source="desktop", image_base64=data["image_base64"], image_mime=data["image_mime"],
+                width=data["width"], height=data["height"],
                 remote_detail={
                     "capture_id": data["capture_id"], "session_generation": data["session_generation"],
                     "capture_width": data["width"], "capture_height": data["height"], "compress_ratio": ratio,
+                    **{key: data[key] for key in ("capture_scope", "target", "pid", "window_id", "snapshot_id",
+                                                  "window_bounds", "screenshot_scale", "native_width", "native_height")},
                 },
             )
         except Exception as exc:
@@ -334,7 +323,7 @@ def capture(
         shot = CapturedScreen(ok=False, source="screen", error="设备平台没有实现截图通道")
 
     if shot.has_image():
-        if allow_blank or not png_is_blank(base64.b64decode(shot.image_base64)):
+        if device.platform == "desktop" or allow_blank or not png_is_blank(base64.b64decode(shot.image_base64)):
             SLog.i(
                 TAG,
                 f"capture ok via {shot.source} {shot.width}x{shot.height} "
