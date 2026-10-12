@@ -296,6 +296,7 @@ class NodeTransport:
         import platform
 
         self.core._plugins_ready = False
+        self.core._plugin_warning = ""
 
         def _reexec_if_stale() -> bool:
             from mino_scout.stale_process import ensure_process_matches_app_layer
@@ -372,9 +373,10 @@ class NodeTransport:
             verify_local_owner(str(getattr(reg, "owner_user_id", "") or ""), self.nexus_url)
         except PermissionError as exc:
             plugin_warning = str(exc)
-            SLog.w(TAG, f"仅隔离历史插件；节点继续在线: {exc}")
+            SLog.w(TAG, f"插件账号校验失败；节点继续在线: {exc}")
         else:
             self.core._plugins_ready = True
+        self.core._plugin_warning = plugin_warning
         _apply_registered_credentials(reg, self.core, self)
         self._connection("registered", connected=True, registered=True)
         from mino_scout.runtime_sidecar import note_plugin_access

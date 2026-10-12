@@ -29,6 +29,10 @@ def account_name(node_id: str, kind: str, plugin_id: str, field: str) -> str:
     owner = str(load_config().get("plugin_owner_user_id") or "")
     if not owner:
         raise SecretStoreError("插件账号归属尚未确认")
+    from mino_scout.plugins.paths import profile_id
+    profile = profile_id()
+    if profile:
+        return f"v2:{profile}:{node_id}:{kind}:{plugin_id}:{field}"
     return f"{owner}:{node_id}:{kind}:{plugin_id}:{field}"
 
 

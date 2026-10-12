@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from mino_scout.config import config_dir
+from mino_scout.plugins.paths import data_dir
 from mino_scout.plugins.secret_store import account_name, delete_secret, get_secret, put_secret
 
 # 插件类别。MCP 还没有具体项。im = 对话渠道（收 + 发），bot = 只发通知。
@@ -128,11 +128,11 @@ def _key(kind: str, plugin_id: str) -> str:
 
 
 def state_path() -> Path:
-    return config_dir() / "plugins" / "state.json"
+    return data_dir() / "plugins" / "state.json"
 
 
 def plugin_dir(kind: str, plugin_id: str) -> Path:
-    return config_dir() / "plugins" / kind / plugin_id
+    return data_dir() / "plugins" / kind / plugin_id
 
 
 def spec(kind: str, plugin_id: str) -> dict[str, Any] | None:
@@ -389,7 +389,7 @@ def clear_plugin_secrets(node_id: str, kind: str, plugin_id: str) -> None:
 
 
 def verify_local_owner(user_id: str, nexus_url: str) -> None:
-    """不转移节点。旧的未归属配置保留原位、停用，等待显式维护确认。"""
+    """首次确认账号时启用独立空存储，不继承无归属旧配置及消息。"""
     from mino_scout.config import load_config, save_config
     from urllib.parse import urlsplit
     uid = str(user_id or "").strip()
@@ -404,8 +404,7 @@ def verify_local_owner(user_id: str, nexus_url: str) -> None:
         if previous != uid or previous_origin != origin:
             raise PermissionError("本地插件属于其他账号或服务，禁止继承；需先隔离旧配置")
         return
-    if load_state().get("items") or (config_dir() / "scout.db").exists():
-        raise PermissionError("历史插件配置待认领，已停用；原配置与密钥保留")
     cfg["plugin_owner_user_id"] = uid
     cfg["plugin_owner_nexus"] = origin
+    cfg["plugin_storage_version"] = 2
     save_config(cfg)

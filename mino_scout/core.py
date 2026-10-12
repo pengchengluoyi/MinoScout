@@ -128,6 +128,7 @@ class ScoutCore:
         self.scout_id = self.node_id
         self.executors = executors
         self._plugins_ready = False
+        self._plugin_warning = ""
         self.router = Router(executors)
         self._started = time.time()
         self._lock = threading.Lock()

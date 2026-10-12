@@ -18,8 +18,8 @@ TAG = "PluginService"
 _GMAIL_HINT = "请在这台 Scout 节点的「邮箱 / Gmail」里填写收件箱和应用专用密码"
 
 
-def _blocked_plugin(event: Any, started: str) -> EventResult:
-    message = "历史插件配置待认领；节点已连接，插件保持停用，原配置和密钥未修改"
+def _blocked_plugin(core: Any, event: Any, started: str) -> EventResult:
+    message = str(getattr(core, "_plugin_warning", "") or "节点正在确认插件账号归属，请稍后重试")
     return make_event_result(
         event,
         status=EventStatus.BLOCKED,
@@ -33,7 +33,7 @@ def _blocked_plugin(event: Any, started: str) -> EventResult:
 
 def handle_node_plugin(core: Any, req: P.Execute, cmd: str, event: Any, started: str) -> EventResult:
     if not getattr(core, "_plugins_ready", False):
-        return _blocked_plugin(event, started)
+        return _blocked_plugin(core, event, started)
     params = dict(req.params or {})
     kind = str(params.get("class") or params.get("kind") or "").strip()
     plugin_id = str(params.get("id") or params.get("plugin_id") or "").strip()
@@ -89,7 +89,7 @@ def handle_node_plugin(core: Any, req: P.Execute, cmd: str, event: Any, started:
 
 def handle_plugin_cap(core: Any, req: P.Execute, cap: str) -> EventResult:
     if not getattr(core, "_plugins_ready", False):
-        return _blocked_plugin(_event(req), now_iso())
+        return _blocked_plugin(core, _event(req), now_iso())
     from mino_scout.plugins import wechat as wechat_plugin
 
     wechat_plugin.bind_node(core.node_id)

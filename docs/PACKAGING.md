@@ -95,7 +95,7 @@ $PREFIX/bin/
 
 层 → 目录的映射真源在 `scripts/layers.py` 的 `PAYLOAD_DIRS`，另有三份副本
 （`install.sh`、`install.ps1`、冻结入口）—— bash / PowerShell / 冻结产物都没法 import 它。
-修改时需同步检查四处映射，分层安装验证由 `check_layered_install.py` 执行。
+修改时需同步检查四处映射。分层安装回归脚本只在本地使用，不随仓库或发布上传。
 
 **install 脚本不再整体 `rm -rf $PREFIX/bin`。** 那一句会连 780 MB 浏览器一起删，
 等于每次更新都重下重铺 —— 这是包体问题的一半。
@@ -120,12 +120,9 @@ app 层的 `layers.txt` 带 `requires_runtime=<rtkey>`。只装 app 层时，ins
 
 ```bash
 python scripts/build_binary.py --check                         # 冻结 + 真跑一次 probe
-python scripts/check_layered_install.py --dist dist --probe    # 装全量 → 只装 app → 断言浏览器没动
 ```
 
-分层安装检查是收益的看门人：它真装一遍再只装 app 层，断言浏览器层一个字节没动。
-只要有人恢复了整体删除，它就红 —— 而表面上一切正常（装完能跑），只有下载量会翻回 439 MB。
-CI 在 `release.yml` 的 build job 里跑它。
+CI 保留 Windows 安装器语法检查、PC SDK 原生库加载、冻结程序真实 probe 与发布包生成。mock、测试脚本及本地回归脚本由 `.gitignore` 屏蔽，不再作为 CI 的仓库文件依赖。
 
 ## 0.1.76 Windows 更新与运行身份
 

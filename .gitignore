@@ -217,7 +217,40 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-/tests/*
+# 本地测试、mock 和验收产物不进入仓库。
+**/tests/**
+**/test/**
+**/__tests__/**
+**/mock/**
+**/mocks/**
+**/__mocks__/**
+**/__snapshots__/**
+**/e2e/**
+test_*
+test-*
+mock_*
+mock-*
+*_test.py
+*_tests.py
+*.test.*
+*.spec.js
+*.spec.jsx
+*.spec.ts
+*.spec.tsx
+*.spec.mjs
+*.spec.cjs
+playwright-report/
+test-results/
+coverage/
+/scripts/test*
+/scripts/mock*
+/scripts/smoke*
+/scripts/*-browser-check.py
+/scripts/check_layered_install.py
+/scripts/check_windows_lifecycle.py
+
+# 协议 JSON 是通信契约，保留数据；此目录内的测试脚本仍不上传。
 !/tests/fixtures/
-/tests/fixtures/*
 !/tests/fixtures/protocol/
+/tests/fixtures/protocol/*
+!/tests/fixtures/protocol/*.json

@@ -20,7 +20,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from mino_scout.config import config_dir, load_config
+from mino_scout.config import load_config
+from mino_scout.plugins.paths import data_dir
 from mino_scout.log import SLog
 
 TAG = "ImStore"
@@ -54,7 +55,7 @@ CREATE TABLE IF NOT EXISTS im_pending(
 
 
 def db_path() -> Path:
-    return config_dir() / "scout.db"
+    return data_dir() / "scout.db"
 
 
 def retention_days() -> int:
@@ -187,7 +188,7 @@ _store_lock = threading.Lock()
 
 
 def _get() -> _Store:
-    """路径跟随 config_dir()（可用 MINO_SCOUT_HOME 指到别处）。路径变了就重开。"""
+    """路径跟随当前账号插件存储（兼容 MINO_SCOUT_HOME）。路径变了就重开。"""
     global _store
     path = db_path()
     with _store_lock:

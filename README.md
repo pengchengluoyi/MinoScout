@@ -63,14 +63,13 @@ https://github.com/<owner>/MinoScout/releases/latest/download/manifest.json
 
 `<owner>` 与本仓 `github.repository` 相同。`workflow_dispatch` 会打 `dev-<sha>` 预发布，**不会**改写 `latest`。
 
-推送 `v*` tag 或手动运行工作流时，会并行构建 macOS Apple Silicon（`darwin-arm64`）和 Windows x64（`win32-x64`），各自执行冻结程序自检和分层安装验证，再上传到同一个 Release。Windows 合并包为 `MinoScout-<版本>-win32-x64.zip`，包含 `mino-scout.exe` 及运行依赖，无需另装 Python；解压后运行包内的 `install.ps1` 安装。每个平台还会发布 `app`、`runtime`、`browser` 三个层包，统一记录在 `manifest.json` 中。
+推送 `v*` tag 或手动运行工作流时，会并行构建 macOS Apple Silicon（`darwin-arm64`）和 Windows x64（`win32-x64`），各自执行冻结程序自检，再上传到同一个 Release。Windows 合并包为 `MinoScout-<版本>-win32-x64.zip`，包含 `mino-scout.exe` 及运行依赖，无需另装 Python；解压后运行包内的 `install.ps1` 安装。每个平台还会发布 `app`、`runtime`、`browser` 三个层包，统一记录在 `manifest.json` 中。
 
 本机只打当前系统的 zip：
 
 ```bash
 python scripts/build_binary.py --check                       # 冻结，目标机器不需要 Python
 python scripts/pack_release.py --out dist --binary
-python scripts/check_layered_install.py --dist dist --probe  # 装全量 → 只装 app → 断言浏览器没动
 ```
 
 装好后由 `install.sh` / `install.ps1` 注册 launchd / Scheduled Task / systemd。
