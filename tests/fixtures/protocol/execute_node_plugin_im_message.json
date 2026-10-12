@@ -1,0 +1,56 @@
+{
+  "v": 2,
+  "type": "EXECUTE",
+  "msg_id": "01J8ZQEXECUTE00000000009",
+  "reply_to": null,
+  "ts": "2026-10-09T10:00:00.000000+08:00",
+  "payload": {
+    "run_id": "",
+    "step_idx": -1,
+    "sn": "",
+    "capability_id": "node.plugin_im_message",
+    "params": {
+      "node_id": "3f8a1c0e9b2d4f71",
+      "event": "plugin_im_message",
+      "detail": "im message",
+      "severity": "info",
+      "im": {
+        "channel": "wechat",
+        "tenant": "",
+        "chat_id": "u_alice",
+        "chat_type": "private",
+        "sender_id": "u_alice",
+        "msg_id": "m_0001",
+        "text": "看看支付项目最近跑得怎么样",
+        "mentioned": true,
+        "reply_ctx": {
+          "context_token": "ctx_abc"
+        },
+        "recent_turns": [
+          {
+            "role": "user",
+            "text": "你好",
+            "ts": 1791000000,
+            "instance_id": "ilink-bot-alice",
+            "tenant": "",
+            "sender_id": "u_alice"
+          },
+          {
+            "role": "assistant",
+            "text": "你好，我是 Mino 助手。",
+            "ts": 1791000002,
+            "instance_id": "ilink-bot-alice",
+            "tenant": "",
+            "sender_id": "u_alice"
+          }
+        ],
+        "instance_id": "ilink-bot-alice"
+      }
+    },
+    "executor_order": [],
+    "low_level": {},
+    "selected_impl": {},
+    "device_hint": {},
+    "timeout_sec": 5.0
+  }
+}

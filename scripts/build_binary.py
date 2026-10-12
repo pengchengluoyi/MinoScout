@@ -243,6 +243,11 @@ def build(*, clean: bool) -> Path:
     ]
     for mod in hidden:
         argv += ["--hidden-import", mod]
+    # Optional wheels must include their native library AND distribution metadata.
+    # Linux/Windows release readiness is independent from merely bundling a wheel.
+    import importlib.util
+    if importlib.util.find_spec("cua_driver") is not None:
+        argv += ["--collect-all", "cua_driver", "--copy-metadata", "cua-driver"]
     for pkg in COLLECT_ALL:
         argv += ["--collect-all", pkg]
     for pkg in list(EXCLUDES) + [PKG]:   # PKG 排掉：它走 app 层，不进 PYZ

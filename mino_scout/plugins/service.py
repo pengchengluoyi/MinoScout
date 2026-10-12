@@ -190,8 +190,9 @@ def _im_send(req: P.Execute) -> dict[str, Any]:
     send(chat_id, sender_id, ctx, text)
     try:
         im_store.record(
-            channel, chat_id or sender_id, "", f"out-{uuid.uuid4().hex}", "assistant", text.strip(),
-            int(time.time()),
+            channel, chat_id or sender_id, sender_id, f"out-{uuid.uuid4().hex}", "assistant", text.strip(),
+            int(time.time()), instance_id=str(ctx.get("instance_id") or ""),
+            tenant=str(ctx.get("tenant") or ""),
         )
     except Exception as exc:  # 已发出去了，落库失败不回报失败
         SLog.w(TAG, f"im.send 已发送但落库失败: {type(exc).__name__}")
@@ -270,7 +271,10 @@ def _im_history(req: P.Execute) -> dict[str, Any]:
         limit = int(params.get("limit") or 20)
     except (TypeError, ValueError):
         limit = 20
-    msgs = im_store.history(channel, chat_id, limit)
+    _, _, sender_id, ctx = _im_target(params)
+    msgs = im_store.history(channel, chat_id, limit, sender_id=sender_id,
+        instance_id=str(ctx.get("instance_id") or ""), tenant=str(ctx.get("tenant") or ""),
+        after_ts=int(params.get("after_ts") or 0))
     return {"messages": msgs, "summary": f"{len(msgs)} 条"}
 
 

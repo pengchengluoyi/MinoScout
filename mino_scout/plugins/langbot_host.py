@@ -763,6 +763,7 @@ def channel_status() -> dict[str, Any]:
         last_message = _last_msg.get(p["channel"], 0)
         verified = bool(running and not err and last_message >= _started_at and 0 <= time.time() - last_message <= 120)
         platforms[pid] = {
+            "instance_id": str(_bots.get(pid) or ""),
             "enabled": enabled,
             "holding": _holds.get(pid, True),
             "connected": bool(running and pid in wanted_platforms() and not err),

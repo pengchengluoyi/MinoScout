@@ -1,0 +1,50 @@
+{
+  "v": 2,
+  "type": "HEARTBEAT",
+  "msg_id": "fixture-heartbeat-windows-service",
+  "reply_to": null,
+  "ts": "2026-10-12T00:00:00+08:00",
+  "payload": {
+    "node_id": "3f8a1c0e9b2d4f71",
+    "uptime_sec": 60,
+    "active_runs": [],
+    "device_delta": [
+      {
+        "sn": "desktop:3f8a1c0e9b2d4f71:console",
+        "platform": "desktop",
+        "channels": {
+          "desktop": "disconnected"
+        },
+        "model": "PC 桌面",
+        "os": "windows",
+        "session_key": "console",
+        "session_generation": "windows-session-service",
+        "desktop_state": "no_session",
+        "capabilities": [],
+        "readiness": {
+          "permissions": {
+            "interactive_session": true,
+            "input_desktop": true
+          },
+          "arch": "amd64"
+        },
+        "blocked_reason": "无图形桌面会话，请在已登录的桌面内启动 Scout"
+      }
+    ],
+    "host": {
+      "os": "windows",
+      "desktop": {
+        "state": "no_session",
+        "blocked_reason": "无图形桌面会话，请在已登录的桌面内启动 Scout"
+      }
+    },
+    "executors": [
+      {
+        "id": "desktop",
+        "available": false,
+        "provides": [],
+        "reason": "无图形桌面会话，请在已登录的桌面内启动 Scout"
+      }
+    ]
+  }
+}

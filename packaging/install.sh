@@ -248,7 +248,11 @@ install_source() {
   cp "$ROOT/pyproject.toml" "$app/pyproject.toml"
   python3 -m venv "$venv"
   "$venv/bin/python" -m pip install -U pip
-  "$venv/bin/python" -m pip install "$app"
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    "$venv/bin/python" -m pip install "$app[desktop]"
+  else
+    "$venv/bin/python" -m pip install "$app"
+  fi
   BIN="$venv/bin/mino-scout"
   if [[ ! -x "$BIN" ]]; then
     echo "install failed: $BIN not created" >&2

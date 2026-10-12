@@ -1,0 +1,33 @@
+{
+  "v": 2,
+  "type": "EXECUTE",
+  "msg_id": "fixture-execute_desktop.json",
+  "reply_to": null,
+  "ts": "2026-10-12T00:00:00+08:00",
+  "payload": {
+    "run_id": "cr-fixture::case-1::desktop:3f8a1c0e9b2d4f71:console",
+    "step_idx": 1,
+    "sn": "desktop:3f8a1c0e9b2d4f71:console",
+    "capability_id": "tap_element",
+    "params": {
+      "x": 500,
+      "y": 500,
+      "point_policy": "coordinate"
+    },
+    "executor_order": [
+      "desktop"
+    ],
+    "low_level": {},
+    "selected_impl": {},
+    "device_hint": {
+      "platform": "desktop",
+      "os": "macos",
+      "session_generation": "session-generation-1",
+      "session_key": "console",
+      "desktop_lease": "cr-fixture",
+      "target_package": "fixture.bundle"
+    },
+    "timeout_sec": 30.0,
+    "platform": "desktop"
+  }
+}

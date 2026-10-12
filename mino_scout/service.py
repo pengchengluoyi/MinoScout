@@ -170,6 +170,14 @@ def daemon_run_lock(*, stale_wait_sec: float = _STALE_LOCK_WAIT_SEC) -> Iterator
 def pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    if os.name == "nt":
+        import psutil
+        try:
+            return psutil.Process(pid).is_running()
+        except psutil.NoSuchProcess:
+            return False
+        except psutil.AccessDenied:
+            return True
     try:
         os.kill(pid, 0)
     except OSError:
@@ -235,6 +243,16 @@ def try_start_service(*, wait_sec: float = 4.0) -> int:
             except (OSError, subprocess.TimeoutExpired):
                 continue
 
+    elif os.name == "nt":
+        # Per-user tasks; a different configuration directory must use its own process.
+        import hashlib
+        task = "Mino Scout " + hashlib.sha256(str(config_dir()).lower().encode()).hexdigest()[:12]
+        try:
+            result = subprocess.run(["schtasks.exe", "/Run", "/TN", task], capture_output=True, timeout=15)
+            started = result.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
     deadline = time.time() + max(0.5, wait_sec)
     while time.time() < deadline:
         if pid_alive(read_pid()):
@@ -243,11 +261,9 @@ def try_start_service(*, wait_sec: float = 4.0) -> int:
 
     if not started:
         SLog.i(TAG, "未找到系统服务，后台启动 mino-scout run")
-        subprocess.Popen(
-            [sys.executable, "-m", "mino_scout", "run"],
-            start_new_session=True,
-            close_fds=True,
-        )
+        from mino_scout.process_control import spawn_run
+        spawn_run()
+        deadline = time.time() + max(0.5, wait_sec)
         while time.time() < deadline:
             if pid_alive(read_pid()):
                 return cmd_public_status()
@@ -304,12 +320,17 @@ def collect_status() -> dict[str, Any]:
         "scout_id": resolve_scout_id(),
         **ver_bundle,
     }
+    from mino_scout.runtime_sidecar import connection_status, read_update_status
+    out["connection"] = connection_status(side, running=running)
+    update = read_update_status()
+    if update:
+        out["update"] = update
     # 与旧 Studio / 脚本兼容：三字段与 version 对齐，避免 0.1.42 vs 0.1.43 混显。
     canon = str(out.get("version") or "")
     out["app_semver"] = canon
     out["reported_version"] = canon
     out["process_version"] = str(out.get("running_version") or canon)
-    bin_path = config_dir() / "bin" / "mino-scout"
+    bin_path = config_dir() / "bin" / ("mino-scout.exe" if os.name == "nt" else "mino-scout")
     if bin_path.is_file():
         out["binary"] = str(bin_path)
     if layers:
@@ -346,7 +367,17 @@ def request_stop(*, timeout_sec: float = 15.0) -> dict[str, Any]:
         return {"ok": True, "already": True, "running": False, "pid": 0}
 
     SLog.i(TAG, f"停止 pid={pid}")
-    _signal(pid, signal.SIGTERM)
+    created_at = 0.0
+    if os.name == "nt":
+        import psutil
+        from mino_scout.process_control import request_local_stop
+        try:
+            created_at = psutil.Process(pid).create_time()
+            request_local_stop(pid)
+        except psutil.NoSuchProcess:
+            return {"ok": True, "already": True, "running": False, "pid": 0}
+    else:
+        _signal(pid, signal.SIGTERM)
     deadline = time.time() + max(1.0, timeout_sec)
     while time.time() < deadline:
         if not pid_alive(pid):
@@ -355,7 +386,11 @@ def request_stop(*, timeout_sec: float = 15.0) -> dict[str, Any]:
         time.sleep(0.2)
 
     SLog.w(TAG, f"SIGTERM 超时，改发 SIGKILL pid={pid}")
-    _signal(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+    if os.name == "nt":
+        from mino_scout.process_control import terminate_windows
+        terminate_windows(pid, created_at)
+    else:
+        _signal(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
     time.sleep(0.4)
     alive = pid_alive(pid)
     if not alive:
@@ -364,15 +399,8 @@ def request_stop(*, timeout_sec: float = 15.0) -> dict[str, Any]:
 
 
 def _signal(pid: int, sig: int) -> None:
-    if os.name == "nt" and sig != signal.SIGTERM:
-        # Windows 没有 SIGKILL，用 taskkill
-        import subprocess
-
-        subprocess.run(
-            ["taskkill", "/PID", str(pid), "/F", "/T"],
-            capture_output=True, timeout=8,
-        )
-        return
+    if os.name == "nt":
+        raise RuntimeError("Windows process control must not use POSIX signals")
     try:
         os.kill(pid, sig)
     except OSError as exc:

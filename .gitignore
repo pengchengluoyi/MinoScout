@@ -217,4 +217,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-/tests/
+/tests/*
+!/tests/fixtures/
+/tests/fixtures/*
+!/tests/fixtures/protocol/

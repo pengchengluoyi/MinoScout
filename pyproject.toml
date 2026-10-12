@@ -26,6 +26,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+desktop = ["cua-driver==0.34.1"]  # optional; frozen release must include its matching native library
 ios-appium = ["Appium-Python-Client>=5.2"]   # iOS 的另一个 Engine 实现，非必需
 pc = ["pywinauto>=0.6; sys_platform == 'win32'", "pyobjc-core>=12.1; sys_platform == 'darwin'"]
 

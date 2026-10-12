@@ -45,6 +45,8 @@ def build_core() -> ScoutCore:
     except ImportError as exc:
         SLog.w(TAG, f"playwright executor 未装载: {exc}")
 
+    from mino_scout.executors.desktop_executor import DesktopExecutor
+    executors["desktop"] = DesktopExecutor()
     return ScoutCore(executors)
 
 
@@ -59,7 +61,7 @@ def cmd_probe(core: ScoutCore) -> int:
             for e in execs
         ],
         "devices": [
-            {"sn": d.sn, "platform": d.platform, "model": d.model, "channels": dict(d.channels)}
+            __import__("dataclasses").asdict(d)
             for d in devices
         ],
     }
@@ -117,7 +119,7 @@ def cmd_update(argv: list[str]) -> int:
     from mino_scout.service import pid_alive, read_pid
     from importlib import import_module
 
-    if out.get("ok") and pid_alive(read_pid()):
+    if out.get("ok") and not out.get("deferred") and pid_alive(read_pid()):
         from mino_scout.stale_process import process_stale_vs_disk
 
         if process_stale_vs_disk():

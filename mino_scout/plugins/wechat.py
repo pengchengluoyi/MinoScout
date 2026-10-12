@@ -80,7 +80,7 @@ def channel_status() -> dict[str, Any]:
             last = 0
     with _lock:
         err = _last_error or str(_login.get("error") or "")
-    out = {"connected": bool(alive and has_token), "last_message_at": last, "error": err[:200]}
+    out = {"instance_id": plain_value("bot", "wechat", "ilink_bot_id"), "connected": bool(alive and has_token), "last_message_at": last, "error": err[:200]}
     # 扫码账号的 iLink id：不是密钥，Nexus 用它把「扫码的人」自动绑到节点所有者
     account = plain_value("bot", "wechat", "ilink_user_id")
     if account:
@@ -288,6 +288,7 @@ def _on_message(msg: dict[str, Any]) -> None:
         pass
     im_bridge.ingest(
         channel="wechat",
+        instance_id=plain_value("bot", "wechat", "ilink_bot_id"),
         chat_id=user_id,
         chat_type="private",
         sender_id=user_id,

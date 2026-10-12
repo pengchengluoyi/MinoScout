@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+from dataclasses import replace
 import asyncio
 import json
 import random
@@ -51,6 +52,9 @@ def _apply_registered_credentials(reg: P.Registered, core: ScoutCore, transport:
     from mino_scout.config import load_config, sanitize_scout_id, save_config
 
     cfg = load_config()
+    owner = str(getattr(reg, "owner_user_id", "") or "").strip()
+    from mino_scout.plugins.state import verify_local_owner
+    verify_local_owner(owner, transport.nexus_url)
     changed = False
     new_id = sanitize_scout_id(str(getattr(reg, "node_id", "") or ""))
     if new_id and new_id != core.node_id:
@@ -85,16 +89,11 @@ def changed_devices(
     for sn, old in prev.items():
         if sn not in current:
             out.append(
-                P.DeviceManifest(
-                    sn=old.sn,
-                    platform=old.platform,
-                    model=old.model,
-                    channels={ch: "disconnected" for ch in (old.channels or {})},
-                )
+                replace(old, channels={ch: "disconnected" for ch in (old.channels or {})})
             )
     for sn, dev in current.items():
         old = prev.get(sn)
-        if old is None or dict(old.channels) != dict(dev.channels):
+        if old is None or old != dev:
             out.append(dev)
     return out
 
@@ -126,6 +125,24 @@ class NodeTransport:
 
     # ---------------- 生命周期 ----------------
 
+    def _connection(self, state, **kwargs):
+        try:
+            from mino_scout.runtime_sidecar import note_connection
+            note_connection(state, **kwargs)
+        except OSError as exc:
+            SLog.w(TAG, f"连接状态写入失败: {type(exc).__name__}")
+
+    async def _local_stop_loop(self):
+        from mino_scout.process_control import local_stop_requested
+        while not self._stop.is_set():
+            if await asyncio.to_thread(local_stop_requested):
+                self.request_shutdown()
+                return
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=0.5)
+            except asyncio.TimeoutError:
+                pass
+
     async def run_forever(self) -> None:
         """连不上就退避重连，无限重试（协议 §1）。"""
         current_node_id.set(self.core.node_id)
@@ -155,13 +172,8 @@ class NodeTransport:
 
         im_bridge.set_hook(_im_hook)
         wechat_plugin.bind_node(self.core.node_id)
-        wechat_plugin.ensure_listener()  # 重启后自动恢复监听；没登录时是空操作
-        try:
-            from mino_scout.plugins import langbot_host
-
-            langbot_host.reconcile(self.core.node_id)  # 已安装且有启用的平台就拉起；否则空操作
-        except Exception as exc:
-            SLog.w(TAG, f"LangBot 启动检查失败: {type(exc).__name__}")
+        # 社交插件只在 REGISTERED 的服务端归属校验完成后恢复。
+        local_stopper = asyncio.create_task(self._local_stop_loop())
         try:
             backoff = _BACKOFF_START
             while not self._stop.is_set():
@@ -171,6 +183,9 @@ class NodeTransport:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    from mino_scout.runtime_sidecar import read_runtime_sidecar
+                    prior = (read_runtime_sidecar(expect_pid=__import__("os").getpid()).get("connection") or {}).get("last_error")
+                    self._connection("disconnected", error=str(prior or f"连接失败: {type(exc).__name__}"))
                     SLog.w(TAG, f"连接断开/失败: {type(exc).__name__}: {exc}")
                 if self._stop.is_set():
                     break
@@ -184,6 +199,8 @@ class NodeTransport:
                 self._keep_power()
                 backoff = min(backoff * 2, _BACKOFF_MAX)
         finally:
+            local_stopper.cancel()
+            self._connection("stopped")
             UP.set_progress_hook(None)
             from mino_scout.plugins import progress as plugin_progress
 
@@ -238,9 +255,11 @@ class NodeTransport:
     async def _connect_once(self) -> None:
         import websockets
 
+        self._connection("connecting")
         SLog.i(TAG, f"dial {self.nexus_url}")
         async with websockets.connect(self.nexus_url, max_size=_MAX_FRAME_BYTES) as ws:
             self._ws = ws
+            self._connection("registering", connected=True)
             # 顺序要紧：**先起接收循环，再 REGISTER**。
             # REGISTER 要等 REGISTERED 应答，而应答只能由接收循环派发；
             # 反过来写会死等到超时，且一条帧都处理不到。
@@ -268,6 +287,7 @@ class NodeTransport:
                 if not stopper.done():
                     stopper.cancel()
                 self._ws = None
+                self._connection("disconnected")
 
     async def _recv_loop(self, ws: Any) -> None:
         async for raw in ws:
@@ -295,24 +315,29 @@ class NodeTransport:
 
         from mino_scout.input_contract import runtime_input_capabilities
 
+        from mino_scout.desktop import get_desktop_runtime
+
         payload = P.Register(
             node_id=self.core.node_id,
             token=self.token,
             platform=platform.system().lower(),
             arch=platform.machine(),
             scout_version=report_scout_version(),
+            account_isolation_version=1,
             hostname=resolve_hostname(),
             studio_id=resolve_studio_id(),
             executors=execs,
             devices=devices,
-            plugins=self.core.heartbeat().plugins,
+            plugins=[],  # 首次注册不得携带未验证 owner 的旧插件配置。
             runtime_capabilities=runtime_input_capabilities(),
+            host=await asyncio.to_thread(get_desktop_runtime().host, self.core.node_id, next((d for d in devices or [] if d.platform == "desktop"), None)),
         )
         reply = await self._request(P.MsgType.REGISTER, payload)
         if reply is None:
             raise RuntimeError("REGISTER 没等到 REGISTERED")
         reg: P.Registered = reply.payload
         if not reg.accepted:
+            self._connection("registration_rejected", connected=True, error=reg.reason or "Nexus 拒绝注册")
             from mino_scout.config import load_config, nexus_ws_url, save_config
 
             cfg = load_config()
@@ -331,6 +356,7 @@ class NodeTransport:
                 f"协议版本不一致：Scout v{P.PROTOCOL_VERSION} vs Nexus v{reg.protocol_version}。"
                 "按协议 §7 不做降级协商"
             )
+        self._connection("registered", connected=True, registered=True)
         self._session_token = reg.session_token
         self.heartbeat_sec = reg.heartbeat_interval_sec or self.heartbeat_sec
         avail = [e.id for e in execs if e.available]
@@ -342,6 +368,10 @@ class NodeTransport:
         for w in reg.warnings or []:
             SLog.w(TAG, f"Nexus: {w}")
         _apply_registered_credentials(reg, self.core, self)
+        from mino_scout.plugins import wechat as wechat_plugin, langbot_host
+        wechat_plugin.bind_node(self.core.node_id)
+        wechat_plugin.ensure_listener()
+        langbot_host.reconcile(self.core.node_id)
         try:
             from mino_scout.runtime_sidecar import write_runtime_sidecar
 
@@ -435,9 +465,19 @@ class NodeTransport:
 
         host = await asyncio.to_thread(sample_host, mode=self.core.host_mode())
         hb = self.core.heartbeat()
+        from mino_scout.desktop import get_desktop_runtime
+        host.update(await asyncio.to_thread(get_desktop_runtime().host, self.core.node_id, next((d for d in devices or [] if d.platform == "desktop"), None)))
         hb.host = host
         hb.device_delta = delta
+        if devices is not None:
+            desktop = next((d for d in devices if d.platform == "desktop"), None)
+            if desktop is not None:
+                from mino_scout.executors.desktop_executor import DesktopExecutor
+                hb.executors = [P.ExecutorManifest(id="desktop", available=desktop.desktop_state == "ready",
+                                                 provides=DesktopExecutor.provides if desktop.desktop_state == "ready" else [],
+                                                 reason=desktop.blocked_reason)]
         await self._send(P.MsgType.HEARTBEAT, hb)
+        self._connection("heartbeat", connected=True, registered=True)
         try:
             from mino_scout.runtime_sidecar import write_runtime_sidecar
 
@@ -533,6 +573,8 @@ class NodeTransport:
     async def _run_execute(self, env: P.Envelope, req: P.Execute) -> None:
         # core 是同步的（executor 全是阻塞 IO），丢线程池，别卡住事件循环
         result = await asyncio.to_thread(self.core.execute, req)
+        SLog.i(TAG, f"RESULT run={req.run_id} step={req.step_idx} sn={req.sn} cap={req.capability_id} "
+                    f"executor={result.executor_used} status={result.status.value} elapsed_ms={result.elapsed_ms}")
         await self._reply_result(env, _result_from_event(req, result))
         self._apply_node_side_effects(result)
 

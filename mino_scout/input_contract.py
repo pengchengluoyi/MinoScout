@@ -7,6 +7,10 @@ from typing import Any
 def runtime_input_capabilities() -> list[dict[str, Any]]:
     return [
         {
+            "id": "input_text", "executor": "desktop", "platform": "desktop", "contract_version": 2,
+            "supported_combinations": [{"target_mode": "current_focus", "write_modes": ["replace", "append"]}],
+        },
+        {
             "id": "input_text",
             "executor": "playwright",
             "platform": "web",

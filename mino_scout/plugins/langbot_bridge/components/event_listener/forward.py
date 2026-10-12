@@ -107,7 +107,8 @@ class ForwardListener(EventListener):
                 msg_id = str(mid)
                 break
         if not msg_id:
-            msg_id = hashlib.sha1(f"{bot_uuid}|{chat_id}|{sender}|{text}".encode()).hexdigest()[:24]
+            # 缺少平台消息标识无法可靠去重，不能执行助手工具。
+            return
         payload = {
             "channel": "", "tenant": "", "chat_id": chat_id,
             "chat_type": "group" if kind == "group" else "private",

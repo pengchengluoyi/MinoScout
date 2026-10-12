@@ -95,6 +95,13 @@ class DeviceManifest:
     platform: str
     channels: dict[str, str] = field(default_factory=dict)
     model: str = ""
+    os: str = ""
+    session_key: str = ""
+    session_generation: str = ""
+    desktop_state: str = ""
+    blocked_reason: str = ""
+    capabilities: Optional[list[str]] = None
+    readiness: Optional[dict[str, Any]] = None
 
 
 @dataclass
@@ -103,6 +110,7 @@ class Register:
     token: str
     platform: str
     scout_version: str
+    account_isolation_version: int = 0
     protocol_version: int = PROTOCOL_VERSION
     arch: str = ""
     hostname: str = ""
@@ -113,6 +121,7 @@ class Register:
     plugins: Optional[list[dict[str, Any]]] = None
     # None：旧节点没报运行能力。不能用版本号猜测是否支持当前焦点输入。
     runtime_capabilities: Optional[list[dict[str, Any]]] = None
+    host: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -126,6 +135,7 @@ class Registered:
     warnings: list[str] = field(default_factory=list)
     node_id: str = ""
     node_token: str = ""
+    owner_user_id: str = ""
 
 
 @dataclass
@@ -148,6 +158,7 @@ class Heartbeat:
     host: dict[str, Any] = field(default_factory=dict)
     plugins: Optional[list[dict[str, Any]]] = None
     runtime_capabilities: Optional[list[dict[str, Any]]] = None
+    executors: Optional[list[ExecutorManifest]] = None
 
 
 @dataclass
@@ -242,7 +253,9 @@ def _encode(value: Any) -> Any:
                 continue
             if f.name == "plugins" and raw is None:
                 continue
-            if f.name == "runtime_capabilities" and raw is None:
+            if f.name in ("runtime_capabilities", "capabilities", "readiness", "executors") and raw is None:
+                continue
+            if f.name in ("os", "session_key", "session_generation", "desktop_state", "blocked_reason") and not raw:
                 continue
             out[f.name] = _encode(raw)
         return out

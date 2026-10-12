@@ -34,13 +34,16 @@ def ingest(
     mentioned: bool,
     reply_ctx: dict[str, str] | None,
     tenant: str = "",
+    instance_id: str = "",
 ) -> dict[str, Any] | None:
     """返回发出的 im 载荷；重复消息（已入库）返回 None 不再上报。"""
     body = str(text or "")[:TEXT_MAX]
     ts = int(time.time())
     try:
-        turns = im_store.recent(channel, chat_id, RECENT_TURNS)
-        fresh = im_store.record(channel, chat_id, sender_id, msg_id, "user", body, ts)
+        turns = im_store.recent(channel, chat_id, RECENT_TURNS, sender_id=sender_id,
+                                instance_id=instance_id, tenant=tenant)
+        fresh = im_store.record(channel, chat_id, sender_id, msg_id, "user", body, ts,
+                                instance_id=instance_id, tenant=tenant)
     except Exception as exc:
         SLog.w(TAG, f"im_store 不可用，本条不带历史: {type(exc).__name__}")
         turns, fresh = [], True
@@ -48,6 +51,7 @@ def ingest(
         SLog.i(TAG, f"duplicate channel={channel} msg_id={msg_id}, skip")
         return None
     im = {
+        "instance_id": str(instance_id or ""),
         "channel": str(channel),
         "tenant": str(tenant or ""),
         "chat_id": str(chat_id),
@@ -170,15 +174,20 @@ def _handle_ingest(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     try:
         from mino_scout.plugins import langbot_host
 
+        platform = {"feishu": "lark", "wecom": "wecom", "dingtalk": "dingtalk"}.get(channel)
+        instance = str(body.get("bot_uuid") or ctx.get("bot_uuid") or "")
+        actual = str((langbot_host.channel_status().get("platforms") or {}).get(platform, {}).get("instance_id") or "")
+        if not instance or instance != actual or ctx.get("bot_uuid") != instance:
+            return 403, {"ok": False, "error": "unverified robot instance"}
         langbot_host.note_message(channel)
     except Exception:
-        pass
+        return 403, {"ok": False, "error": "unverified robot instance"}
     try:
         im = ingest(
             channel, chat_id, chat_type,
             str(body.get("sender_id") or ""), str(body.get("msg_id") or ""),
             str(body.get("text") or ""), mentioned,
-            {str(k): str(v) for k, v in ctx.items()}, tenant=str(body.get("tenant") or ""),
+            {str(k): str(v) for k, v in ctx.items()}, tenant=str(body.get("tenant") or ""), instance_id=instance,
         )
     except Exception as exc:
         SLog.e(TAG, f"loopback ingest 失败: {type(exc).__name__}")

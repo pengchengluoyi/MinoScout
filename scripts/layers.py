@@ -51,7 +51,7 @@ _BROWSER_DIR = "ms-playwright"
 
 # 冻结配方的世代号。**改了 build_binary.py 的 COLLECT_ALL / EXTRA_HIDDEN /
 # EXCLUDES / 入口脚本 / runtime 锁定依赖算法，就要 +1**
-RUNTIME_ABI = 3
+RUNTIME_ABI = 5
 
 
 def package_version() -> str:

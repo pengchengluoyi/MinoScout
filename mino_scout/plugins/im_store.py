@@ -12,6 +12,7 @@ CLAUDE.md 硬约束 1 禁止 `import sqlite3`；本模块是经设计文档 §7.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sqlite3  # 设计 §7.3 要求 Scout 本地 scout.db；仅 im_store.py 使用
 import threading
@@ -198,17 +199,41 @@ def _get() -> _Store:
         return _store
 
 
-def record(channel: str, chat_id: str, sender_id: str, msg_id: str, role: str, text: str, ts: int | None = None) -> bool:
-    """写一条。(channel,msg_id,role) 重复则忽略，返回 False。"""
-    return _get().record(channel, chat_id, sender_id, msg_id, role, text, ts)
+def _scope(channel: str, instance_id: str, tenant: str, sender_id: str) -> str:
+    cfg = load_config()
+    owner = str(cfg.get("plugin_owner_user_id") or "")
+    origin = str(cfg.get("plugin_owner_nexus") or "")
+    if not owner or not origin or not instance_id or not sender_id:
+        raise PermissionError("IM 历史缺少已确认的账号、实例或发送者")
+    parts = [origin, owner, channel, instance_id, tenant, sender_id]
+    return "scoped:" + hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode()).hexdigest()
 
 
-def recent(channel: str, chat_id: str, limit: int = 8, before_ts: int | None = None) -> list[dict[str, Any]]:
-    return _get().recent(channel, chat_id, limit, before_ts)
+def record(channel: str, chat_id: str, sender_id: str, msg_id: str, role: str, text: str,
+           ts: int | None = None, *, instance_id: str = "", tenant: str = "") -> bool:
+    return _get().record(_scope(channel, instance_id, tenant, sender_id), chat_id,
+                         sender_id, msg_id, role, text, ts)
 
 
-def history(channel: str, chat_id: str, limit: int = 20) -> list[dict[str, Any]]:
-    return _get().history(channel, chat_id, limit)
+def _messages(channel: str, chat_id: str, sender_id: str, instance_id: str, tenant: str,
+              limit: int, before_ts: int | None = None, *, full: bool = False,
+              after_ts: int = 0) -> list[dict[str, Any]]:
+    scope = _scope(channel, instance_id, tenant, sender_id)
+    rows = (_get().history(scope, chat_id, limit) if full
+            else _get().recent(scope, chat_id, min(8, max(0, limit)), before_ts))
+    return [{**r, "sender_id": sender_id, "instance_id": instance_id, "tenant": tenant}
+            for r in rows if int(r["ts"]) > after_ts]
+
+
+def recent(channel: str, chat_id: str, limit: int = 8, before_ts: int | None = None, *,
+           sender_id: str = "", instance_id: str = "", tenant: str = "") -> list[dict[str, Any]]:
+    return _messages(channel, chat_id, sender_id, instance_id, tenant, limit, before_ts)
+
+
+def history(channel: str, chat_id: str, limit: int = 20, *, sender_id: str = "",
+            instance_id: str = "", tenant: str = "", after_ts: int = 0) -> list[dict[str, Any]]:
+    return _messages(channel, chat_id, sender_id, instance_id, tenant, limit,
+                     full=True, after_ts=after_ts)
 
 
 def purge(older_than_days: int) -> int:

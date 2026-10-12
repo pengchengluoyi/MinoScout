@@ -1,0 +1,63 @@
+{
+  "v": 2,
+  "type": "HEARTBEAT",
+  "msg_id": "01J8ZQHEARTBEAT000000001",
+  "reply_to": null,
+  "ts": "2026-09-02T15:30:15.000000+08:00",
+  "payload": {
+    "node_id": "3f8a1c0e9b2d4f71",
+    "uptime_sec": 3721,
+    "busy": true,
+    "active_runs": [
+      "run_20260902_153001_R5CT30"
+    ],
+    "device_delta": [
+      {
+        "sn": "R5CT30xxxx",
+        "platform": "android",
+        "channels": {
+          "adb": "disconnected",
+          "remote": "connected"
+        },
+        "model": ""
+      }
+    ],
+    "device_workload": [
+      {
+        "sn": "R5CT30xxxx",
+        "run_id": "run_20260902_153001_R5CT30",
+        "step_idx": 3,
+        "capability_id": "tap"
+      }
+    ],
+    "scout_version": "0.1.29",
+    "host": {
+      "mode": "running",
+      "power_source": "ac",
+      "charging": "not charging",
+      "battery_percent": 80,
+      "inhibit": true,
+      "cpu_percent": 3.2,
+      "rss_mb": 180.0,
+      "children": {
+        "Chromium": 1,
+        "caffeinate": 1,
+        "adb": 2
+      }
+    },
+    "plugins": [
+      {"class": "mail", "id": "gmail", "installed": true, "configured": false},
+      {"class": "cli", "id": "feishu", "installed": false, "configured": false},
+      {
+        "class": "im", "id": "langbot", "installed": true, "configured": true,
+        "status": {"state": "running", "healthy": true, "version": "4.10.11", "restarts": 0, "error": ""},
+        "platforms": {
+          "lark": {"enabled": true, "holding": true, "connected": true, "connection_verified": true,
+                   "connection_source": "recent_message", "last_message_at": 1788327015, "error": ""},
+          "dingtalk": {"enabled": true, "holding": false, "connected": false, "connection_verified": false,
+                       "connection_source": "unconfirmed", "last_message_at": 0, "error": ""}
+        }
+      }
+    ]
+  }
+}

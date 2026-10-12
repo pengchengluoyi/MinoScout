@@ -277,7 +277,14 @@ def capture(
     `prefer` 保留签名兼容，不再用来把 adb 和 playwright 串成一条 fallback。
     """
     started = time.time()
-    if device.is_web:
+    if device.platform == "desktop":
+        from mino_scout.desktop import get_desktop_runtime
+        try:
+            data = get_desktop_runtime().observe(device.extra, str(device.extra.get("run_id") or ""))
+            shot = CapturedScreen(ok=True, source="desktop", image_base64=data["image_base64"], image_mime=data["image_mime"], width=data["width"], height=data["height"], remote_detail={"capture_id": data["capture_id"], "session_generation": data["session_generation"]})
+        except Exception as exc:
+            shot = CapturedScreen(ok=False, source="desktop", error=str(exc))
+    elif device.is_web:
         from mino_scout.playwright_hub import pick_goto_url
 
         url = pick_goto_url(
@@ -293,12 +300,15 @@ def capture(
             device_hint=dict(device.extra or {}),
             screenshot_params=screenshot_params,
         )
-    else:
+    elif device.platform == "android":
         shot = capture_via_adb(
             device.adb_serial,
             timeout_sec=timeout_sec,
             compress_ratio=compress_ratio,
         )
+
+    else:
+        shot = CapturedScreen(ok=False, source="screen", error="设备平台没有实现截图通道")
 
     if shot.has_image():
         if allow_blank or not png_is_blank(base64.b64decode(shot.image_base64)):

@@ -1,0 +1,35 @@
+{
+  "v": 2,
+  "type": "EXECUTE",
+  "msg_id": "01J8ZQEXECUTE00000000007",
+  "reply_to": null,
+  "ts": "2026-09-02T15:33:00.000000+08:00",
+  "payload": {
+    "run_id": "",
+    "step_idx": -1,
+    "sn": "",
+    "capability_id": "node.update_progress",
+    "params": {
+      "node_id": "3f8a1c0e9b2d4f71",
+      "event": "update_progress",
+      "detail": "下载 app",
+      "severity": "info",
+      "progress": {
+        "active": true,
+        "stage": "download",
+        "label": "下载 app",
+        "percent": 42,
+        "layer": "app",
+        "step_index": 1,
+        "step_count": 1,
+        "bytes_received": 38000,
+        "bytes_total": 90000
+      }
+    },
+    "executor_order": [],
+    "low_level": {},
+    "selected_impl": {},
+    "device_hint": {},
+    "timeout_sec": 5.0
+  }
+}

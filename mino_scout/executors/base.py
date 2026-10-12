@@ -47,7 +47,11 @@ class DeviceRef:
         plat = str(self.platform or "").strip().lower()
         if plat in ("ios", "iphone", "ipad"):
             return frozenset({"ios_wda", "remote"})
-        return frozenset({"adb", "remote"})
+        if plat == "desktop":
+            return frozenset({"desktop"})
+        if plat == "android":
+            return frozenset({"adb", "remote"})
+        return frozenset()
 
 
 @dataclass

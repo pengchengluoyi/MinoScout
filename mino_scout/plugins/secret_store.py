@@ -25,7 +25,11 @@ class SecretStoreError(Exception):
 
 
 def account_name(node_id: str, kind: str, plugin_id: str, field: str) -> str:
-    return f"{node_id}:{kind}:{plugin_id}:{field}"
+    from mino_scout.config import load_config
+    owner = str(load_config().get("plugin_owner_user_id") or "")
+    if not owner:
+        raise SecretStoreError("插件账号归属尚未确认")
+    return f"{owner}:{node_id}:{kind}:{plugin_id}:{field}"
 
 
 def put_secret(account: str, secret: str) -> None:

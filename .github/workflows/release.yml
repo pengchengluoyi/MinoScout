@@ -99,6 +99,14 @@ jobs:
           python -m pip install -U pip
           python -m pip install pyinstaller
           python -m pip install .
+      - name: Verify Windows process and update lifecycle
+        if: runner.os == 'Windows'
+        run: python scripts/check_windows_lifecycle.py
+      - name: Include PC Desktop SDK
+        if: runner.os == 'macOS' || runner.os == 'Windows'
+        run: python -m pip install ".[desktop]"
+      - name: Validate PC SDK native library
+        run: python -c "import cua_driver; from importlib.metadata import version; assert version('cua-driver') == '0.34.1'; print('PC SDK native library loaded')"
       - name: Freeze, probe, pack zips
         env:
           SCOUT_VERSION: ${{ needs.meta.outputs.version }}

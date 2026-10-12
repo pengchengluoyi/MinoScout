@@ -95,7 +95,7 @@ $PREFIX/bin/
 
 层 → 目录的映射真源在 `scripts/layers.py` 的 `PAYLOAD_DIRS`，另有三份副本
 （`install.sh`、`install.ps1`、冻结入口）—— bash / PowerShell / 冻结产物都没法 import 它。
-`scripts/verify_layer_mapping.py` 守着四处一致，进 `verify_all.py`。
+修改时需同步检查四处映射，分层安装验证由 `check_layered_install.py` 执行。
 
 **install 脚本不再整体 `rm -rf $PREFIX/bin`。** 那一句会连 780 MB 浏览器一起删，
 等于每次更新都重下重铺 —— 这是包体问题的一半。
@@ -119,11 +119,20 @@ app 层的 `layers.txt` 带 `requires_runtime=<rtkey>`。只装 app 层时，ins
 ## 8. 验证
 
 ```bash
-python scripts/verify_all.py                                   # 硬约束 + 层映射一致性
 python scripts/build_binary.py --check                         # 冻结 + 真跑一次 probe
 python scripts/check_layered_install.py --dist dist --probe    # 装全量 → 只装 app → 断言浏览器没动
 ```
 
-第三个是分层收益的看门人：它真装一遍再只装 app 层，断言浏览器层一个字节没动。
+分层安装检查是收益的看门人：它真装一遍再只装 app 层，断言浏览器层一个字节没动。
 只要有人恢复了整体删除，它就红 —— 而表面上一切正常（装完能跑），只有下载量会翻回 439 MB。
 CI 在 `release.yml` 的 build job 里跑它。
+
+## 0.1.76 Windows 更新与运行身份
+
+Windows 根据系统选择 `install.ps1`。当 Scout 仍在运行时，先下载并校验 SHA256，再由独立助手等待原进程退出后替换载荷，避免覆盖正在使用的 EXE / DLL。同一安装只允许一个待更新任务；`status.update` 展示 `awaiting_exit`、`installing`、`completed` 或 `failed`。安装失败保留备份和失败载荷，恢复受影响层，不修改 config、节点身份和凭据。
+
+服务停止使用 PID 与创建时间绑定的协作请求，超时才终止同一进程；存活检查使用 psutil，Windows 不使用 POSIX `kill(pid, 0)`。冻结版本重启直接运行 `mino-scout.exe run`。计划任务按安装目录区分，以安装用户的 Interactive / Limited 身份启动；旧任务保留 XML 备份，权限不足时提示并使用当前用户 Startup。原 SYSTEM 任务不能无凭据转成另一用户。源码安装在 macOS / Windows 一并安装 Desktop extra。
+
+0.1.75 的 Windows 进程可能仍有选择 install.sh 的旧逻辑；首次升级建议从 Workbench 为该电脑重新复制安装命令，在原登录用户的 PowerShell 执行，复用现有安装目录和身份。不要删除配置来升级。
+
+本版本提升 runtime ABI 到 5，发布需包含对应 runtime，不能只手工替换 app。Windows CI 额外验证原生子进程协作停止以及安装器和延后更新助手的 PowerShell 语法。真实 GUI 输入、锁屏恢复与权限弹窗需要分别在 Mac / Windows 实机验收。

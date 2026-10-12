@@ -1,0 +1,30 @@
+{
+  "v": 2,
+  "type": "RESULT",
+  "msg_id": "fixture-result_desktop.json",
+  "reply_to": null,
+  "ts": "2026-10-12T00:00:00+08:00",
+  "payload": {
+    "run_id": "cr-fixture",
+    "status": "pass",
+    "step_idx": -1,
+    "summary": "",
+    "error": "",
+    "executor_used": "desktop",
+    "source": "",
+    "elapsed_ms": 0,
+    "attempts": [],
+    "image_base64": "",
+    "image_mime": "",
+    "width": 0,
+    "height": 0,
+    "extra": {
+      "capture_id": "capture-fixture-1",
+      "session_generation": "session-generation-1",
+      "cua_action": {
+        "effect": "confirmed",
+        "route": "foreground"
+      }
+    }
+  }
+}

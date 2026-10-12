@@ -1,0 +1,17 @@
+{
+  "v": 2,
+  "type": "REGISTERED",
+  "msg_id": "01J8ZQREGISTEREDISOREJECT",
+  "reply_to": "01J8ZQREGISTER0000000001",
+  "ts": "2026-09-02T15:30:00.180000+08:00",
+  "payload": {
+    "accepted": false,
+    "nexus_version": "0.1.29",
+    "protocol_version": 2,
+    "reason": "请升级 Scout：当前客户端未支持账号隔离，旧插件配置不能继承",
+    "session_token": "",
+    "heartbeat_interval_sec": 15,
+    "warnings": [],
+    "owner_user_id": ""
+  }
+}

@@ -386,3 +386,26 @@ def clear_plugin_secrets(node_id: str, kind: str, plugin_id: str) -> None:
     items = root.setdefault("items", {})
     items.pop(_key(kind, plugin_id), None)
     save_state(root)
+
+
+def verify_local_owner(user_id: str, nexus_url: str) -> None:
+    """不转移节点。旧的未归属配置保留原位、停用，等待显式维护确认。"""
+    from mino_scout.config import load_config, save_config
+    from urllib.parse import urlsplit
+    uid = str(user_id or "").strip()
+    parts = urlsplit(nexus_url)
+    origin = f"{parts.scheme}://{parts.netloc}"
+    if not uid or not parts.netloc:
+        raise PermissionError("节点未确认账号归属，社交配置已停用")
+    cfg = load_config()
+    previous = str(cfg.get("plugin_owner_user_id") or "")
+    previous_origin = str(cfg.get("plugin_owner_nexus") or "")
+    if previous:
+        if previous != uid or previous_origin != origin:
+            raise PermissionError("本地插件属于其他账号或服务，禁止继承；需先隔离旧配置")
+        return
+    if load_state().get("items") or (config_dir() / "scout.db").exists():
+        raise PermissionError("历史插件配置待认领，已停用；原配置与密钥保留")
+    cfg["plugin_owner_user_id"] = uid
+    cfg["plugin_owner_nexus"] = origin
+    save_config(cfg)

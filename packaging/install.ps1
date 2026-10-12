@@ -14,6 +14,8 @@ $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ($env:OS -ne "Windows_NT") { throw "此脚本仅支持 Windows" }
+$InstallingIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+if ($InstallingIdentity.IsSystem) { throw "PC 操作需要登录用户，请在用户桌面内安装 Scout" }
 if ($env:MINO_SCOUT_HOME) {
   $Prefix = $env:MINO_SCOUT_HOME
 } else {
@@ -93,15 +95,24 @@ function Get-LayerTarget($layer) {
 # ---------------- 落地 ----------------
 
 # 先拷到 .new 再改名，把"目标已删、新的还没到位"的窗口压到一次改名。
+$script:Replacements = @()
+$script:BackupRoot = Join-Path $Prefix ("update-backups\" + [guid]::NewGuid().ToString())
 function Replace-Path($src, $dst) {
-  foreach ($suffix in @(".new", ".old")) {
-    $p = "$dst$suffix"
-    if (Test-Path -LiteralPath $p) { Remove-Item -Recurse -Force -LiteralPath $p }
+  $fresh = "$dst.new-" + [guid]::NewGuid().ToString()
+  $saved = Join-Path $script:BackupRoot ([string]$script:Replacements.Count)
+  Copy-Item -Recurse -LiteralPath $src -Destination $fresh
+  $existed = Test-Path -LiteralPath $dst
+  New-Item -ItemType Directory -Force -Path $script:BackupRoot | Out-Null
+  if ($existed) { Move-Item -LiteralPath $dst -Destination $saved }
+  $script:Replacements += @{path=$dst; saved=$saved; fresh=$fresh; existed=$existed}
+  Move-Item -LiteralPath $fresh -Destination $dst
+}
+function Restore-Replacements {
+  for ($i = $script:Replacements.Count - 1; $i -ge 0; $i--) {
+    $entry = $script:Replacements[$i]
+    if (Test-Path -LiteralPath $entry.path) { Move-Item -LiteralPath $entry.path -Destination ($entry.saved + '.failed') }
+    if ($entry.existed) { Move-Item -LiteralPath $entry.saved -Destination $entry.path }
   }
-  Copy-Item -Recurse -LiteralPath $src -Destination "$dst.new"
-  if (Test-Path -LiteralPath $dst) { Move-Item -LiteralPath $dst -Destination "$dst.old" }
-  Move-Item -LiteralPath "$dst.new" -Destination $dst
-  if (Test-Path -LiteralPath "$dst.old") { Remove-Item -Recurse -Force -LiteralPath "$dst.old" }
 }
 
 function Install-Layer($layer) {
@@ -184,47 +195,65 @@ function Install-Source {
   }
   New-Item -ItemType Directory -Force -Path $App | Out-Null
   $dstPkg = Join-Path $App "mino_scout"
-  if (Test-Path -LiteralPath $dstPkg) { Remove-Item -Recurse -Force -LiteralPath $dstPkg }
-  Copy-Item -Recurse (Join-Path $Root "mino_scout") $dstPkg
-  Copy-Item (Join-Path $Root "pyproject.toml") (Join-Path $App "pyproject.toml")
+  Replace-Path (Join-Path $Root "mino_scout") $dstPkg
+  Replace-Path (Join-Path $Root "pyproject.toml") (Join-Path $App "pyproject.toml")
   & $Py @pyArgs -m venv $Venv
+  if ($LASTEXITCODE -ne 0) { throw "Failed to prepare Scout Python environment" }
   $VenvPy = Join-Path $Venv "Scripts\python.exe"
   & $VenvPy -m pip install -U pip
-  & $VenvPy -m pip install $App
+  if ($LASTEXITCODE -ne 0) { throw "Failed to prepare pip" }
+  & $VenvPy -m pip install "$App[desktop]"
+  if ($LASTEXITCODE -ne 0) { throw "Failed to install Scout with Desktop SDK" }
   $script:Bin = Join-Path $Venv "Scripts\mino-scout.exe"
   if (-not (Test-Path -LiteralPath $script:Bin)) {
     throw "install failed: $($script:Bin) not created"
   }
 }
 
-# ---------------- 停掉在跑的实例 ----------------
+# Validate app compatibility before stopping the existing installation.
+if ((Test-Path -LiteralPath (Join-Path $Root 'app')) -and -not (Test-Path -LiteralPath (Join-Path $Root 'runtime'))) { Assert-AppGate }
+$hash = [Security.Cryptography.SHA256]::Create()
+try { $taskSuffix = -join ($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes($Prefix.ToLowerInvariant())) | ForEach-Object { $_.ToString('x2') }) }
+finally { $hash.Dispose() }
+$taskName = "Mino Scout " + $taskSuffix.Substring(0, 12)
 
-# 刻意在动载荷**之前**停（进程内热更 MINO_SCOUT_UPDATING=1 时跳过）。
-if (-not $env:MINO_SCOUT_UPDATING) {
-  $candidateBin = @(
-    (Join-Path $Prefix "bin\mino-scout.exe"),
-    (Join-Path $Prefix "venv\Scripts\mino-scout.exe")
-  ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-  if ($candidateBin) {
-    try { & $candidateBin stop 2>$null | Out-Null } catch { }
+# Stop only this installation's process; never kill all nodes by executable name.
+if (-not $env:MINO_SCOUT_UPDATING -and -not $env:MINO_SCOUT_REGISTER_ONLY) {
+  $pidFile = Join-Path $Prefix 'scout.pid'
+  if (Test-Path -LiteralPath $pidFile) {
+    $scoutPid = 0
+    if ([int]::TryParse((Get-Content -LiteralPath $pidFile -Raw).Trim(), [ref]$scoutPid)) {
+      $process = Get-Process -Id $scoutPid -ErrorAction SilentlyContinue
+      $allowed = @((Join-Path $Dest 'mino-scout.exe'), (Join-Path $Prefix 'venv\Scripts\mino-scout.exe'), (Join-Path $Prefix 'venv\Scripts\python.exe'))
+      if ($process -and $process.Path -in $allowed) {
+        $createdAt = ([DateTimeOffset]$process.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds() / 1000.0
+        @{pid=$scoutPid; created_at=$createdAt; requested_at=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()} |
+          ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Prefix 'scout_stop.json') -Encoding UTF8
+        if (-not $process.WaitForExit(15000)) {
+          $current = Get-Process -Id $scoutPid -ErrorAction SilentlyContinue
+          if ($current -and $current.StartTime -eq $process.StartTime) { Stop-Process -Id $scoutPid -Force }
+        }
+      } elseif ($process) { throw 'Scout PID does not belong to this installation; files were not changed.' }
+    }
   }
-  try {
-    Stop-ScheduledTask -TaskName "Mino Scout" -ErrorAction SilentlyContinue | Out-Null
-  } catch { }
-  try {
-    Get-Process -Name "mino-scout" -ErrorAction SilentlyContinue | Stop-Process -Force
-  } catch { }
-} else {
-  Write-Host "MINO_SCOUT_UPDATING=1 — skip stop (in-place update; Scout reexec after install)"
+  Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 }
 
-if (Test-Path -LiteralPath (Join-Path $Root "layers.txt")) {
-  Install-Layers
-} elseif ((Test-Path -LiteralPath (Join-Path $Root "mino_scout")) -and
-         (Test-Path -LiteralPath (Join-Path $Root "pyproject.toml"))) {
-  Install-Source
+if ($env:MINO_SCOUT_REGISTER_ONLY) {
+  $Bin = Join-Path $Dest 'mino-scout.exe'
+  if (-not (Test-Path -LiteralPath $Bin)) { throw 'Installed Scout binary missing.' }
 } else {
-  throw "installer payload not found (need layers.txt with runtime\ app\ browser\, or mino_scout\)"
+  $layerFile = Join-Path $Dest 'layers.txt'
+  $layerBefore = if (Test-Path -LiteralPath $layerFile) { [IO.File]::ReadAllBytes($layerFile) } else { $null }
+  try {
+    if (Test-Path -LiteralPath (Join-Path $Root "layers.txt")) { Install-Layers }
+    elseif ((Test-Path -LiteralPath (Join-Path $Root "mino_scout")) -and (Test-Path -LiteralPath (Join-Path $Root "pyproject.toml"))) { Install-Source }
+    else { throw 'Installer payload missing.' }
+  } catch {
+    Restore-Replacements
+    if ($null -ne $layerBefore) { [IO.File]::WriteAllBytes($layerFile, $layerBefore) }
+    throw
+  }
 }
 
 # CI 与本地自测；进程内热更不重注册计划任务。
@@ -233,30 +262,24 @@ if ($env:MINO_SCOUT_UPDATING) {
 } elseif ($env:MINO_SCOUT_SKIP_SERVICE) {
   Write-Host "MINO_SCOUT_SKIP_SERVICE set - not registering a scheduled task."
 } else {
-  $taskName = "Mino Scout"
   $registered = $false
-  $isAdmin = $false
   try {
-    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $isAdmin = (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole(
-      [Security.Principal.WindowsBuiltInRole]::Administrator)
-  } catch { $isAdmin = $false }
-
-  try {
+    $legacy = Get-ScheduledTask -TaskName 'Mino Scout' -ErrorAction SilentlyContinue
+    if ($legacy -and ($legacy.Actions | Where-Object { $_.Execute -eq $Bin -or ($_.Arguments -and $_.Arguments.Contains($Prefix)) })) {
+      Export-ScheduledTask -TaskName 'Mino Scout' | Set-Content -LiteralPath (Join-Path $Prefix 'legacy-task.xml') -Encoding UTF8
+      Stop-ScheduledTask -TaskName 'Mino Scout' -ErrorAction SilentlyContinue
+      Disable-ScheduledTask -TaskName 'Mino Scout' | Out-Null
+    }
+    $identity = $InstallingIdentity
     $launcher = Join-Path $Prefix "run-scout.ps1"
     $homeLiteral = $Prefix.Replace("'", "''")
     $binLiteral = $Bin.Replace("'", "''")
     "`$env:MINO_SCOUT_HOME = '$homeLiteral'`r`n& '$binLiteral' run" | Set-Content -LiteralPath $launcher -Encoding UTF8
     $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`"" -WorkingDirectory $Prefix
-    if ($isAdmin) {
-      $trigger = New-ScheduledTaskTrigger -AtStartup
-      $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0
-      Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -User "SYSTEM" -RunLevel Highest -Force | Out-Null
-    } else {
-      $trigger = New-ScheduledTaskTrigger -AtLogOn
-      $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-      Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
-    }
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity.Name
+    $principal = New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Limited
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0 -MultipleInstances IgnoreNew
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
     Start-ScheduledTask -TaskName $taskName
     $registered = $true
     Write-Host "Registered scheduled task: $taskName"
@@ -266,9 +289,13 @@ if ($env:MINO_SCOUT_UPDATING) {
 
   if (-not $registered) {
     $startup = [Environment]::GetFolderPath("Startup")
-    $cmdPath = Join-Path $startup "MinoScout.cmd"
-    Set-Content -LiteralPath $cmdPath -Value "@echo off`r`nstart `"`" `"$Bin`"" -Encoding ASCII
-    Start-Process -FilePath $Bin -WorkingDirectory $Prefix
+    $cmdPath = Join-Path $startup ("MinoScout-" + $taskSuffix.Substring(0, 12) + ".cmd")
+    $startupHome = $Prefix.Replace('%', '%%')
+    $startupBin = $Bin.Replace('%', '%%')
+    $startupContent = "@echo off`r`nchcp 65001 >nul`r`nset `"MINO_SCOUT_HOME=$startupHome`"`r`nstart `"`" `"$startupBin`" run"
+    [IO.File]::WriteAllText($cmdPath, $startupContent, (New-Object Text.UTF8Encoding($false)))
+    $env:MINO_SCOUT_HOME = $Prefix
+    Start-Process -FilePath $Bin -ArgumentList "run" -WorkingDirectory $Prefix
     Write-Host "Wrote $cmdPath"
   }
 }

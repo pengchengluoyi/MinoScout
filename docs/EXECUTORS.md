@@ -91,3 +91,20 @@ class Executor(Protocol):
 | 条件不满足时返回 `fail` | 应返回 `declined`，否则失败统计被污染 |
 | 为一个能力写 `if capability_id == "xxx"` 长链 | 用 `low_level`。上游 `adb_executor.py` 的 if-chain 是被明确批评过的反模式 |
 | 省略 `executor_used` | Nexus 的 trace 与覆盖度依赖它 |
+
+
+## Desktop 执行器（V4）
+
+`desktop` 只处理 `platform=desktop`，不在 Android/Web 执行器中 fallback。支持 `screenshot/tap_xy/tap_element/input_text/press_key/launch_app/get_foreground_app`，其中截图复用 ScreenCapture 的 Desktop 分支。Cua Driver 0.34.1 是可选 native 依赖；权限、会话、版本和实际捕获未就绪时 manifest 明确报告不可用。
+
+Desktop 首版只接受 visual 流程。截图坐标按 Mino 的千分比转换成捕获像素，再带 capture ID 交给 SDK。输入与按键也需要本任务的新截图、未变化的会话代际、独占租约及目标应用前台确认。macOS 启动使用已配置 bundle ID，Windows 使用完整 EXE 路径或 AUMID，经结构化 launch/focus 调用并回读前台，不执行 shell。组合键和 modifiers 按目标 OS 规范化。动作证据保留 Cua effect/route/delivery/error.code；拒绝为 blocked，疑似无效果或部分执行为 fail，不标成功；无业务回读的动作仍需后续截图确认。
+
+能力实现配置由 Nexus 的目录决定；Scout 不读取 YAML，也不让“在线”替代 readiness。
+
+## Desktop 输入契约（0.1.76）
+
+Nexus 将 Desktop 渠道映射为 `desktop_visual`，PC 输入只派给 `desktop`，不进入 Android / ADB 前台恢复。支持 `current_focus` 下的 `replace` 与 `append`；`replace` 使用 macOS Command+A / Windows Ctrl+A，再发送正文。成功点击后由 Nexus 提供 `focus:<run_id>:<seq>`，Scout 保存当时的原生键盘焦点并在输入前重验。焦点变化、代际变化、取消、输入后或超时会使引用失效；无法确认焦点时拒绝发送正文。
+
+Windows 被测应用标识为完整 EXE 路径或 AUMID，macOS 为 bundle ID；不执行任意启动命令。Android 清缓存、force-stop、reset 等恢复动作不用于 Desktop。
+
+Session Log 的 `tool/result` 包含节点、实际 executor、尝试链、capture_id、session_generation、驱动 effect/route 和安全的原生 evidence 类型；恢复子动作同样记录执行诊断。`observe/screen` 保留捕获引用，Workbench 可关联前后图和请求落点。自由文本 evidence detail 不展示，避免泄露输入内容。驱动局部 verify_state 未采集时明确标注，不能把动作投递成功等同于业务断言通过。

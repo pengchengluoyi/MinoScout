@@ -46,7 +46,8 @@ _PLATFORM_EXECUTOR_ORDER: dict[str, tuple[str, ...]] = {
     "ios": ("ios_wda",),
     "web": ("playwright",),
     "playwright": ("playwright",),
-    "other": ("adb", "remote"),
+    "desktop": ("desktop",),
+    "other": (),
 }
 
 _PLATFORM_ALIASES = {
@@ -58,6 +59,7 @@ _PLATFORM_ALIASES = {
     "browser": "web",
     "playwright": "playwright",
     "other": "other",
+    "desktop": "desktop",
 }
 
 _CAP_ALIASES = {
@@ -291,6 +293,10 @@ class ScoutCore:
                 error=msg,
                 raw_response={"command": cmd},
             )
+        if req.sn.startswith("desktop:") and (req.sn != f"desktop:{self.node_id}:console" or req.platform != "desktop"):
+            return make_event_result(_event_from_execute(req), status=EventStatus.BLOCKED, executor_used="core", started_at=now_iso(), elapsed_ms=0, error="Desktop 目标或平台不匹配", summary="Desktop 目标或平台不匹配")
+        if req.platform == "desktop" and cap == "hierarchy":
+            return make_event_result(_event_from_execute(req), status=EventStatus.BLOCKED, executor_used="desktop", started_at=now_iso(), elapsed_ms=0, error="Desktop 首版仅开放 visual 执行", summary="Desktop 首版仅开放 visual 执行")
         if cap == "probe":
             return self._dispatch_probe(req)
         if cap == "screenshot":
@@ -349,14 +355,14 @@ class ScoutCore:
             inst = installed_layers(config_dir()) or {}
             app_key = str(inst.get("app") or "").strip()
             need_reload = needs_process_reload(app_layer_key=app_key)
-            summary = "已是最新" if mode == "up-to-date" else f"已更新 ({mode})"
-            if layers:
+            summary = "更新包已校验，正在退出 Scout 后安装" if out.get("deferred") else ("已是最新" if mode == "up-to-date" else f"已更新 ({mode})")
+            if layers and not out.get("deferred"):
                 summary = f"已更新层: {', '.join(str(x) for x in layers)}"
             if need_reload and mode == "up-to-date":
                 summary = f"安装指纹 v{app_key or report_scout_version()}，正在重启以加载新版本"
             extra: dict[str, Any] = {"command": cmd, "update": out}
             if mode != "up-to-date" or need_reload:
-                extra["_scout_reexec"] = True
+                extra["_scout_reexec"] = not bool(out.get("deferred"))
                 extra["_scout_shutdown"] = True
             return make_event_result(
                 event, status=EventStatus.PASS, executor_used="core",
@@ -675,6 +681,8 @@ class ScoutCore:
             if run_id:
                 self._cancelled_runs[str(run_id)] = time.time()
         SLog.i(TAG, f"cancel run={run_id}，清掉 {len(keys)} 条幂等缓存")
+        from mino_scout.desktop import get_desktop_runtime
+        get_desktop_runtime().cancel(run_id)
         rid = str(run_id or "").strip()
         if rid:
             fake = P.Execute(run_id=rid, step_idx=-1, capability_id="cancel_run", platform="web")
@@ -697,6 +705,8 @@ class ScoutCore:
                 shard.submit(_stop_playwright_hub).result(timeout=8.0)
         except Exception as exc:
             SLog.w(TAG, f"playwright 退出清理: {exc}")
+        from mino_scout.desktop import get_desktop_runtime
+        get_desktop_runtime().shutdown()
 
     # ---------------- 状态 ----------------
 
@@ -959,6 +969,8 @@ def _platform_guess(sn: str) -> str:
 
     if is_web_slot(sn):
         return "web"
+    if sn.startswith("desktop:"):
+        return "desktop"
     return "android"
 
 
@@ -1020,7 +1032,8 @@ def _discover_devices(executors: dict[str, Executor], *, scout_id: str) -> list[
 
     remote(ClawNode) / iOS 的发现依赖 EngineFactory 与 clawnode/ 模块（E3），未搬。
     """
-    out: list[P.DeviceManifest] = []
+    from mino_scout.desktop import get_desktop_runtime
+    out: list[P.DeviceManifest] = [get_desktop_runtime().manifest(scout_id)]
     if "adb" in executors:
         out.extend(_discover_adb_devices())
     if "playwright" in executors:

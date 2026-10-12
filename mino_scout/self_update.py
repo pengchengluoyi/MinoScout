@@ -25,9 +25,11 @@ DEFAULT_MANIFEST = (
 
 
 def _scout_os_arch() -> tuple[str, str]:
-    os_name = {"Darwin": "darwin", "Windows": "win32", "Linux": "linux"}.get(platform.system(), "linux")
+    os_name = {"Darwin": "darwin", "Windows": "win32", "Linux": "linux"}.get(platform.system())
     machine = platform.machine().lower()
-    arch = "arm64" if machine in ("arm64", "aarch64") else "x64"
+    arch = {"arm64": "arm64", "aarch64": "arm64", "amd64": "x64", "x86_64": "x64"}.get(machine)
+    if not os_name or not arch:
+        raise RuntimeError("当前系统或 CPU 架构没有 Scout 安装包")
     return os_name, arch
 
 
@@ -88,12 +90,10 @@ def _install_zip(zip_path: Path, *, inplace: bool) -> None:
     try:
         with zipfile.ZipFile(zip_path) as zf:
             zf.extractall(work)
-        install_sh = next(work.rglob("install.sh"), None)
+        name = "install.ps1" if platform.system() == "Windows" else "install.sh"
+        install_sh = next(work.rglob(name), None)
         if install_sh is None:
-            install_ps1 = next(work.rglob("install.ps1"), None)
-            if install_ps1 is None:
-                raise RuntimeError("zip 内找不到 install.sh / install.ps1")
-            install_sh = install_ps1
+            raise RuntimeError(f"zip 内找不到 {name}")
         try:
             install_sh.chmod(install_sh.stat().st_mode | 0o111)
         except OSError:
@@ -228,6 +228,9 @@ def run_update(*, manifest_url: str = "", inplace: bool | None = None) -> dict[s
         percent=10,
         step_count=step_count,
     )
+    if platform.system() == "Windows" and inplace:
+        from mino_scout.windows_update import stage_update
+        return stage_update(steps, version=str(item.get("version") or ""))
     for idx, step in enumerate(steps):
         apply_plan_step(step, step_index=idx + 1, step_count=step_count, inplace=inplace)
 
