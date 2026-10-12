@@ -77,32 +77,27 @@ def probe_focus():
 
 
 def mac_foreground_pid():
-    cf = ctypes.CDLL('/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation')
-    ax = ctypes.CDLL('/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices')
-    cf.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
-    cf.CFStringCreateWithCString.restype = ctypes.c_void_p
-    cf.CFRelease.argtypes = [ctypes.c_void_p]
-    ax.AXUIElementCreateSystemWide.restype = ctypes.c_void_p
-    ax.AXUIElementCopyAttributeValue.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
-    ax.AXUIElementCopyAttributeValue.restype = ctypes.c_int32
-    ax.AXUIElementGetPid.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int32)]
-    ax.AXUIElementGetPid.restype = ctypes.c_int32
-    root = ax.AXUIElementCreateSystemWide()
-    name = cf.CFStringCreateWithCString(None, b'AXFocusedApplication', 0x08000100)
-    app = ctypes.c_void_p()
-    pid = ctypes.c_int32()
+    ctypes.CDLL('/System/Library/Frameworks/AppKit.framework/AppKit')
+    objc = ctypes.CDLL('/usr/lib/libobjc.A.dylib')
+    objc.objc_getClass.argtypes = [ctypes.c_char_p]
+    objc.objc_getClass.restype = ctypes.c_void_p
+    objc.sel_registerName.argtypes = [ctypes.c_char_p]
+    objc.sel_registerName.restype = ctypes.c_void_p
+    send_object = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(('objc_msgSend', objc))
+    send_pid = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.c_void_p, ctypes.c_void_p)(('objc_msgSend', objc))
+    send_void = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p)(('objc_msgSend', objc))
+    pool = send_object(objc.objc_getClass(b'NSAutoreleasePool'), objc.sel_registerName(b'new'))
     try:
-        if not root or not name:
-            raise RuntimeError('Cannot inspect native foreground application')
-        if ax.AXUIElementCopyAttributeValue(root, name, ctypes.byref(app)) != 0 or not app.value:
+        workspace = send_object(objc.objc_getClass(b'NSWorkspace'), objc.sel_registerName(b'sharedWorkspace'))
+        if not workspace:
+            raise RuntimeError('Cannot inspect native workspace')
+        app = send_object(workspace, objc.sel_registerName(b'frontmostApplication'))
+        if not app:
             raise RuntimeError('Cannot confirm native foreground application')
-        if ax.AXUIElementGetPid(app, ctypes.byref(pid)) != 0 or pid.value <= 0:
+        pid = send_pid(app, objc.sel_registerName(b'processIdentifier'))
+        if pid <= 0:
             raise RuntimeError('Cannot confirm native foreground process')
-        return pid.value
+        return pid
     finally:
-        if app.value:
-            cf.CFRelease(app)
-        if name:
-            cf.CFRelease(name)
-        if root:
-            cf.CFRelease(root)
+        if pool:
+            send_void(pool, objc.sel_registerName(b'drain'))

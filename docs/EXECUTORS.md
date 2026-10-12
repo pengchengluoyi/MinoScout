@@ -113,7 +113,9 @@ Session Log 的 `tool/result` 包含节点、实际 executor、尝试链、captu
 
 macOS 启动先等待目标进程的普通窗口，再按 `pid + window_id` 调用 `bring_to_front`；调用参数遵循已锁定 SDK 的工具 schema，不向不接受 session 的启动和激活工具附加该字段。检查激活回执，再在有界等待内读回目标应用的前台状态，不重复提交启动或激活请求。Windows 继续按系统支持的 EXE/AUMID 目标及进程激活路径执行。
 
-macOS 前台读回使用 AXFocusedApplication 的原生 PID 与 Cua 返回的应用身份交叉匹配，不仅依赖 list_apps 的 active 标记；启动验证、get_foreground_app 及每次输入前采用同一读取路径，返回来源为 macos_ax。原生读回失败就阻塞，不回退到陈旧的 active 标记，也不读取控件正文。
+macOS 前台读回使用 NSWorkspace.frontmostApplication 的 processIdentifier 与 Cua 返回的应用身份交叉匹配；启动验证、get_foreground_app 及每次输入前采用同一读取路径，返回来源为 macos_workspace。前台应用身份与 AX 键盘控件焦点分开读取，键盘焦点保护及辅助功能权限要求保留。原生读回失败或 Cua 无法关联该 PID/bundle ID 时明确为身份未知并阻塞，不判为目标已离开前台，也不读取控件正文。
+
+启动固定执行 Cua launch_app → 等待有效目标窗口 → bring_to_front → 前台校验。窗口列表非空但没有可激活普通窗口时继续有界等待；前台读回暂时不可用时只重读，不重复启动或激活。launch 诊断始终保留 stage、launched、activated、foreground_verified、目标 pid/window_id、实际前台 pid/bundle ID 及读取错误类型。原生读回失败也保留此前 Cua 激活回执，避免把“已激活但校验失败”混为“未启动”。
 
 点击的 typed `ActionResult` 与输入/按键的 `ToolResult.action`、JSON 回执分别解析。`unverifiable` 表示动作已投递但效果待回看，不视作已完成业务，也不当作投递失败；额外返回 `verification_required=true`。输入摘要明确标记“已写入当前焦点”，与 Nexus 的输入投递契约一致，业务结论由下一张截图确认。拒绝、部分执行、疑似无效果仍保留各自的驱动证据。启动失败的诊断保留 stage、pid、窗口与前台标识。
 

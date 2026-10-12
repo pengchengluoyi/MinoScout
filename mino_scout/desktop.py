@@ -393,7 +393,7 @@ class DesktopRuntime:
         return self._submit(self._action, capability, params, hint, run_id,
                             timeout=25 if capability == "launch_app" else 15)
 
-    def _launch_failure(self, message, result, hint, obs, *, stage, package, pid=0):
+    def _launch_failure(self, message, result, hint, obs, *, stage, package, pid=0, diagnostics=None):
         payload = tool_payload(result)
         evidence = action_evidence(result)
         if not evidence.get("effect"):
@@ -403,14 +403,20 @@ class DesktopRuntime:
         return DesktopUnavailable(message, data={
             "cua_action": evidence, "capture_id": (obs or {}).get("capture_id", ""),
             "session_generation": hint["session_generation"],
-            "launch": {"stage": stage, "target_package": package, "pid": pid},
+            "launch": {**(diagnostics or {}), "stage": stage, "target_package": package, "pid": pid},
         })
 
     def _wait_foreground(self, sdk, driver, hint, run_id, package, os_name):
         deadline = time.monotonic() + 3.0
         while True:
             self._check(hint, run_id, mutate=True)
-            active = self._active_apps(sdk, driver, os_name)
+            try:
+                active = self._active_apps(sdk, driver, os_name)
+            except DesktopUnavailable:
+                if time.monotonic() >= deadline:
+                    raise
+                self._await(asyncio.sleep(0.1))
+                continue
             if any(application_matches(app, package, os_name) for app in active):
                 return True, active
             if time.monotonic() >= deadline:
@@ -423,9 +429,87 @@ class DesktopRuntime:
             try:
                 pid = self._foreground_probe()
             except Exception as exc:
-                raise DesktopUnavailable("无法读取 Mac 原生前台进程，请检查辅助功能权限并重新观察") from exc
-            return [app for app in apps.apps if app.pid == pid]
+                raise DesktopUnavailable("无法读取 Mac 前台应用，请检查桌面会话并重新观察", data={
+                    "foreground_source": "macos_workspace", "foreground_error": type(exc).__name__,
+                }) from exc
+            active = [app for app in apps.apps if app.pid == pid]
+            if not active or not getattr(active[0], "bundle_id", ""):
+                raise DesktopUnavailable("已读取 Mac 前台进程，但 Cua 未返回完整应用身份，请重新观察", data={
+                    "foreground_source": "macos_workspace", "foreground_pid": pid,
+                    "foreground_error": "identity_unavailable",
+                })
+            return active
         return [app for app in apps.apps if app.active]
+
+    def _launch_app(self, sdk, driver, params, hint, run_id, obs, os_name):
+        package = str(hint.get("target_package") or "")
+        if not package or str(params.get("package") or package) != package:
+            raise DesktopUnavailable("请配置被测 PC 应用标识，不能切换到其他应用")
+        diagnostics = {"launched": False, "activated": False, "foreground_verified": False,
+                       "foreground_source": "macos_workspace" if os_name == "macos" else "cua"}
+        stage, pid, result = "launch_app", 0, None
+        try:
+            result = self._await(driver.call_tool("launch_app", json.dumps(application_target(package, os_name))))
+            if result.is_error:
+                raise DesktopUnavailable("Cua 无法启动被测应用，请查看启动诊断")
+            launched = tool_payload(result)
+            stage = "process_not_ready"
+            value = launched.get("pid")
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise DesktopUnavailable("Cua 未确认被测应用进程，请回看实际状态")
+            pid = value
+            diagnostics["launched"] = True
+            self._check(hint, run_id, mutate=True)
+            front_params = {"pid": pid}
+            if os_name == "macos":
+                stage = "window_not_ready"
+                windows = launched.get("windows") if isinstance(launched.get("windows"), list) else []
+                deadline = time.monotonic() + 3.0
+                while True:
+                    window = next((window for window in windows if isinstance(window, dict)
+                                   and window.get("pid", pid) == pid and window.get("layer") in (None, 0)
+                                   and isinstance(window.get("window_id"), int)
+                                   and not isinstance(window["window_id"], bool) and window["window_id"] > 0), None)
+                    if window is not None:
+                        break
+                    if time.monotonic() >= deadline:
+                        raise DesktopUnavailable("被测 Mac 应用尚无可激活窗口，请回看实际状态")
+                    self._check(hint, run_id, mutate=True)
+                    listed = self._await(driver.list_windows(sdk.ListWindowsInput(pid=pid, on_screen_only=False)))
+                    windows = [public_record(window) for window in listed.windows]
+                    self._await(asyncio.sleep(0.1))
+                front_params["window_id"] = window["window_id"]
+                diagnostics["window_id"] = window["window_id"]
+            stage = "bring_to_front"
+            self._check(hint, run_id, mutate=True)
+            result = self._await(driver.call_tool("bring_to_front", json.dumps(front_params)))
+            activation = tool_payload(result)
+            if result.is_error or (os_name == "macos" and activation.get("activated") is not True):
+                raise DesktopUnavailable("Cua 未确认被测 PC 应用激活，请查看动作诊断并回看实际状态")
+            diagnostics["activated"] = True
+            self._check(hint, run_id, mutate=True)
+            stage = "foreground_read"
+            matched, active = self._wait_foreground(sdk, driver, hint, run_id, package, os_name)
+            diagnostics["foreground_package"] = str(getattr(active[0], "bundle_id", "") or "") if active else ""
+            diagnostics["foreground_pid"] = int(getattr(active[0], "pid", 0) or 0) if active else 0
+            stage = "foreground_verify"
+            if not matched:
+                raise DesktopUnavailable("被测 PC 应用未进入前台，请回看实际状态")
+            diagnostics["foreground_verified"] = True
+            return {
+                "cua_action": {"effect": "confirmed", "route": str(activation.get("path") or "bring_to_front")[:80],
+                               "evidence": [{"kind": "foreground_app", "detail_omitted": False}]},
+                "capture_id": (obs or {}).get("capture_id", ""), "session_generation": hint["session_generation"],
+                "launch": {**diagnostics, "stage": "foreground_verified", "target_package": package, **front_params},
+            }
+        except DesktopUnavailable as exc:
+            diagnostics.update({key: exc.data[key] for key in ("foreground_pid", "foreground_error") if key in exc.data})
+            raise self._launch_failure(str(exc), result, hint, obs, stage=stage, package=package,
+                                       pid=pid, diagnostics=diagnostics) from exc
+        except Exception as exc:
+            diagnostics["error_type"] = type(exc).__name__
+            raise self._launch_failure("Cua 启动或激活被测应用失败，请查看分段诊断", result, hint, obs,
+                                       stage=stage, package=package, pid=pid, diagnostics=diagnostics) from exc
 
     def _action(self, capability, params, hint, run_id):
         self._check(hint, run_id, mutate=capability != "get_foreground_app")
@@ -437,7 +521,8 @@ class DesktopRuntime:
             package = str(hint.get("target_package") or "")
             return {"apps": [{**public_record(a), "active": True} for a in active],
                     "target_active": bool(package and any(application_matches(a, package, os_name) for a in active)),
-                    "foreground_source": "macos_ax" if os_name == "macos" else "cua",
+                    "foreground_source": "macos_workspace" if os_name == "macos" else "cua",
+                    "foreground_pid": int(getattr(active[0], "pid", 0) or 0) if active else 0,
                     "foreground_package": str(getattr(active[0], "bundle_id", "") or "") if active else ""}
         obs = self._observations.pop(run_id, None)  # every attempt consumes it
         if capability != "input_text":
@@ -482,58 +567,7 @@ class DesktopRuntime:
             key, modifiers = key_input(params, os_name)
             result = self._await(driver.press_key(sdk.PressKeyInput(key=key, target=target, scope=sdk.DesktopScope.DESKTOP, session=run_id, modifiers=modifiers or None)))
         elif capability == "launch_app":
-            # Driver validates a structured application target; never use a shell.
-            package = str(hint.get("target_package") or "")
-            if not package or str(params.get("package") or package) != package:
-                raise DesktopUnavailable("请配置被测 PC 应用标识，不能切换到其他应用")
-            result = self._await(driver.call_tool("launch_app", json.dumps(application_target(package, os_name))))
-            if result.is_error:
-                raise self._launch_failure("Cua 无法启动被测应用，请查看启动诊断", result, hint, obs,
-                                           stage="launch_app", package=package)
-            launched = tool_payload(result)
-            pid = launched.get("pid")
-            if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
-                raise self._launch_failure("Cua 未确认被测应用进程，请回看实际状态", result, hint, obs,
-                                           stage="process_not_ready", package=package)
-            self._check(hint, run_id, mutate=True)
-            front_params = {"pid": pid}
-            if os_name == "macos":
-                windows = launched.get("windows") if isinstance(launched.get("windows"), list) else []
-                deadline = time.monotonic() + 3.0
-                while not windows:
-                    self._check(hint, run_id, mutate=True)
-                    listed = self._await(driver.list_windows(sdk.ListWindowsInput(pid=pid, on_screen_only=False)))
-                    windows = [public_record(window) for window in listed.windows
-                               if window.pid == pid and window.layer in (None, 0)]
-                    if windows or time.monotonic() >= deadline:
-                        break
-                    self._await(asyncio.sleep(0.1))
-                window = next((window for window in windows if isinstance(window, dict)
-                               and window.get("pid", pid) == pid and window.get("layer", 0) in (None, 0)
-                               and isinstance(window.get("window_id"), int) and window["window_id"] > 0), None)
-                if window is None:
-                    raise self._launch_failure("被测 Mac 应用尚无可激活窗口，请回看实际状态", result, hint, obs,
-                                               stage="window_not_ready", package=package, pid=pid)
-                front_params["window_id"] = window["window_id"]
-            result = self._await(driver.call_tool("bring_to_front", json.dumps(front_params)))
-            activation = tool_payload(result)
-            if result.is_error or (os_name == "macos" and activation.get("activated") is not True):
-                raise self._launch_failure("Cua 未确认被测 PC 应用激活，请查看动作诊断并回看实际状态", result, hint, obs,
-                                           stage="bring_to_front", package=package, pid=pid)
-            self._check(hint, run_id, mutate=True)
-            matched, active = self._wait_foreground(sdk, driver, hint, run_id, package, os_name)
-            if not matched:
-                failure = self._launch_failure("被测 PC 应用未进入前台，请回看实际状态", result, hint, obs,
-                                               stage="foreground_verify", package=package, pid=pid)
-                failure.data["launch"]["foreground_package"] = str(getattr(active[0], "bundle_id", "") or "") if active else ""
-                raise failure
-            return {
-                "cua_action": {"effect": "confirmed", "route": str(activation.get("path") or "bring_to_front")[:80],
-                               "evidence": [{"kind": "foreground_app", "detail_omitted": False}]},
-                "capture_id": (obs or {}).get("capture_id", ""), "session_generation": hint["session_generation"],
-                "launch": {"stage": "foreground_verified", "target_package": package,
-                           "foreground_source": "macos_ax" if os_name == "macos" else "cua", **front_params},
-            }
+            return self._launch_app(sdk, driver, params, hint, run_id, obs, os_name)
         else:
             raise DesktopUnavailable("Desktop 未实现这项能力")
         evidence = action_evidence(result)
