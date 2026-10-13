@@ -215,7 +215,12 @@ class AdbExecutor:
         t0 = time.time()
         cap = event.capability_id
         focus_key = (str(ctx.device.sn or ""), str(ctx.run_id or ""))
-        if cap not in ("tap_element", "input_text", "wait_ms", "get_foreground_app"):
+        # 只读取证不改变焦点，不能清掉点击留下的焦点引用：
+        # Nexus 在 tap 与 input_text 之间会按 run_id 多次下发 probe_device_state（recovery_evidence）。
+        if cap not in (
+            "tap_element", "input_text", "wait_ms", "get_foreground_app",
+            "probe_device_state", "read_device_data", "get_app_version",
+        ):
             self._focus_actions.pop(focus_key, None)
         # 上游是 ctx.run_context.adb["serial"]（RunContext 查库 + 跑 connectivity_probe
         # 得来）。Scout 不查库，serial 由 Nexus 在 EXECUTE.device_hint 里注入。
