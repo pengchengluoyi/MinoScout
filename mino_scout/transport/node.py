@@ -393,6 +393,7 @@ class NodeTransport:
         else:
             wechat_plugin.stop_listener()
             langbot_host.shutdown()
+        await self._send(P.MsgType.HEARTBEAT, await asyncio.to_thread(self.core.heartbeat))
         try:
             from mino_scout.runtime_sidecar import write_runtime_sidecar
 
@@ -662,6 +663,14 @@ class NodeTransport:
             queue = [(ts, row) for ts, row in backlog]
             if im is not None:
                 queue.append((int(time.time()), im))
+            if not queue:
+                return
+            try:
+                await self._send(P.MsgType.HEARTBEAT, await asyncio.to_thread(self.core.heartbeat))
+            except Exception:
+                for ts, row in queue:
+                    await asyncio.to_thread(im_store.push, row, ts)
+                return
             for i, (ts, row) in enumerate(queue):
                 ok = self._ws is not None and await self._send_framework(
                     "node.plugin_im_message", detail="im message", extra={"im": row},

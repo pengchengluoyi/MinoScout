@@ -38,7 +38,12 @@ class DesktopExecutor:
         except Exception as exc:
             SLog.e("DesktopExecutor", f"run={ctx.run_id} cap={event.capability_id} error={type(exc).__name__}")
             status, error = EventStatus.FAIL, "Cua 桌面执行失败，请查看节点日志并重新观察"
-        summary = "已写入当前焦点；输入效果待下一张截图确认" if event.capability_id == "input_text" else "桌面动作已投递；业务结果待下一张截图确认"
+        if event.capability_id == "get_foreground_app":
+            summary = "前台应用匹配被测应用" if data.get("target_active") is True else "前台应用未匹配被测应用"
+        elif event.capability_id == "input_text":
+            summary = "已写入当前焦点；输入效果待下一张截图确认"
+        else:
+            summary = "桌面动作已投递；业务结果待下一张截图确认"
         return make_event_result(event, status=status, executor_used=self.id, started_at=started,
                                  elapsed_ms=int((time.monotonic() - tick) * 1000),
                                  summary=error or summary, error=error, raw_response=data)

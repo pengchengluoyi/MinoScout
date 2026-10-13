@@ -95,13 +95,15 @@ class Executor(Protocol):
 
 ## Desktop 执行器（V4）
 
-`desktop` 只处理 `platform=desktop`，不在 Android/Web 执行器中 fallback。支持 `screenshot/tap_xy/tap_element/input_text/press_key/launch_app/get_foreground_app`，其中截图复用 ScreenCapture 的 Desktop 分支。Cua Driver 0.34.1 是可选 native 依赖；manifest 消费 Cua `health_report` 的版本、会话、权限和 AX 状态，实际窗口捕获还须取得有效捕获引用。
+`desktop` 只处理 `platform=desktop`，不在 Android/Web 执行器中 fallback。支持 `screenshot/tap_xy/tap_element/input_text/press_key/launch_app/get_foreground_app`，其中截图复用 ScreenCapture 的 Desktop 分支。Cua Driver 0.34.1 的 `list_apps` 不返回应用版本，SDK/原生工具也未提供 `get_app_version`；不把 `driver_version` 当成应用版本，Nexus 按设备上报能力跳过版本采集。Cua Driver 0.34.1 是可选 native 依赖；manifest 消费 Cua `health_report` 的版本、会话、权限和 AX 状态，实际窗口捕获还须取得有效捕获引用。
 
 Desktop 首版只接受 visual 流程。截图坐标按 Mino 的千分比转换成当前窗口图像像素，再带 capture ID 和 `ActionTarget.WINDOW(pid, window_id)` 交给 SDK；窗口到屏幕及 Retina/缩图坐标映射由 Cua 处理。输入与按键也需要本任务的新截图、未变化的会话代际和独占租约；精确窗口的前台激活、投递及校验由 Cua `delivery_mode=foreground` 负责。macOS 启动使用已配置 bundle ID，Windows 使用完整 EXE 路径或 AUMID，经结构化 launch 调用确认目标进程并绑定窗口，不要求启动后保持前台，不执行 shell。组合键和 modifiers 按目标 OS 规范化。动作证据保留 Cua effect/route/delivery/error.code；拒绝为 blocked，疑似无效果或部分执行为 fail，不标成功；无业务回读的动作仍需后续截图确认。
 
 能力实现配置由 Nexus 的目录决定；Scout 不读取 YAML，也不让“在线”替代 readiness。
 
 ## Desktop 输入契约（0.1.76）
+
+自动选窗只接受当前可见、未最小化、宽高均至少 64 点的窗口；不把隐藏窗口或工具条当作应用内容窗口。显式指定 `window_id` 时仍按该 ID 绑定，不自动换窗。启动诊断增加 `window_bounds`，便于确认实际绑定的范围。
 
 Nexus 将 Desktop 渠道映射为 `desktop_visual`，PC 输入只派给 `desktop`，不进入 Android / ADB 前台恢复。支持 `current_focus` 下的 `replace` 与 `append`；成功点击后由 Nexus 提供 `focus:<run_id>:<seq>`，Scout 只保存字段落点、窗口目标和窗口尺寸。输入前以新窗口截图的 capture ID 在 Cua 中重新点击该字段；窗口或尺寸变化、代际变化、取消、输入后或超时使引用失效。`replace` 经 Cua 发送 macOS Command+A / Windows Ctrl+A；`append` 发送 Command+Down / Ctrl+End 定位末尾，再输入正文。全部输入绑定相同窗口与 foreground 模式，不自行读取原生键盘焦点。
 

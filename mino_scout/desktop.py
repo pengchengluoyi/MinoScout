@@ -347,7 +347,13 @@ class DesktopRuntime:
             return next((window for window in candidates if window["window_id"] == preferred), None)
         visible = [window for window in candidates if window.get("is_on_screen") is True
                    and not window.get("minimized") and window.get("on_current_space") is not False]
-        eligible = visible or candidates
+        eligible = []
+        for window in visible:
+            bounds = window.get("bounds") if isinstance(window.get("bounds"), dict) else {}
+            dimensions = (bounds.get("width"), bounds.get("height"))
+            if all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                   and math.isfinite(value) and value >= 64 for value in dimensions):
+                eligible.append(window)
         if len(eligible) == 1:
             return eligible[0]
         ranked = [window for window in eligible if isinstance(window.get("z_index"), int)
@@ -522,6 +528,10 @@ class DesktopRuntime:
                 self._await(asyncio.sleep(0.1))
             target_params["window_id"] = window["window_id"]
             diagnostics["window_id"] = window["window_id"]
+            diagnostics["window_bounds"] = {
+                key: value for key, value in (window.get("bounds") or {}).items()
+                if key in ("x", "y", "width", "height") and isinstance(value, (int, float))
+            }
             self._check(hint, run_id, mutate=True)
             diagnostics["window_verified"] = True
             target = {"kind": "window", **target_params}
