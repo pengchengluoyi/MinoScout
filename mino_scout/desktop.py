@@ -183,6 +183,9 @@ class DesktopRuntime:
             focus = self._focus.get(run_id)
             if not focus or params.get("focus_ref") != focus["ref"]:
                 raise DesktopUnavailable("contract_unsupported: 焦点目标已变化或引用失效")
+            if time.monotonic() - float(focus.get("created_at") or 0) > 15:
+                self._focus.pop(run_id, None)
+                raise DesktopUnavailable("焦点引用已过期，请在新截图中重新定位输入字段")
             if focus["target"] != obs["target"] or focus["window_size"] != obs["window_size"]:
                 raise DesktopUnavailable("被测窗口或尺寸已变化，请在新截图中重新定位输入字段")
             return dict(focus)
@@ -474,7 +477,7 @@ class DesktopRuntime:
         if not package or str(params.get("package") or package) != package:
             raise DesktopUnavailable("请配置被测 PC 应用标识，不能切换到其他应用")
         diagnostics = {"launched": False, "activated": False, "foreground_verified": False,
-                       "foreground_source": "cua"}
+                       "foreground_source": "not_required"}
         stage, pid, result = "launch_app", 0, None
         try:
             existing = self._targets.get(run_id)
@@ -498,7 +501,7 @@ class DesktopRuntime:
                 pid = value
             diagnostics["launched"] = True
             self._check(hint, run_id, mutate=True)
-            front_params = {"pid": pid}
+            target_params = {"pid": pid}
             stage = "window_not_ready"
             windows = launched.get("windows") if isinstance(launched.get("windows"), list) else []
             preferred = params.get("window_id", hint.get("window_id"))
@@ -512,32 +515,24 @@ class DesktopRuntime:
                 if window is not None:
                     break
                 if time.monotonic() >= deadline:
-                    raise DesktopUnavailable("被测 PC 应用尚无指定的可激活窗口，请回看实际状态")
+                    raise DesktopUnavailable("被测 PC 应用尚无指定的可绑定窗口，请回看实际状态")
                 self._check(hint, run_id, mutate=True)
                 listed = self._await(driver.list_windows(sdk.ListWindowsInput(pid=pid, on_screen_only=False)))
                 windows = [public_record(window) for window in listed.windows]
                 self._await(asyncio.sleep(0.1))
-            front_params["window_id"] = window["window_id"]
+            target_params["window_id"] = window["window_id"]
             diagnostics["window_id"] = window["window_id"]
-            stage = "bring_to_front"
             self._check(hint, run_id, mutate=True)
-            result = self._await(driver.call_tool("bring_to_front", json.dumps(front_params)))
-            activation = tool_payload(result)
-            diagnostics["activation_code"] = str(activation.get("code") or "")[:80]
-            if result.is_error or activation.get("activated") is not True:
-                raise DesktopUnavailable("Cua 未确认被测 PC 应用激活，请查看动作诊断并回看实际状态")
-            diagnostics.update(activated=True, window_verified=True, foreground_verified=True,
-                               foreground_source="cua_bring_to_front")
-            self._check(hint, run_id, mutate=True)
-            target = {"kind": "window", **front_params}
+            diagnostics["window_verified"] = True
+            target = {"kind": "window", **target_params}
             self._targets[run_id] = {"package": package, "target": target}
             self._clear_focus(run_id)
             return {
-                "cua_action": {"effect": "confirmed", "route": str(activation.get("path") or "bring_to_front")[:80],
-                               "evidence": [{"kind": "window_change", "detail_omitted": False}]},
+                "cua_action": {"effect": "confirmed", "route": "reuse_running_app" if existing else "launch_app",
+                               "evidence": [{"kind": "window_identity", "detail_omitted": False}]},
                 "capture_id": (obs or {}).get("capture_id", ""), "session_generation": hint["session_generation"],
                 "target": target, "capture_scope": "window",
-                "launch": {**diagnostics, "stage": "window_verified", "target_package": package, **front_params},
+                "launch": {**diagnostics, "stage": "window_ready", "target_package": package, **target_params},
             }
         except DesktopUnavailable as exc:
             diagnostics.update({key: exc.data[key] for key in ("foreground_pid", "foreground_error") if key in exc.data})
@@ -588,14 +583,8 @@ class DesktopRuntime:
             mode = str(params.get("mode") or "replace")
             if mode not in ("replace", "append"):
                 raise DesktopUnavailable("Desktop 输入 mode 必须是 replace 或 append")
-            focus = self._require_focus(run_id, params, obs)
+            self._require_focus(run_id, params, obs)
             try:
-                focused = self._await(driver.click(sdk.ClickInput(
-                    target=target, position=sdk.ClickPosition.CAPTURED_COORDINATES(
-                        focus["x"] * (obs["width"] - 1) / 1000, focus["y"] * (obs["height"] - 1) / 1000, obs["capture_id"]),
-                    delivery_mode=sdk.InputDeliveryMode.FOREGROUND, session=run_id, button=None, count=1)))
-                if action_evidence(focused).get("effect") in ("refused", "partial", "suspected_noop"):
-                    raise DesktopUnavailable("Cua 未确认输入字段定位；未发送输入正文")
                 self._check(hint, run_id, mutate=True)
                 selected = self._await(driver.call_tool("press_key", json.dumps({
                     "target": bound, "session": run_id, "delivery_mode": "foreground",
@@ -626,7 +615,7 @@ class DesktopRuntime:
             self._clear_focus(run_id)
             ref = str(params.get("focus_ref") or "")
             if ref.startswith(f"focus:{run_id}:") and ref.rsplit(":", 1)[-1].isdigit() and not getattr(result, "is_error", False) and evidence.get("effect") in ("confirmed", "unverifiable"):
-                self._focus[run_id] = {"ref": ref, "target": dict(bound), "window_size": obs["window_size"],
+                self._focus[run_id] = {"ref": ref, "target": dict(bound), "window_size": obs["window_size"], "created_at": time.monotonic(),
                                        "x": float(params["x"]), "y": float(params["y"])}
         elif capability in ("press_key", "launch_app"):
             self._clear_focus(run_id)
