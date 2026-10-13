@@ -140,8 +140,19 @@ def _runnable_low_level(low_level: Optional[dict[str, Any]]) -> bool:
     保留这条通路是必须的 —— 它是「加 YAML 就多一个能力」的支撑
     （见 docs/EXECUTORS.md §3）。丢了它就退化成"每个能力都要改 Python"。
     """
-    low = low_level or {}
-    return bool(low.get("shell") or low.get("command") or low.get("items") or low.get("steps"))
+    low = low_level if isinstance(low_level, dict) else {}
+    kind = str(low.get("kind") or ("shell" if low.get("shell") else "")).strip().lower()
+    if kind == "shell":
+        return isinstance(low.get("shell"), str) and bool(low["shell"].strip())
+    field = {"shell_batch": "commands", "shell_seq": "steps"}.get(kind)
+    if not field:
+        return False
+    rows = low.get(field)
+    return isinstance(rows, list) and bool(rows) and all(
+        isinstance(row, dict) and isinstance(row.get("shell"), str) and bool(row["shell"].strip())
+        and (kind != "shell_batch" or bool(str(row.get("name") or "").strip()))
+        for row in rows
+    )
 
 
 class AdbExecutor:

@@ -124,3 +124,10 @@ macOS 和 Windows 启动均通过 Cua `launch_app` 确认正整数 pid，再有�
 Desktop 图像的 `compress_ratio` 为 1–10，默认 1。通过 SDK 通用 `get_window_state(pid, window_id, include_accessibility_tree=false, include_screenshot=true, display_only=false)` 获取注册窗口捕获，保留 typed 输出未暴露的 capture_id。比值大于 1 时先校准原尺寸，再由 Cua `max_image_dimension` 生成并注册最终缩图；Scout 不自行缩放、裁切或重编码图像。最终图像尺寸等于 capture_width/capture_height，原尺寸记录在 native_width/native_height。截图和动作诊断保留 capture_scope=window、target、pid/window_id、capture_id、snapshot_id 和 session_generation。新截图失败会使旧观察引用失效，窗口丢失、所有者改变或捕获拒绝不回退整屏。
 
 窗口截图不要求被测应用此刻占据全局前台。get_foreground_app 继续返回真实诊断；该结果不能推翻已确认的进程和窗口绑定，Nexus 的全局前台自动恢复也不用于 Desktop。后续输入的窗口存在、所有者、捕获几何与前台投递仍由 SDK 独立校验。此项不承诺所有应用均支持完全后台输入：点击、文本和按键继续使用 delivery_mode=foreground，让 Cua 在每个动作中处理所需激活和恢复；截图失败或 SDK 拒绝投递保留真实失败，不回退整屏、不改为成功。
+
+
+### 2026-10-13 批量取证路由与报告跳转
+
+ADB 声明的 supports 与实际 low_level 解释器保持一致：shell 使用非空 shell；shell_batch 使用包含 name/shell 的非空 commands；shell_seq 使用非空 steps。未知 kind 或无效结构不冒充支持。probe_device_state 等目录声明的批量能力可走此通路，不增加硬编码能力名单。
+
+飞书原生结果卡片将 actions 中的有效 HTTP/HTTPS URL 转成报告跳转按钮。按钮只打开页面，不回调执行请求；流式草稿不附加报告按钮。文本降级仍由 Nexus 提供完整 URL。协议字段没有变化。

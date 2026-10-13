@@ -74,8 +74,26 @@ def card_payload(text: str, card: dict | None = None, *, draft: bool = False) ->
     kind = card.get('card_type', 'dialogue')
     title = '回复草稿 · 尚未执行' if draft else str((card.get('header') or {}).get('title') or '助手回复')
     template = 'orange' if kind == 'clarification' else 'blue' if kind == 'notification' else 'turquoise'
+    elements = [{'tag': 'div', 'text': {'tag': 'plain_text', 'content': str(text)[:10000]}}]
+    if not draft:
+        from urllib.parse import urlsplit
+        links = []
+        for action in card.get('actions') or []:
+            if not isinstance(action, dict):
+                continue
+            url = str(action.get('url') or '')
+            try:
+                parsed = urlsplit(url)
+                valid = parsed.scheme in ('http', 'https') and bool(parsed.hostname) and not parsed.username and not parsed.password
+            except ValueError:
+                valid = False
+            if valid:
+                links.append({'tag': 'button', 'text': {'tag': 'plain_text', 'content': str(action.get('label') or '查看详情')[:100]},
+                              'type': 'primary', 'url': url})
+        if links:
+            elements.append({'tag': 'action', 'actions': links[:3]})
     return {'config': {'wide_screen_mode': True}, 'header': {'title': {'tag': 'plain_text', 'content': title[:100]}, 'template': template},
-            'elements': [{'tag': 'div', 'text': {'tag': 'plain_text', 'content': str(text)[:10000]}}]}
+            'elements': elements}
 
 
 def send(node_id: str, chat_id: str, sender_id: str, ctx: dict, text: str, card: dict, delivery_id: str) -> dict:
