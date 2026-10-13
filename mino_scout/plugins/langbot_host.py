@@ -354,6 +354,9 @@ def sync_bots(node_id: str) -> None:
                 created = _api("POST", "/api/v1/platform/bots", body)
                 _bots[pid] = str((created or {}).get("uuid") or "")
                 _applied_sig[name] = _bot_signature(body)
+                if pid == 'lark':
+                    from mino_scout.plugins import im_feishu
+                    im_feishu.invalidate()
             else:
                 if not on:
                     body.pop("adapter_config")
@@ -368,6 +371,9 @@ def sync_bots(node_id: str) -> None:
                 _api("PUT", f"/api/v1/platform/bots/{cur['uuid']}", body)
                 _bots[pid] = str(cur["uuid"])
                 _applied_sig[name] = sig
+                if pid == 'lark':
+                    from mino_scout.plugins import im_feishu
+                    im_feishu.invalidate()
             _plat_err.pop(pid, None)
         except ApiError as exc:
             _plat_err[pid] = str(exc)
@@ -769,6 +775,7 @@ def channel_status() -> dict[str, Any]:
             "connected": bool(running and pid in wanted_platforms() and not err),
             "connection_verified": verified,
             "connection_source": "recent_message" if verified else "unconfirmed",
+            "capabilities": im_bridge.sender_capabilities(p["channel"]),
             "last_message_at": last_message,
             "error": err[:200],
         }
@@ -804,7 +811,8 @@ def _send_text(chat_id: str, sender_id: str, ctx: dict[str, str], text: str) -> 
         "message_chain": [{"type": "Plain", "text": str(text)}],
     }
     try:
-        _api("POST", f"/api/v1/platform/bots/{bot}/send_message", body, timeout=30)
+        data = _api("POST", f"/api/v1/platform/bots/{bot}/send_message", body, timeout=30)
+        return {"provider_message_id": str((data or {}).get("message_id") or "")}
     except ApiError as exc:
         raise RuntimeError(f"LangBot 发送失败: {exc}") from exc
 

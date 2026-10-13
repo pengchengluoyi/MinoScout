@@ -109,11 +109,28 @@ class ForwardListener(EventListener):
         if not msg_id:
             # 缺少平台消息标识无法可靠去重，不能执行助手工具。
             return
+        mention_targets = [str(getattr(element, 'target', '') or '') for element in _elements(chain) if type(element).__name__ == 'At']
+        raw_event = getattr(me, 'raw', None) or getattr(me, 'raw_message', None) or {}
+        thread_id = str(raw_event.get('thread_id') or '') if isinstance(raw_event, dict) else ''
+        attachments = []
+        reply_to = ''
+        quoted_text = ''
+        for element in _elements(chain):
+            name = type(element).__name__
+            if name in ('Image', 'Voice', 'Audio'):
+                attachments.append({'kind': 'image' if name == 'Image' else 'audio',
+                                    'url': str(getattr(element, 'url', '') or ''),
+                                    'base64': str(getattr(element, 'base64', '') or ''),
+                                    'file_key': str(getattr(element, 'file_key', '') or getattr(element, 'image_key', '') or getattr(element, 'image_id', '') or ''),
+                                    'mime': str(getattr(element, 'mime_type', '') or '')})
+            if name in ('Reply', 'Quote'):
+                reply_to = str(getattr(element, 'message_id', '') or getattr(element, 'id', '') or '')
+                quoted_text = str(getattr(element, 'origin', '') or '')
         payload = {
             "channel": "", "tenant": "", "chat_id": chat_id,
             "chat_type": "group" if kind == "group" else "private",
             "sender_id": sender, "msg_id": msg_id, "text": text, "mentioned": mentioned,
-            "bot_uuid": bot_uuid,
+            "bot_uuid": bot_uuid, "mention_targets": mention_targets, "thread_id": thread_id, "attachments": attachments, "reply_to": reply_to, "quoted_text": quoted_text,
             "reply_ctx": {"bot_uuid": bot_uuid, "target_type": "group" if kind == "group" else "person", "target_id": chat_id},
         }
         if kind == "group" and not mentioned:

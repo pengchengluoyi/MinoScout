@@ -112,7 +112,13 @@ def handle_plugin_cap(core: Any, req: P.Execute, cap: str) -> EventResult:
         elif cap == "plugin.bot.wechat":
             data = _wechat(core, req)
         elif cap == "plugin.im.send":
-            return _im_result(event, started, cap, _im_send(req))
+            return _im_result(event, started, cap, _im_send(req, core.node_id))
+        elif cap == "plugin.im.stream":
+            data = _im_stream(req, core.node_id)
+        elif cap == "plugin.im.attachment":
+            return _im_result(event, started, cap, _im_attachment(req))
+        elif cap == "plugin.im.ack":
+            return _im_result(event, started, cap, _im_ack(req))
         elif cap == "plugin.im.history":
             return _im_result(event, started, cap, _im_history(req))
         elif cap == "plugin.im.upload_image":
@@ -194,7 +200,7 @@ def _im_target(params: dict[str, Any]) -> tuple[str, str, str, dict[str, str]]:
     return channel, chat_id, sender_id, {str(k): str(v) for k, v in raw.items()}
 
 
-def _im_send(req: P.Execute) -> dict[str, Any]:
+def _im_send(req: P.Execute, node_id: str = "") -> dict[str, Any]:
     from mino_scout.plugins import im_bridge, im_store
 
     _im_senders()
@@ -204,17 +210,41 @@ def _im_send(req: P.Execute) -> dict[str, Any]:
     if send is None:
         raise ValueError(f"不支持的渠道 {channel or '(空)'}")
     text = str(params.get("text") or "")
-    send(chat_id, sender_id, ctx, text)
+    delivery_id = str(params.get("delivery_id") or f"out-{uuid.uuid4().hex}")
+    card = params.get('card') or {}
+    if channel == 'feishu' and im_bridge.sender_capabilities(channel).get('cards') and card:
+        from mino_scout.plugins import im_feishu
+        operation = lambda: im_feishu.send(node_id, chat_id, sender_id, ctx, text, card, delivery_id)
+    else:
+        operation = lambda: send(chat_id, sender_id, ctx, text)
+    sent = im_store.send_once(channel, str(ctx.get("instance_id") or ""), str(ctx.get("tenant") or ""), sender_id,
+                             delivery_id, text, card, operation)
     try:
         im_store.record(
-            channel, chat_id or sender_id, sender_id, f"out-{uuid.uuid4().hex}", "assistant", text.strip(),
+            channel, chat_id or sender_id, sender_id, delivery_id, "assistant", text.strip(),
             int(time.time()), instance_id=str(ctx.get("instance_id") or ""),
-            tenant=str(ctx.get("tenant") or ""),
+            tenant=str(ctx.get("tenant") or ""), thread_id=str(ctx.get("thread_id") or ""),
         )
     except Exception as exc:  # 已发出去了，落库失败不回报失败
         SLog.w(TAG, f"im.send 已发送但落库失败: {type(exc).__name__}")
     SLog.i(TAG, f"plugin.im.send channel={channel} len={len(text)}")
-    return {"ok": True, "summary": "已发送"}
+    return sent
+
+
+def _im_attachment(req: P.Execute) -> dict[str, Any]:
+    from mino_scout.plugins import im_store
+    params = dict(req.params or {})
+    channel, _, sender, ctx = _im_target(params)
+    return im_store.read_attachment({"channel": channel, "instance_id": ctx.get("instance_id", ""),
+                                    "tenant": ctx.get("tenant", ""), "sender_id": sender}, str(params.get("ref") or ""))
+
+
+def _im_ack(req: P.Execute) -> dict[str, Any]:
+    from mino_scout.plugins import im_store
+    params = dict(req.params or {})
+    channel, _, sender, ctx = _im_target(params)
+    im_store.acknowledge(channel, str(ctx.get("instance_id") or ""), str(ctx.get("tenant") or ""), sender, str(params.get("delivery_key") or ""))
+    return {"ok": True, "summary": "已确认受理"}
 
 
 _IMAGE_MAX = 10 * 1024 * 1024
@@ -378,3 +408,24 @@ def _fail(event: Any, started: str, summary: str, command: str, *, t0: float | N
         error=summary,
         raw_response={"command": command},
     )
+
+
+def _im_stream(req: P.Execute, node_id: str) -> dict:
+    from mino_scout.plugins import im_bridge, im_store, im_feishu
+    params = dict(req.params or {})
+    channel, chat_id, sender_id, ctx = _im_target(params)
+    if channel != 'feishu' or not im_bridge.sender_capabilities(channel).get('streaming'):
+        raise ValueError('当前适配器不支持流式消息')
+    key = str(params.get('stream_id') or '')
+    sequence = int(params.get('sequence') or 0)
+    if not key or sequence < 1:
+        raise ValueError('流式消息缺少稳定编号或版本')
+    complete = params.get('complete') is True
+    text = str(params.get('text') or '')[:10000]
+    card = params.get('card') if complete else {'card_type': 'dialogue', 'header': {'title': '回复草稿 · 尚未执行'}}
+    origin = {'channel': channel, 'sender_id': sender_id, **ctx}
+    result = im_store.stream_once(origin, key, sequence, text, card or {}, complete,
+        lambda mid: im_feishu.update(node_id, mid, text, card, draft=not complete) if mid else im_feishu.send(node_id, chat_id, sender_id, ctx, text, card or {}, key))
+    if complete:
+        im_store.record(channel, chat_id, sender_id, key, 'assistant', text, instance_id=ctx.get('instance_id', ''), tenant=ctx.get('tenant', ''), thread_id=ctx.get('thread_id', ''))
+    return result

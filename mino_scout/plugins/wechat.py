@@ -275,9 +275,23 @@ def _on_message(msg: dict[str, Any]) -> None:
     if int(msg.get("message_type") or 0) == 2:
         return
     text = _message_text(msg)
+    attachments = []
+    for item in msg.get('item_list') or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get('type') == 2 or item.get('image_item'):
+            media = item.get('image_item') or {}
+            attachments.append({'kind': 'image', 'url': media.get('url') or '', 'base64': media.get('base64') or '', 'mime': media.get('mime') or ''})
+        if item.get('type') == 3 or item.get('voice_item'):
+            media = item.get('voice_item') or {}
+            transcript = str(media.get('text') or '').strip()
+            if transcript:
+                text += '\n' + transcript
+            else:
+                attachments.append({'kind': 'audio', 'url': media.get('url') or '', 'base64': media.get('base64') or '', 'mime': media.get('mime') or ''})
     user_id = str(msg.get("from_user_id") or "").strip()
     context = str(msg.get("context_token") or "").strip()
-    if not text or not user_id or not context:
+    if not (text or attachments) or not user_id or not context:
         return
     from mino_scout.plugins import im_bridge
 
@@ -296,6 +310,7 @@ def _on_message(msg: dict[str, Any]) -> None:
         text=text,
         mentioned=True,
         reply_ctx={"context_token": context},
+        metadata={"attachments": attachments},
     )
 
 

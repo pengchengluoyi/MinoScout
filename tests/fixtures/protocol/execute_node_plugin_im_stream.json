@@ -1,0 +1,32 @@
+{
+  "v": 2,
+  "type": "EXECUTE",
+  "msg_id": "im-stream-example",
+  "reply_to": null,
+  "ts": "2026-10-13T12:00:00+08:00",
+  "payload": {
+    "run_id": "",
+    "step_idx": 0,
+    "sn": "",
+    "capability_id": "plugin.im.stream",
+    "params": {
+      "channel": "feishu",
+      "sender_id": "ou_alice",
+      "chat_id": "oc_team",
+      "reply_ctx": {
+        "instance_id": "verified-bot",
+        "sender_id": "ou_alice",
+        "tenant": "tenant-a"
+      },
+      "stream_id": "draft-example",
+      "sequence": 1,
+      "complete": false,
+      "text": "正在组织回复的草稿，尚未执行任何任务。"
+    },
+    "executor_order": [],
+    "low_level": {},
+    "selected_impl": {},
+    "device_hint": {},
+    "timeout_sec": 30.0
+  }
+}

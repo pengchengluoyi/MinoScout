@@ -333,3 +333,28 @@ def loads(raw: dict[str, Any]) -> Envelope:
 
 class UnknownMessageType(Exception):
     """收到未知 type。按 docs/PROTOCOL.md §7，接收方记 warn 并忽略，不可关连接。"""
+
+
+@dataclass
+class ImEnvelope:
+    channel: str
+    instance_id: str
+    tenant: str
+    chat_id: str
+    chat_type: str
+    sender_id: str
+    msg_id: str
+    text: str = ""
+    mentioned: bool = False
+    event_type: str = "message"
+    reply_to: str = ""
+    thread_id: str = ""
+    target_message_id: str = ""
+    revision: str = ""
+    delivery_key: str = ""
+    received_at: int = 0
+    reply_ctx: dict[str, Any] = field(default_factory=dict)
+    recent_turns: list[dict[str, Any]] = field(default_factory=list)
+    capabilities: dict[str, Any] = field(default_factory=dict)
+    attachments: list[dict[str, Any]] = field(default_factory=list)
+    callback: dict[str, Any] = field(default_factory=dict)

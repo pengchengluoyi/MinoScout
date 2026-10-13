@@ -13,7 +13,7 @@ from mino_scout.log import SLog
 from mino_scout.plugins import im_store
 
 TAG = "ImBridge"
-TEXT_MAX = 2000
+TEXT_MAX = 12000
 RECENT_TURNS = 8
 
 _hook: Callable[[dict[str, Any]], None] | None = None
@@ -35,21 +35,13 @@ def ingest(
     reply_ctx: dict[str, str] | None,
     tenant: str = "",
     instance_id: str = "",
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """返回发出的 im 载荷；重复消息（已入库）返回 None 不再上报。"""
     body = str(text or "")[:TEXT_MAX]
     ts = int(time.time())
-    try:
-        turns = im_store.recent(channel, chat_id, RECENT_TURNS, sender_id=sender_id,
-                                instance_id=instance_id, tenant=tenant)
-        fresh = im_store.record(channel, chat_id, sender_id, msg_id, "user", body, ts,
-                                instance_id=instance_id, tenant=tenant)
-    except Exception as exc:
-        SLog.w(TAG, f"im_store 不可用，本条不带历史: {type(exc).__name__}")
-        turns, fresh = [], True
-    if not fresh:
-        SLog.i(TAG, f"duplicate channel={channel} msg_id={msg_id}, skip")
-        return None
+    turns = im_store.recent(channel, chat_id, RECENT_TURNS, sender_id=sender_id,
+                            instance_id=instance_id, tenant=tenant, thread_id=str((metadata or {}).get('thread_id') or ''))
     im = {
         "instance_id": str(instance_id or ""),
         "channel": str(channel),
@@ -63,6 +55,34 @@ def ingest(
         "reply_ctx": {str(k): str(v) for k, v in (reply_ctx or {}).items()},
         "recent_turns": turns,
     }
+    meta = metadata or {}
+    im.update({key: meta[key] for key in ('event_type', 'reply_to', 'target_message_id', 'thread_id', 'revision', 'attachments', 'callback') if key in meta})
+    if im.get('attachments'):
+        from mino_scout.plugins.im_attachments import save
+        normalized = []
+        for item in im['attachments'][:4]:
+            if not isinstance(item, dict):
+                continue
+            if item.get('ref'):
+                normalized.append(item)
+            else:
+                try:
+                    if channel == 'feishu' and item.get('file_key'):
+                        from mino_scout.plugins import im_feishu, langbot_host
+                        import base64
+                        content, mime = im_feishu.resource(langbot_host._node_id, msg_id, str(item['file_key']), str(item.get('kind') or ''))
+                        item = {**item, 'base64': base64.b64encode(content).decode(), 'mime': mime}
+                    normalized.append(save(im, item))
+                except Exception:
+                    normalized.append({'kind': str(item.get('kind') or ''), 'ref': ''})
+        im['attachments'] = normalized
+    if meta.get('quoted_text'):
+        mapped = im_store.outgoing_reference(im, str(meta['quoted_text']))
+        if mapped:
+            im['reply_to'] = mapped
+    im['capabilities'] = sender_capabilities(channel)
+    if not im_store.durable_ingest(im, ts):
+        return None
     SLog.i(TAG, f"ingest channel={channel} msg_id={msg_id} len={len(body)} turns={len(turns)}")
     hook = _hook
     if hook is not None:
@@ -71,10 +91,6 @@ def ingest(
             return im
         except Exception as exc:
             SLog.w(TAG, f"hook 失败，转入暂存: {type(exc).__name__}")
-    try:
-        im_store.push(im, ts)
-    except Exception as exc:
-        SLog.e(TAG, f"暂存失败，消息丢失 channel={channel} msg_id={msg_id}: {type(exc).__name__}")
     return im
 
 
@@ -94,6 +110,18 @@ def register_sender(channel: str, text: SenderText, image: SenderImage | None = 
         _image_senders[channel] = image
 
 
+def sender_capabilities(channel: str) -> dict[str, Any]:
+    if channel == 'feishu':
+        from mino_scout.plugins import im_feishu
+        if im_feishu.ready():
+            return {'markdown': False, 'cards': True, 'buttons': False, 'streaming': True,
+                    'threads': True, 'max_characters': 1800, 'length_unit': 'characters',
+                    'attachment_types': ['image', 'audio'], 'version': 2}
+    return {"markdown": False, "cards": False, "buttons": False, "streaming": False,
+            "threads": False, "max_characters": 1800, "length_unit": "characters",
+            "attachment_types": ["image", "audio"] if channel in _image_senders else [], "version": 1}
+
+
 def text_sender(channel: str) -> SenderText | None:
     return _text_senders.get(channel)
 
@@ -109,7 +137,7 @@ import secrets  # noqa: E402
 import threading  # noqa: E402
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer  # noqa: E402
 
-_BODY_MAX = 256 * 1024
+_BODY_MAX = 4 * (8 * 1024 * 1024 * 4 // 3 + 1024) + 65536
 _CHANNELS = {"feishu", "wecom", "dingtalk"}
 _loop_lock = threading.Lock()
 _loop_server: ThreadingHTTPServer | None = None
@@ -179,6 +207,21 @@ def _handle_ingest(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         actual = str((langbot_host.channel_status().get("platforms") or {}).get(platform, {}).get("instance_id") or "")
         if not instance or instance != actual or ctx.get("bot_uuid") != instance:
             return 403, {"ok": False, "error": "unverified robot instance"}
+        if channel == 'feishu':
+            from mino_scout.plugins import im_feishu
+            mentions = [str(value) for value in body.get('mention_targets') or []]
+            try:
+                verified = im_feishu.verify(langbot_host._node_id, mentions if chat_type == 'group' else None)
+            except Exception:
+                verified = False
+            if chat_type == 'group' and not verified:
+                return 200, {'ok': True, 'dropped': 'not_mentioned_bot'}
+        if chat_type == 'group' and channel != 'feishu':
+            from mino_scout.plugins.state import plain_value
+            field = 'wecombot.BotId' if channel == 'wecom' else 'dingtalk.robot_code'
+            bot_id = plain_value('im', 'langbot', field)
+            if not bot_id or bot_id not in [str(value) for value in body.get('mention_targets') or []]:
+                return 200, {'ok': True, 'dropped': 'unverified_bot_mention'}
         langbot_host.note_message(channel)
     except Exception:
         return 403, {"ok": False, "error": "unverified robot instance"}
@@ -187,7 +230,7 @@ def _handle_ingest(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             channel, chat_id, chat_type,
             str(body.get("sender_id") or ""), str(body.get("msg_id") or ""),
             str(body.get("text") or ""), mentioned,
-            {str(k): str(v) for k, v in ctx.items()}, tenant=str(body.get("tenant") or ""), instance_id=instance,
+            {str(k): str(v) for k, v in ctx.items()}, tenant=str(body.get("tenant") or ""), instance_id=instance, metadata=body,
         )
     except Exception as exc:
         SLog.e(TAG, f"loopback ingest 失败: {type(exc).__name__}")

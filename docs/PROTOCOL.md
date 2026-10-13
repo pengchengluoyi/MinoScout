@@ -442,7 +442,7 @@ sequenceDiagram
 契约真源：`tests/fixtures/protocol/`。两仓必须一致。
 
 ```
-fixtures_sha256 = 969650f50b05d4f67826aeb198b3ee04720ddb945f2f812f5235b83f3307c865
+fixtures_sha256 = 9a801333ceaaa6cfd0db3736e48352e3e4e02a954344bbe89a832e2b4bcb37f6
 ```
 
 两仓各自确认：① `protocol.py` 能 round-trip 全部 fixture；② fixture 目录哈希与上面记录一致。
@@ -482,3 +482,23 @@ OBSERVE 的 screenshot 与 RESULT 的执行诊断通过 capture_id、session_gen
 - 点击使用 ActionTarget.WINDOW 与 ClickPosition.CAPTURED_COORDINATES，Cua 原子校验捕获、所有者、窗口几何与有效期，处理 Retina/压缩映射并消费捕获。输入和按键也绑定窗口，显式 delivery_mode=foreground；项目不向整个桌面投递坐标或键盘事件。
 - 前台状态读取使用 Cua list_apps.active，仅作为真实全局前台诊断；窗口准备只确认进程与窗口绑定，不消费 bring_to_front 的激活回执，不以全局前台归属作为截图准入条件。Nexus 的全局前台自动恢复不用于 Desktop。launch 成功元数据为 stage=window_ready、window_verified=true、foreground_source=not_required、activated=false、foreground_verified=false；这些前台字段表示未请求或验证持续激活。截图必须取得 SDK 的有效窗口捕获；点击与输入仍由 Cua foreground 模式在动作时处理投递准入，不能由 launch 成功推定动作成功。健康、权限和会话诊断使用 health_report，不读取项目自研平台探针。generation 跟随 Scout 生命周期及 Cua readiness 状态变化；窗口与捕获是否仍可动作由 SDK 最终校验。
 - tool/call 在窗口准备派发前写入；tool/result.desktop 保留窗口 target/capture_scope、捕获身份和安全动作证据，observe/screen 保留 pid/window_id、图像尺寸及缩放信息，便于核对是否确实为指定窗口。
+
+### IM Envelope 与投递增量契约（2026-10-13）
+
+协议保持 v2；`EXECUTE.params` 保持可扩展对象。`node.plugin_im_message` 的 `params.im` 采用两仓相同的 `ImEnvelope`：channel、instance_id、tenant、chat_id、chat_type、sender_id、msg_id，加上可选 text、mentioned、event_type、reply_to、thread_id、target_message_id、revision、delivery_key、received_at、reply_ctx、recent_turns、capabilities、attachments、callback。未上报能力的旧发送端按纯文本处理。
+
+- `reply_to` 是平台实际引用的消息标识，需经本地映射定位业务对象；`target_message_id` 明确编辑/撤回的来源。不可取消另一个最新请求，也不能从引用文本猜 request_id。
+- `reply_ctx.source_message_id` 保存已验证原消息。飞书线程回复接口使用 `om_` 消息编号，不把 `omt_` 线程号当消息编号。历史正文还需匹配 instance/tenant/sender/thread 和本次绑定起点。
+- 附件在 Scout 下载并限流、限大小、校验 MIME/签名，入站只带本地 ref、种类、大小与 MIME。`plugin.im.attachment` 按已验证账号、实例与发送者取回；Nexus 不从正文下载任意 URL。飞书私有媒体使用当前节点机器人权限，凭据不传 Nexus。微信加密 CDN/Silk 仍未完整接入，明确提示重发文字，不声明正向语音验收通过。
+- `plugin.im.ack` 是业务处理完成或已经确定未知状态后的确认。WebSocket RESULT 只是传输受理，不能清除持久 Inbox；节点重连补发同 delivery_key，Nexus 依原收件回执去重。
+- `plugin.im.send` 接受稳定 delivery_id 和渠道无关 card。Scout 先记 sending，成功后 done；sending/uncertain 不自动换投递键重发。正文与完整卡片保留在 Scout 本地 outbox，Nexus 持久化引用和结构化业务状态。按渠道限制完整分段，当前单段最多 1800 字符。
+- `plugin.im.stream` 接受 stream_id、sequence、complete、text 与可选 card。同一 stream_id 首次创建一条消息，后续 PATCH 原消息；旧序号不覆盖新内容。首次创建结果未知时禁止换序号重复创建，恢复优先使用原 outbox 回执。草稿标注“尚未执行”，工具参数不发送，最后更新为三类型正式卡片。
+- 已验证当前飞书机器人身份后，内置适配器有原生卡片、线程与消息更新代码；真实平台显示/回执尚待部署联调。配置更新或停用使能力验证缓存失效。原生按钮回调适配尚未接入，buttons=false，使用编号/名称续接；其他入口保守声明文本降级。
+
+新增/更新 golden：`execute_node_plugin_im_lark.json`、`execute_node_plugin_im_message.json`、`execute_node_plugin_im_stream.json`。两仓 30 份 fixture 原始字节一致，编码后的默认可选字段允许补齐；全部标准化 round-trip 一致，三份 IM fixture 严格 round-trip 通过。
+
+| IM fixture | SHA-256 |
+| --- | --- |
+| `execute_node_plugin_im_lark.json` | `15f6eece7836c168ff60c72e2c0bbc4aae7881744b82adb2614a41ad994eb78e` |
+| `execute_node_plugin_im_message.json` | `d6623b7c559ae2680a02a3dcf87133cb32a044bf8ade02da8464c4a04edd6aed` |
+| `execute_node_plugin_im_stream.json` | `cd7494afcd545220478c2d1a667fe09cd9e325a460d99f254af5d1f59beea131` |

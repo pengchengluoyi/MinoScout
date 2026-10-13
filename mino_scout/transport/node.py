@@ -458,6 +458,7 @@ class NodeTransport:
                 pass
             try:
                 await self._tick_heartbeat()
+                await self._emit_im_message(None)
             except Exception as exc:
                 SLog.w(TAG, f"心跳发送失败: {exc}")
                 return
@@ -654,31 +655,22 @@ class NodeTransport:
             self._im_lock = asyncio.Lock()
         async with self._im_lock:
             if self._ws is None:
-                if im is not None:
-                    await asyncio.to_thread(im_store.push, im)
                 return
-            backlog = await asyncio.to_thread(im_store.pop_all)
-            if backlog:
-                SLog.i(TAG, f"补发暂存的 IM 事件 {len(backlog)} 条")
-            queue = [(ts, row) for ts, row in backlog]
-            if im is not None:
-                queue.append((int(time.time()), im))
+            # 旧版暂存迁入持久收件箱，平台 ACK 不能清除尚未处理的业务事件。
+            await asyncio.to_thread(im_store.migrate_pending)
+            queue = await asyncio.to_thread(im_store.pending_events)
             if not queue:
                 return
             try:
                 await self._send(P.MsgType.HEARTBEAT, await asyncio.to_thread(self.core.heartbeat))
             except Exception:
-                for ts, row in queue:
-                    await asyncio.to_thread(im_store.push, row, ts)
                 return
-            for i, (ts, row) in enumerate(queue):
+            for row in queue:
                 ok = self._ws is not None and await self._send_framework(
-                    "node.plugin_im_message", detail="im message", extra={"im": row},
-                )
+                    "node.plugin_im_message", detail="im message", extra={"im": row})
                 if not ok:
-                    for ts2, row2 in queue[i:]:
-                        await asyncio.to_thread(im_store.push, row2, ts2)
                     return
+                await asyncio.to_thread(im_store.sent_event, row["delivery_key"])
 
     async def _emit_plugin_progress(self, payload: dict) -> None:
         if self._ws is None or not self.core._plugins_ready:

@@ -46,7 +46,24 @@
             "sender_id": "ou_alice"
           }
         ],
-        "instance_id": "lark-bot-alice"
+        "instance_id": "lark-bot-alice",
+        "event_type": "message",
+        "reply_to": "",
+        "thread_id": "",
+        "revision": "",
+        "received_at": 1791850000,
+        "capabilities": {
+          "version": 1,
+          "markdown": false,
+          "cards": false,
+          "buttons": false,
+          "streaming": false,
+          "threads": false,
+          "max_characters": 1800,
+          "length_unit": "characters",
+          "attachment_types": []
+        },
+        "attachments": []
       }
     },
     "executor_order": [],
