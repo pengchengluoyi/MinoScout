@@ -249,8 +249,4 @@ coverage/
 /scripts/check_layered_install.py
 /scripts/check_windows_lifecycle.py
 
-# 协议 JSON 是通信契约，保留数据；此目录内的测试脚本仍不上传。
-!/tests/fixtures/
-!/tests/fixtures/protocol/
-/tests/fixtures/protocol/*
-!/tests/fixtures/protocol/*.json
+# 本地协议样例也属于 tests，留在本机调试，不提交到 Git。

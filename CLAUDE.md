@@ -103,16 +103,15 @@ mino_scout/
 
 协议在两个仓库各有一份 `protocol.py`（本仓 `mino_scout/protocol.py`，Nexus `mino_nexus/protocol.py`）。**没有共享包** —— 只有两个仓库，不引入第三个。
 
-契约真源是 **golden fixtures**：`tests/fixtures/protocol/*.json`，两仓字节相同。
+契约真源是两仓同步的 `docs/PROTOCOL.md` 和对应 `protocol.py` 实现；`tests/fixtures/protocol/*.json` 仅供本地调试，不提交 Git。
 
-改协议的流程，**四步必须同一个 PR 周期内完成**：
+改协议的流程，**同一个 PR 周期内完成**：
 
 1. 改 `docs/PROTOCOL.md`（两仓同一份文本）
-2. 改/加 `tests/fixtures/protocol/*.json`
-3. 两仓各自改 `protocol.py`，使其能 round-trip 全部 fixture
-4. 两仓各自确认 `protocol.py` 能 round-trip 全部 fixture
+2. 两仓各自改 `protocol.py`，使其与文档一致
+3. 若本地有 fixture，两仓各自确认 round-trip 并保持本地样例一致，不提交样例
 
-fixture 目录的内容哈希记录在 `docs/PROTOCOL.md` 末尾。两仓哈希不一致 = 协议漂移。
+`docs/PROTOCOL.md` §8 的哈希仅供有本地 fixture 时核对；两仓协议文档或实现不一致 = 协议漂移。
 
 ---
 

@@ -1,7 +1,7 @@
 # PROTOCOL — MinoNexus ⇄ MinoScout
 
 > **本文在 MinoNexus 与 MinoScout 两个仓库各有一份，必须逐字相同。**
-> 契约真源是 `tests/fixtures/protocol/*.json`（两仓字节相同）。改协议的流程见各仓 `CLAUDE.md` §5。
+> 契约真源是两仓同步的本文和协议实现；`tests/fixtures/protocol/*.json` 仅供本地校验，不提交 Git。改协议的流程见各仓开发指引 §5。
 > 协议版本：`2`
 
 用例步骤与框架指令的统一出入口是 `EXECUTE` → `RESULT`。截图、层级、探活、取消 run、节点 stop/restart/update、设备热插拔都是 `capability_id`，走同一套形状。线上只有五种 `type`：`REGISTER` / `REGISTERED` / `HEARTBEAT` / `EXECUTE` / `RESULT`。没有 `OBSERVE` / `PROBE` / `CANCEL_RUN` / `NODE_EVENT` / `NODE_COMMAND`。
@@ -437,15 +437,15 @@ sequenceDiagram
 
 ---
 
-## 8. Fixture 哈希
+## 8. 本地 Fixture 哈希
 
-契约真源：`tests/fixtures/protocol/`。两仓必须一致。
+本地调试时可用 `tests/fixtures/protocol/` 校验协议实现，两仓若有样例应保持一致；这些文件不纳入 Git。
 
 ```
 fixtures_sha256 = 9a801333ceaaa6cfd0db3736e48352e3e4e02a954344bbe89a832e2b4bcb37f6
 ```
 
-两仓各自确认：① `protocol.py` 能 round-trip 全部 fixture；② fixture 目录哈希与上面记录一致。
+有本地样例时，两仓各自确认：① `protocol.py` 能 round-trip 全部 fixture；② fixture 目录哈希与上面记录一致。
 
 哈希算法：按 JSON 文件名字典序拼接每份 `文件名 UTF-8 + 换行 + 原始文件字节`，再取 SHA-256。
 
