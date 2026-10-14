@@ -220,6 +220,8 @@ def _os_getpid() -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    import multiprocessing
+    multiprocessing.freeze_support()
     from mino_scout.config import config_path, configure_proxy_bypass
 
     configure_proxy_bypass()

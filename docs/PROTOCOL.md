@@ -502,3 +502,39 @@ OBSERVE 的 screenshot 与 RESULT 的执行诊断通过 capture_id、session_gen
 | `execute_node_plugin_im_lark.json` | `15f6eece7836c168ff60c72e2c0bbc4aae7881744b82adb2614a41ad994eb78e` |
 | `execute_node_plugin_im_message.json` | `d6623b7c559ae2680a02a3dcf87133cb32a044bf8ade02da8464c4a04edd6aed` |
 | `execute_node_plugin_im_stream.json` | `cd7494afcd545220478c2d1a667fe09cd9e325a460d99f254af5d1f59beea131` |
+
+
+## 10. V5 Web 写安全与证据补充契约（2026-10-14）
+
+协议信封仍为 v2；新增容量字段可缺省。V5 是显式选择的执行模式，不能根据版本号、旧 agent 字段或连接形态猜测支持。未报契约、未发布配置或模式不符时拒绝 V5；legacy 路径保持独立。
+
+### 10.1 准入、定位与写动作
+
+- `probe` 的 `RESULT.data.contracts` 必须包含 `web_v5=1`、`locator_contract=web.locator.v1`、`predicate_facts_contract=web.atomic.v1`。`device_hint.execution_mode=v5`，设备固定为该节点的 `web{node_id}`，platform 为 web/playwright。不能改派开发节点或另一节点。
+- 控件从发布快照提供 `control_id/revision/locator_spec/sensitive`。`locator_spec.playwright` 只支持 `contract=web.locator.v1`、`scope={kind:page,page_id:main}`、`selector`、`cardinality=one|set`。selector 只允许 test_id、精确 role/name、精确 label、受限 css；首期不支持 iframe、shadow、隐式 dialog、XPath、text 猜测、first/nth。
+- `tap_target` 和 `input_target` 只接受 one，必须真实唯一、可见；每条请求只有一次 click 或 fill 入口，不做 type、快捷键、坐标或 VLM 回退。集合 set 只供事实读取。能力目录由 Nexus 显式配置并冻结 `selected_impl`，Scout 不读取目录。
+- `open_web_v5` 每个 run 新建独立 headless browser/context。Nexus 在写动作前读取业务配置的未登录基线；新 context 本身不代表基线已满足。
+
+### 10.2 wire 身份与门闩
+
+- `(run_id,step_idx)` 是 wire 身份，logical seq 只是显示关联。正编号由 Nexus 按 run 加锁、单调分配；负编号用于 read/probe/screenshot/cleanup，不消耗正写编号。不同写意图绝不复用键；同请求重取必须保持整个 Execute 内容一致。
+- Scout 原子登记完整请求。相同键但内容不同返回 `request_key_conflict`，相同键正在执行返回 `request_inflight`；完成重复请求只返回已有结果。完整内容只在内存比较，不能为了幂等将密码等秘密做 hash 后输出。
+- 负编号只读请求可以刷新事实；正请求缓存不能以等待超时冒充真实完成。legacy Future 真正完成才允许入完成缓存。
+- V5 正编号 EXECUTE 不做网络重发。丢 RESULT、超时或写后异常归为 effect_unknown，不能再点击同一动作补绿。允许的恢复是：用例已声明可复位且发布重试策略，开全新 run 整案重跑最多一次，后通过标 flaky，原尝试保留 unverified。
+- `data.execution={execution_started:no|yes|unknown,phase,reason_code}` 表示写 API 的实际进入边界，不由错误字符串反推。写前拒绝为 no；已进入写 API 后异常为 yes/effect_unknown；无法确定为 unknown。
+- 写故障锁住 run 的第一个停止原因。`data.execution_control` 带 `stop_run/state/reason_code/action_ref`；后续写返回 `run_write_stopped`，只读和清理可继续。close/cancel 置 terminal，迟到成功不能解除停止或翻绿。
+- V5 设备故障返回 fail 及上述领域原因；不将所有驱动异常标成需要人介入的 blocked，也不进入 legacy executor fallback。
+
+### 10.3 原始事实与秘密
+
+`data.target_facts` 只提供原始事实，不提供“用例通过”。包含 control_id/control_revision、scope_resolved、collection_complete、count、可读取的 visible/text/value、fact_complete。`data.observation` 提供 run_id、session_generation、after_step_idx；只有动作真正完成才推进 after_step_idx。Nexus 校验这些来源与当前 run、已发布控件及动作关联，再运行 required 原子谓词。读失败、过期来源、截断值或不完整 scope 不能按不存在或匹配成功处理。
+
+敏感控件及真实 password 输入不返回明文 value/text；只允许 secret_value.nonempty/length。长度不代表密码正确，不支持秘密明文 expected 比较。截图遮罩发布敏感控件及真实 password 控件，日志/摘要/模型上下文递归脱敏；执行所需明文仅进入执行通道，不写入证据或请求诊断。
+
+### 10.4 容量与回收
+
+`HEARTBEAT.device_workload[]` 在 Web 设备行可带 `lanes_total/lanes_free/lanes_quarantined`，Nexus 以实际报告为准。V5 默认 4 个独立进程 lane，每个 run 独占一 lane 与 Playwright 线程；第 5 个排队。legacy/headed 不与 V5 lane 混用。超时终止 worker 和浏览器后代，未确认全部停止的 lane 隔离；close 与 dispatch 竞争时，不能在请求锁释放前宣称 lane 空闲。`close_web_v5/cancel_run` 返回 executor_stopped，未回收成功不能宣称干净结束。
+
+### 10.5 终结
+
+Nexus 将 Evidence、verification/verdict、session_meta、计数在一个 SQLite 事务终结，以 finalization_id 支持重复提交而不重复执行 UI。超时后允许独立短清理及落库窗口，不能给 UI 或 LLM 续预算。截图是证据附件，不能替代动作后原始事实。事实/required 不满足返回 verified_fail 或 unverified，绝不因为工具 pass 或未报错显示绿色。

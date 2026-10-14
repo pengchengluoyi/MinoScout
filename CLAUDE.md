@@ -1,3 +1,5 @@
+> **唯一前端硬约束（2026-10-14）**：Mino 项目只有 MinoWorkbench 一个前端，MinoConsole/MinoStudio 已取消。不得新增、开发、构建或交付旧前端；管理、配置、用例和证据界面全部在 Workbench。历史字段与安装路径名称仅为兼容，不代表旧前端仍存在。
+
 # CLAUDE.md — MinoScout
 
 本文件是给 Claude Code / 任何在本仓库工作的人的**硬约束清单**。写代码前先读这里。

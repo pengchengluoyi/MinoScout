@@ -149,15 +149,54 @@ class ScoutCore:
         self._pw_lock = threading.Lock()
         self._adb_ime_last_check: dict[str, float] = {}
         self._device_workload: dict[str, P.DeviceWorkload] = {}
+        from mino_scout.request_guard import RequestGuard
+        from mino_scout.web_v5 import WebV5Runtime
+        self._requests = RequestGuard()
+        self._web_v5 = WebV5Runtime()
 
     # ---------------- EXECUTE（唯一 dispatch） ----------------
 
     def execute(self, req: P.Execute) -> EventResult:
-        key = (req.run_id, req.step_idx)
-        cached = self._get_cached(key)
-        if cached is not None:
-            SLog.i(TAG, f"幂等命中 {key}，回缓存不重新执行（status={cached.status.value}）")
+        from mino_scout.secret_redaction import register_inputs, sanitize
+        from mino_scout.web_v5 import CLEANUP, READS, WRITES
+        register_inputs(req.params)
+        register_inputs(req.device_hint)
+        state, cached = self._requests.begin(req)
+        if state == "cached":
             return cached
+        if state != "new":
+            return make_event_result(_event_from_execute(req), status=EventStatus.FAIL if req.device_hint.get("execution_mode") == "v5" else EventStatus.BLOCKED,
+                executor_used="core", started_at=now_iso(), elapsed_ms=0, summary=state,
+                raw_response={"execution": {"execution_started": "no", "phase": "admission", "reason_code": state}})
+        key = (req.run_id, req.step_idx)
+        if req.device_hint.get("execution_mode", "legacy") == "v5":
+            stopped = self._requests.stopped(req.run_id)
+            if stopped and req.capability_id not in READS | CLEANUP:
+                output = {"status": "fail", "data": {"execution": {"execution_started": "no",
+                    "phase": "admission", "reason_code": "run_write_stopped"}, "execution_control": stopped}}
+            elif req.sn != f"web{self.node_id}" or req.platform not in {"web", "playwright"}:
+                output = {"status": "fail", "data": {"execution": {"execution_started": "no",
+                    "phase": "admission", "reason_code": "node_pin_mismatch"}}}
+            else:
+                output = self._web_v5.execute(req)
+            raw = output["data"]
+            reason = raw.get("execution", {}).get("reason_code", "")
+            with self._requests.lock:
+                late_stop = self._requests.stopped(req.run_id)
+                if late_stop and req.capability_id in WRITES:
+                    output["status"] = "fail"
+                    reason = late_stop.get("reason_code", "run_write_stopped")
+                    raw["execution_control"] = {"stop_run": True, **late_stop}
+                if reason and req.capability_id in WRITES:
+                    stop = self._requests.stop(req.run_id, reason, {"run_id": req.run_id, "step_idx": req.step_idx})
+                    raw["execution_control"] = {"stop_run": True, **stop}
+                elif req.capability_id in CLEANUP:
+                    self._requests.stop(req.run_id, "run_closed", {}, terminal=True)
+                result = make_event_result(_event_from_execute(req), status=EventStatus(output["status"]),
+                    executor_used="playwright_v5", started_at=now_iso(), elapsed_ms=0,
+                    summary=reason or req.capability_id, error=output.get("error", reason), raw_response=raw)
+                self._requests.finish(req, result)
+            return result
 
         timeout = float(req.timeout_sec or 0) or 30.0
         on_playwright = _use_playwright_thread(req)
@@ -168,6 +207,14 @@ class ScoutCore:
             fut = pool.submit(self._execute_playwright, req, retired, holder)
         else:
             fut = pool.submit(self._execute_body, req)
+        # Only actual worker completion releases the in-flight identity. A caller
+        # timing out does not prove that the action stopped.
+        def completed(future):
+            try:
+                self._requests.finish(req, future.result())
+            except Exception:
+                pass
+        fut.add_done_callback(completed)
         try:
             result = fut.result(timeout=timeout)
         except TimeoutError:
@@ -176,10 +223,7 @@ class ScoutCore:
                 self._retire_playwright_shard(req, holder.get("ident"))
             result = _timeout_result(req, timeout, lane_reset=retired is not None)
             SLog.w(TAG, f"execute timeout {timeout}s cap={req.capability_id} key={key}")
-            self._put_cached(key, result)
             return result
-
-        self._put_cached(key, result)
         return result
 
     def _execute_playwright(
@@ -247,7 +291,7 @@ class ScoutCore:
         try:
             return self._dispatch(req)
         except Exception as exc:
-            SLog.e(TAG, f"execute 内部异常 cap={req.capability_id}: {exc!r}")
+            SLog.e(TAG, f"execute 内部异常 cap={req.capability_id}: {type(exc).__name__}")
             return make_event_result(
                 _event_from_execute(req),
                 status=EventStatus.FAIL,
@@ -436,6 +480,7 @@ class ScoutCore:
         summary = f"probe {sn}: {channels or '未发现该设备'}"
         payload = {
             "channels": channels,
+            "contracts": __import__("mino_scout.web_v5", fromlist=["CONTRACTS"]).CONTRACTS,
             "executors": {e.id: e.available for e in execs},
             "extra": {"channels": channels, "executors": {e.id: e.available for e in execs}},
         }
@@ -675,6 +720,8 @@ class ScoutCore:
 
         协议 §4.8：语义是"不再继续"，**不是回滚** —— 已经发给设备的动作撤不回来。
         """
+        self._requests.stop(run_id, "task_cancelled", {}, terminal=True)
+        self._web_v5.close(run_id, time.monotonic() + 2)
         with self._lock:
             keys = [k for k in self._done if k[0] == run_id]
             for k in keys:
@@ -701,6 +748,9 @@ class ScoutCore:
         Hub 用 thread-local，主线程调 shutdown_thread 关不到浏览器，
         进程一死就会刷 TargetClosedError。
         """
+        for lane in self._web_v5.lanes:
+            if lane["run"]:
+                self._web_v5.close(lane["run"], time.monotonic() + 2)
         try:
             with self._pw_lock:
                 shards = list(self._pw_shards)
@@ -761,6 +811,8 @@ class ScoutCore:
                 self._device_workload.values(),
                 key=lambda w: (w.sn, w.run_id, w.step_idx),
             )
+        capacity = self._web_v5.capacity()
+        workload.append(P.DeviceWorkload(sn=f"web{self.node_id}", **capacity))
         from mino_scout.input_contract import runtime_input_capabilities
         from mino_scout.plugins.state import status_list
 

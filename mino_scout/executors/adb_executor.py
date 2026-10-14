@@ -159,7 +159,7 @@ def _same_input_field(node, recorded) -> bool:
     """点击时记录的输入框与此刻的是否同一个。
 
     右/下边界允许漂移：验证码框右侧的倒计时（60s→59s…）会让输入框宽度变化
-    （cr-a278a45ce22c：[332..945] → [332..963]），要求 bounds 全等会误判失效。
+    （cr-a278a45ce22c、cr-58678f28acd7），要求 bounds 全等会误判失效。
     身份用 package + resource_id + 左上角（±8px）。
     """
     pkg, rid, bounds = recorded
@@ -167,6 +167,25 @@ def _same_input_field(node, recorded) -> bool:
         return False
     return abs(node.bounds[0] - bounds[0]) <= 8 and abs(node.bounds[1] - bounds[1]) <= 8
 
+
+
+def _select_focused_input(nodes, *, point=None, expect=None):
+    """只接受一个符合点击记录的可写焦点；候选冲突时不猜测。"""
+    matches = []
+    for node in nodes:
+        if not node.focused or not node.enabled or "EditText" not in node.cls:
+            continue
+        left, top, right, bottom = node.bounds
+        if right <= left or bottom <= top:
+            continue
+        if point is not None and not (left <= point[0] < right and top <= point[1] < bottom):
+            continue
+        if expect is not None and not _same_input_field(node, expect):
+            continue
+        matches.append(node)
+        if len(matches) > 1:
+            return None
+    return matches[0] if matches else None
 
 class AdbExecutor:
     id = "adb"
@@ -186,17 +205,7 @@ class AdbExecutor:
         dump = dump_ui_nodes(serial, force_fresh=True)
         if not dump.ok:
             return None
-        for node in dump.nodes:
-            if not node.focused or not node.enabled or "EditText" not in node.cls:
-                continue
-            if point is not None:
-                left, top, right, bottom = node.bounds
-                if not (left <= point[0] < right and top <= point[1] < bottom):
-                    continue
-            if expect is not None and not _same_input_field(node, expect):
-                continue
-            return node
-        return None
+        return _select_focused_input(dump.nodes, point=point, expect=expect)
 
     # 上报给 Nexus 的 abstract cap（协议 §4.1 的 executors[].provides）。
     # 词表真源是 Nexus 的 abstract_caps.yaml —— 本仓只报字符串，不解释含义。

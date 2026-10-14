@@ -144,6 +144,9 @@ class DeviceWorkload:
     run_id: str = ""
     step_idx: int = -1
     capability_id: str = ""
+    lanes_total: Optional[int] = None
+    lanes_free: Optional[int] = None
+    lanes_quarantined: Optional[int] = None
 
 
 @dataclass

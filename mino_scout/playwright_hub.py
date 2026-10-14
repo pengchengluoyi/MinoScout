@@ -528,6 +528,10 @@ class PlaywrightHub:
             "caret": "hide",
             "timeout": cap_ms,
         }
+        from mino_scout.secret_redaction import has_sensitive_inputs
+        kwargs["mask"] = [page.locator('input[type="password"]')]
+        if has_sensitive_inputs(run_id):
+            kwargs["mask"].append(page.locator('input, textarea, [contenteditable="true"]'))
         if clip and not full_page:
             kwargs["clip"] = clip
         return page.screenshot(**kwargs)

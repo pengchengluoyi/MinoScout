@@ -146,6 +146,7 @@ def make_event_result(
     字段填法与上游 `base.make_event_result` 一致，额外多一个 `attempts`
     （fallback 链记录，回填进协议的 `RESULT.attempts`）。
     """
+    from mino_scout.secret_redaction import sanitize
     return EventResult(
         seq=event.seq,
         capability_id=event.capability_id,
@@ -153,13 +154,13 @@ def make_event_result(
         status=status,
         executor_used=executor_used,
         elapsed_ms=elapsed_ms,
-        summary=summary,
-        error=error,
+        summary=sanitize(summary),
+        error=sanitize(error),
         ai_reasoning=event.ai_reasoning or "",
-        plan_event=event.model_dump(exclude_none=True),
+        plan_event=sanitize(event.model_dump(exclude_none=True)),
         vlm_meta=vlm_meta or {},
         screenshot_path=screenshot_path,
-        raw_response=raw_response or {},
+        raw_response=sanitize(raw_response or {}),
         started_at=started_at,
         finished_at=now_iso(),
         attempts=attempts or [],

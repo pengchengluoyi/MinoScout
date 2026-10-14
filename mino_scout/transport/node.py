@@ -629,7 +629,7 @@ class NodeTransport:
         try:
             await self._send(P.MsgType.RESULT, result, reply_to=req_env.msg_id)
         except Exception as exc:
-            SLog.e(TAG, f"回 RESULT 失败（Nexus 将超时重发）: {exc}")
+            SLog.e(TAG, f"回 RESULT 失败（等待方按执行模式处理结果缺失）: {exc}")
 
     async def _request(self, mtype: P.MsgType, payload: Any, *, timeout: float = 30.0):
         loop = asyncio.get_running_loop()

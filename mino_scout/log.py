@@ -65,7 +65,8 @@ class LogFormatter(logging.Formatter):
             ctx = f"[{str(run_id)[:8]}"
             ctx += f"#{step}] " if step is not None else "] "
 
-        return (
+        from mino_scout.secret_redaction import sanitize
+        return sanitize(
             f"{color}{date_str}  {os.getpid()}  {threading.get_ident()} "
             f"{level} {tag}: {ctx}{record.getMessage()}{RESET}"
         )

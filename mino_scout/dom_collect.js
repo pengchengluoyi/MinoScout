@@ -10,8 +10,9 @@
     if (rect.bottom < 0 || rect.top > vh || rect.right < 0 || rect.left > vw) return;
     const tag = (el.tagName || '').toLowerCase();
     const typ = (el.getAttribute && el.getAttribute('type') || '').toLowerCase();
-    const val = (el.value || '').toString();
-    const inner = (el.innerText || el.textContent || '').trim().slice(0, 200);
+    const sensitive = typ === 'password';
+    const val = sensitive ? '' : (el.value || '').toString();
+    const inner = sensitive ? '' : (el.innerText || el.textContent || '').trim().slice(0, 200);
     const text = val || inner;
     const placeholder = el.getAttribute && el.getAttribute('placeholder') || '';
     const aria = el.getAttribute && el.getAttribute('aria-label') || '';
@@ -23,6 +24,8 @@
     out.push({
       resource_id: el.id || '',
       text,
+      value: val,
+      sensitive,
       content_desc: placeholder || aria || role,
       class: cls,
       role,

@@ -801,6 +801,10 @@ class PlaywrightExecutor:
         params = event.params or {}
         text = str(params.get("text") or "")
         login_field = _login_field_from_params(params)
+        from mino_scout.secret_redaction import remember
+        if login_field in {"password", "otp"} or params.get("sensitive"):
+            remember(text)
+            event.params["sensitive"] = True
         tag = login_field or "textbox"
         policy = str(params.get("point_policy") or "").strip().lower()
         if policy == "node":
@@ -821,6 +825,9 @@ class PlaywrightExecutor:
                     return self._fail(event, started_at, t0, f"DOM 输入锚点未唯一命中「{name[:40]}」")
             except Exception as exc:
                 return self._fail(event, started_at, t0, f"DOM 输入锚点未命中：{exc}")
+            if loc.evaluate("e => e.type === 'password'"):
+                remember(text)
+                event.params["sensitive"] = True
             loc.fill(text)
             return self._ok(event, started_at, t0, f"输入({tag})「{name[:40]}」")
         focus_ref = str(params.get("focus_ref") or "")
@@ -845,6 +852,9 @@ class PlaywrightExecutor:
                 t0,
                 f"输入({tag})@({x},{y}) {_input_summary_snippet(text)}（焦点未确认）",
             )
+        if target.evaluate("e => e.type === 'password'"):
+            remember(text)
+            event.params["sensitive"] = True
         landed = self._commit_input_value(
             page, target, text, x=x, y=y, field=login_field
         )
@@ -868,6 +878,10 @@ class PlaywrightExecutor:
         target = None
         try:
             target, _ = self._focused_element(page)
+            if target is not None and target.evaluate("e => e.type === 'password'"):
+                from mino_scout.secret_redaction import remember
+                remember(text)
+                event.params["sensitive"] = True
             reason = "no_active_element" if target is None else target.evaluate("""element => {
                 if (element === document.body || element === document.documentElement) {
                     if (!element.isContentEditable) return 'no_active_element';
@@ -933,6 +947,9 @@ class PlaywrightExecutor:
     ) -> bool:
         """把字写进定位到的控件本身。成功只认框里包含完整文本。"""
         expected = str(text or "")
+        from mino_scout.secret_redaction import remember
+        if field in {"password", "otp"} or target.evaluate("e => e.type === 'password'"):
+            remember(expected)
         if not expected.strip():
             return False
         try:
@@ -978,15 +995,21 @@ class PlaywrightExecutor:
             pass
 
     def _ok(self, event, started_at, t0, summary: str) -> EventResult:
+        if event.params.get("sensitive"):
+            summary = "敏感输入已完成（内容已脱敏）"
         return make_event_result(
             event, status=EventStatus.PASS, executor_used=self.id,
             started_at=started_at, elapsed_ms=int((time.time() - t0) * 1000),
             summary=summary,
+            raw_response={"sensitive": bool(event.params.get("sensitive"))},
         )
 
     def _fail(self, event, started_at, t0, msg: str) -> EventResult:
+        if event.params.get("sensitive"):
+            msg = "敏感输入失败（详细内容已脱敏）"
         return make_event_result(
             event, status=EventStatus.FAIL, executor_used=self.id,
             started_at=started_at, elapsed_ms=int((time.time() - t0) * 1000),
             summary=msg, error=msg,
+            raw_response={"sensitive": bool(event.params.get("sensitive"))},
         )
