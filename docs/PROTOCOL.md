@@ -219,7 +219,7 @@ LangBot（`class=im,id=langbot`）的 `status` 描述进程，`platforms[平台]
 | `device_hint` | Nexus 注入的设备凭据，避免 Scout 回查。Web 可含 `headless: true`（Chromium 无头）。**含敏感字段，不得写入 Scout 的日志** |
 | `timeout_sec` | 本动作上限。超时回 `fail`，见 §6 |
 
-**幂等**：`(run_id, step_idx)` 是唯一键。Scout 必须缓存已完成的 `(run_id, step_idx) → RESULT`（建议保留至该 run 结束或 10 分钟），重复收到时**直接返回缓存结果，不重新执行**。`step_idx < 0` 不做幂等（截图/探活/框架事件每次都要发生）。
+**幂等**：`(run_id, step_idx)` 是 wire 唯一键，Scout 登记完整 Execute 内容。相同键不同内容拒绝为 `request_key_conflict`；在途重复返回 `request_inflight`。完成后业务/插件动作重复返回缓存结果，不重新执行；允许的只读刷新见 §9。`step_idx=-1` 只表示 Nexus 调用方尚未分配辅助编号，不能直接上线路；首次发送前补独立负编号，同一载荷重发保留编号及完整内容。不同截图、探针、插件消息和 ACK 必须是不同请求，不能因负编号就绕过守卫。
 
 `compress_ratio`（`1.0` = 不压缩）对 **playwright 与 adb** 都生效：按比例缩小后，大于 1 时转 JPEG。Nexus 按渠道填入当前跑用例模型的 `web_compress_ratio` 或 `android_compress_ratio`，Scout 不读设置。**`RESULT` 里的 `width` / `height` 始终报原图尺寸**，坐标体系不受压缩影响。喂给大模型的图另按 `plan_compress_ratio` 统一转 JPEG，与渠道无关。
 
@@ -318,7 +318,7 @@ S→N 的框架事件可丢（超时未等到 RESULT 时 Scout 只记 warn）；
 | 非 adb 序列号（如远程 `claw-` 设备） | `status=fail`；`remote` / `ios_wda` 通道待后续版本 |
 | dump 失败（设备忙 / agent 挂） | `status=fail`，`error` 汇总各来源的失败原因 |
 
-`hierarchy` 是观察类能力，`step_idx=-1`，**不做幂等缓存**。Scout 侧有 1.5s 的 TTL dump 缓存，
+`hierarchy` 是观察类能力，每次新观察使用独立 `step_idx< -1`；同请求的重取仍经过完整请求守卫。Scout 侧有 1.5s 的 TTL dump 缓存，
 动作执行后会主动失效；调用方要最新一帧就跟在动作之后取。
 
 Nexus 侧收到 `fail` 时**不得**让本 turn 失败：按 `docs/NAVIGATION_ATLAS.md` §10.0.2 降级
@@ -419,7 +419,7 @@ sequenceDiagram
 |---|---|
 | Nexus 等 `RESULT` 超时 | 用 `payload.timeout_sec` + 5s 宽限。超时后按同一 `(run_id, step_idx)` 重发一次；再超时记 `fail`，原因 `scout timeout` |
 | Scout 执行超过 `timeout_sec` | 立刻回 `RESULT status=fail`，`error` 说明超时。实现是 `fut.result(timeout=timeout_sec)`：**Python 线程无法强杀**，底层 adb / 设备动作可能仍在跑 |
-| Scout 收到重复 `(run_id, step_idx)` | 返回缓存的 `RESULT`，**不重新执行** |
+| Scout 收到重复 `(run_id, step_idx)` | 先比较完整内容；冲突/在途明确拒绝，已完成业务或插件动作返回缓存 `RESULT`，**不重新执行**。允许的只读刷新见 §9 |
 | 连接断开 | Scout 退避重连并重发 `REGISTER`。在途 `EXECUTE` 的结果若已产生，重连后 Nexus 重发同键请求即可取到缓存 |
 | Nexus 重启 | Scout 的 `REGISTER` 会重建节点登记。在途 run 由 Nexus 侧判为中断，不尝试续跑 |
 | S→N 框架 `EXECUTE` / `HEARTBEAT` 丢失 | 允许。状态最终由下一次 `HEARTBEAT` 收敛 |
@@ -517,7 +517,7 @@ OBSERVE 的 screenshot 与 RESULT 的执行诊断通过 capture_id、session_gen
 
 ### 10.2 wire 身份与门闩
 
-- `(run_id,step_idx)` 是 wire 身份，logical seq 只是显示关联。正编号由 Nexus 按 run 加锁、单调分配；负编号用于 read/probe/screenshot/cleanup，不消耗正写编号。不同写意图绝不复用键；同请求重取必须保持整个 Execute 内容一致。
+- `(run_id,step_idx)` 是 wire 身份，logical seq 只是显示关联。正编号由 Nexus 按 run 加锁、单调分配；辅助负编号由 Nexus 全进程原子递减分配并以启动微秒分代，不消耗任何 run 的正写编号。`-1` 为待分配哨兵。现有任务 run_id 保持原值；无任务 RPC 的 run_id 仍为空，不伪造活动任务。插件/主机命令也可使用辅助编号，负编号本身不代表只读。不同意图绝不复用键；同请求重取必须保持整个 Execute 内容一致。
 - Scout 原子登记完整请求。相同键但内容不同返回 `request_key_conflict`，相同键正在执行返回 `request_inflight`；完成重复请求只返回已有结果。完整内容只在内存比较，不能为了幂等将密码等秘密做 hash 后输出。
 - 负编号只读请求可以刷新事实；正请求缓存不能以等待超时冒充真实完成。legacy Future 真正完成才允许入完成缓存。
 - V5 正编号 EXECUTE 不做网络重发。丢 RESULT、超时或写后异常归为 effect_unknown，不能再点击同一动作补绿。允许的恢复是：用例已声明可复位且发布重试策略，开全新 run 整案重跑最多一次，后通过标 flaky，原尝试保留 unverified。
@@ -538,3 +538,9 @@ OBSERVE 的 screenshot 与 RESULT 的执行诊断通过 capture_id、session_gen
 ### 10.5 终结
 
 Nexus 将 Evidence、verification/verdict、session_meta、计数在一个 SQLite 事务终结，以 finalization_id 支持重复提交而不重复执行 UI。超时后允许独立短清理及落库窗口，不能给 UI 或 LLM 续预算。截图是证据附件，不能替代动作后原始事实。事实/required 不满足返回 verified_fail 或 unverified，绝不因为工具 pass 或未报错显示绿色。
+
+### 辅助请求发送闸门（2026-10-14，cr-72f483f92cdf）
+
+Nexus 的 `NodeConnection.request` 在序列化 EXECUTE 前统一补齐未编号辅助请求；插件调用在建立载荷时使用同一 helper，RouterProxy 取证、插件和结束通知使用同一负编号分配器。重复发送同一载荷不重新编号；传入的正编号、任务归属、focus_ref 与动作证据引用不变。V5 缺 run_id 必须拒绝，不能补伪造任务。
+
+辅助取证的新请求使用独立编号，不靠复用 `-1` 绕过完整内容比对。Scout 现有 `read_web_target_facts/screenshot/probe` 在同内容完成后的只读刷新规则不变；新增观察的身份与重取的身份必须分清。微信/其他 IM 的发送、确认、流更新、历史查询和持有权配置也经过相同发送闸门；保留业务 delivery_id 和入站 receipt 去重，不能为消除冲突关闭 Scout RequestGuard。
