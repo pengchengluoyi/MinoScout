@@ -155,6 +155,19 @@ def _runnable_low_level(low_level: Optional[dict[str, Any]]) -> bool:
     )
 
 
+def _same_input_field(node, recorded) -> bool:
+    """点击时记录的输入框与此刻的是否同一个。
+
+    右/下边界允许漂移：验证码框右侧的倒计时（60s→59s…）会让输入框宽度变化
+    （cr-a278a45ce22c：[332..945] → [332..963]），要求 bounds 全等会误判失效。
+    身份用 package + resource_id + 左上角（±8px）。
+    """
+    pkg, rid, bounds = recorded
+    if node.package != pkg or node.resource_id != rid:
+        return False
+    return abs(node.bounds[0] - bounds[0]) <= 8 and abs(node.bounds[1] - bounds[1]) <= 8
+
+
 class AdbExecutor:
     id = "adb"
 
@@ -180,7 +193,7 @@ class AdbExecutor:
                 left, top, right, bottom = node.bounds
                 if not (left <= point[0] < right and top <= point[1] < bottom):
                     continue
-            if expect is not None and (node.package, node.resource_id, node.bounds) != expect:
+            if expect is not None and not _same_input_field(node, expect):
                 continue
             return node
         return None
@@ -291,7 +304,7 @@ class AdbExecutor:
                     focus = self._focus_actions.get(focus_key)
                     node = self._focused_input(serial, expect=focus[1:] if focus else None)
                     if (not focus or focus[0] != str((event.params or {}).get("focus_ref") or "")
-                            or node is None or (node.package, node.resource_id, node.bounds) != focus[1:]):
+                            or node is None or not _same_input_field(node, focus[1:])):
                         self._focus_actions.pop(focus_key, None)
                         # summary/error 必须保持原句（Nexus 按整句识别）；诊断只放 raw_response。
                         return make_event_result(
