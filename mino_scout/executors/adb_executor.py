@@ -162,7 +162,12 @@ class AdbExecutor:
         self._focus_actions: dict[tuple[str, str], tuple[str, str, str, tuple[int, int, int, int]]] = {}
 
     @staticmethod
-    def _focused_input(serial: str, *, point: tuple[int, int] | None = None):
+    def _focused_input(
+        serial: str, *, point: tuple[int, int] | None = None,
+        expect: tuple[str, str, tuple[int, int, int, int]] | None = None,
+    ):
+        """expect=(package, resource_id, bounds)：多个 EditText 同时报 focused 时（旧框焦点残留），
+        优先取与点击时记录一致的那个，而不是树里的第一个。"""
         from mino_scout.hierarchy import dump_ui_nodes
 
         dump = dump_ui_nodes(serial, force_fresh=True)
@@ -175,6 +180,8 @@ class AdbExecutor:
                 left, top, right, bottom = node.bounds
                 if not (left <= point[0] < right and top <= point[1] < bottom):
                     continue
+            if expect is not None and (node.package, node.resource_id, node.bounds) != expect:
+                continue
             return node
         return None
 
@@ -282,11 +289,18 @@ class AdbExecutor:
             if cap == "input_text":
                 if str((event.params or {}).get("target_mode") or "") == "current_focus":
                     focus = self._focus_actions.get(focus_key)
-                    node = self._focused_input(serial)
+                    node = self._focused_input(serial, expect=focus[1:] if focus else None)
                     if (not focus or focus[0] != str((event.params or {}).get("focus_ref") or "")
                             or node is None or (node.package, node.resource_id, node.bounds) != focus[1:]):
                         self._focus_actions.pop(focus_key, None)
-                        return self._fail(event, started_at, t0, "contract_unsupported: 焦点点击引用失效")
+                        # summary/error 必须保持原句（Nexus 按整句识别）；诊断只放 raw_response。
+                        return make_event_result(
+                            event, status=EventStatus.FAIL, executor_used=self.id, started_at=started_at,
+                            elapsed_ms=int((time.time() - t0) * 1000),
+                            summary="contract_unsupported: 焦点点击引用失效",
+                            error="contract_unsupported: 焦点点击引用失效",
+                            raw_response=self._focus_mismatch_diag(serial, event, focus),
+                        )
                 result = self._input_text(event, ctx, serial, started_at, t0)
                 self._focus_actions.pop(focus_key, None)
                 return result
@@ -1105,6 +1119,36 @@ class AdbExecutor:
             summary=outcome.summary, error=outcome.error,
             raw_response=outcome.as_raw_response(),
         )
+
+    def _focus_mismatch_diag(self, serial: str, event, focus) -> dict[str, Any]:
+        """焦点引用失配时留证：记录的目标 vs 此刻所有 focused/全部 EditText，一次定位原因。"""
+        diag: dict[str, Any] = {
+            "focus_diag": True,
+            "ref_sent": str((event.params or {}).get("focus_ref") or ""),
+            "ref_recorded": focus[0] if focus else None,
+            "recorded": (
+                {"package": focus[1], "resource_id": focus[2], "bounds": list(focus[3])} if focus else None
+            ),
+        }
+        try:
+            from mino_scout.hierarchy import dump_ui_nodes
+
+            dump = dump_ui_nodes(serial, force_fresh=True)
+            if not dump.ok:
+                diag["dump_error"] = str(dump.error)[:120]
+                return diag
+            edits = [n for n in dump.nodes if "EditText" in n.cls]
+            diag["edit_texts"] = [
+                {
+                    "focused": n.focused, "enabled": n.enabled, "bounds": list(n.bounds),
+                    "hint": n.hint[:30], "resource_id": n.resource_id, "package": n.package,
+                }
+                for n in edits[:8]
+            ]
+            diag["focused_count"] = sum(1 for n in edits if n.focused)
+        except Exception as exc:  # noqa: BLE001
+            diag["diag_error"] = str(exc)[:120]
+        return diag
 
     def _fail(self, event, started_at, t0, msg: str) -> EventResult:
         return make_event_result(
