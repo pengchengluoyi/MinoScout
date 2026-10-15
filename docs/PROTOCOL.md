@@ -566,3 +566,12 @@ Android 的层级请求在 Scout 强制重新采集，先筛选可见且有语�
 普通 Future 超时只停止等待，不能宣称线程或设备动作已终止。缓存首个超时结论，同键重发不重做，迟到结果不得翻成 pass；相同 run 的后续写被锁住。cancel 仅请求不再继续；worker 仍活动时不能回收页面/桌面资源。`stop_confirmed=false` 与 `resource_isolated=true` 分别表示停止尚未确认和需保留隔离，不用任务终态推导两者。
 
 Nexus 普通任务在已有 run payload 记录不含动态输入/秘密的写意图，派发前持久化；回执缺失、写后异常或回执无法落库时保留 pending/isolated。设备预约、设备×包租约和账号租约不得因任务终态、TTL、重启清扫或旧投影覆盖而释放；隔离记录不参与常规历史裁剪。本阶段不提供自动解除隔离，需 N2 后续的受控停止证据合同；不冒称已经获得严格绑定、原子终结或底层强杀能力。
+
+
+### V5 R5：HEARTBEAT executor 快照 v1（2026-10-15）
+
+两端 HEARTBEAT 新增 `executor_snapshot_version: int = 0`。`1` 明确声明 executors 为完整快照：缺省或 null 表示本次未更新；`[]` 撤销全部；非空数组完整替换当前连接清单，不能按 id 合入。`available=false` 不参与准入。未知快照版本停止使用该节点 executor，不能猜测语义。
+
+`0` 或缺省只用于已安装旧 Scout 的兼容增量，维持按 id 合入；其空数组不能证明撤销完成，不提供新绑定保证。必须按显式字段判断，不能凭 Scout 包版本猜测。新 Scout 上报全量 executor，再覆盖其中 desktop 的实时就绪事实，不发送 desktop-only 列表。设备 channel=connected 不能重新放行已撤销或 unavailable 的 executor。
+
+协议包版本沿用现有版本，以这个可选字段显式区分更新语义；旧载荷解码为 0。新增字段两仓同步，合法/缺省/空数组载荷须各自 round-trip。本切片没有新增 binding_id/进程代际的 Execute 校验，不能据此声称完整 ExecutionBinding wire 合同已完成。

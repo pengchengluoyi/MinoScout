@@ -670,6 +670,10 @@ class ScoutCore:
         **provides 由各 executor 自报**，core 不硬编码能力表 —— 加一个 executor
         不该回来改这里（docs/EXECUTORS.md §4）。
         """
+        return self.executor_manifest(), self.discover_devices()
+
+    def executor_manifest(self) -> list[P.ExecutorManifest]:
+        """Full current executor snapshot; no duplicate device discovery."""
         execs: list[P.ExecutorManifest] = []
         for ex_id, ex in sorted(self.executors.items()):
             try:
@@ -683,7 +687,7 @@ class ScoutCore:
                     reason="" if available else reason,
                 )
             )
-        return execs, self.discover_devices()
+        return execs
 
     def discover_devices(self) -> list[P.DeviceManifest]:
         """只重探设备，不重跑 executor probe。心跳热插拔走这里。"""

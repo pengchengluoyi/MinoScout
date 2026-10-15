@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 # Only these framework/read implementations are known not to mutate UI.
-READS = frozenset({"probe", "screenshot", "get_foreground_app", "get_app_version",
+READS = frozenset({"probe", "probe_device_state", "screenshot", "get_foreground_app", "get_app_version",
                    "read_web_auth", "read_web_target_facts", "read_device_data"})
 
 

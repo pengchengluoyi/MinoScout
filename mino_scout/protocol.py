@@ -162,6 +162,7 @@ class Heartbeat:
     plugins: Optional[list[dict[str, Any]]] = None
     runtime_capabilities: Optional[list[dict[str, Any]]] = None
     executors: Optional[list[ExecutorManifest]] = None
+    executor_snapshot_version: int = 0  # 0: legacy delta; 1: complete executors snapshot
 
 
 @dataclass

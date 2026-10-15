@@ -494,12 +494,18 @@ class NodeTransport:
         hb.host = host
         hb.device_delta = delta
         if devices is not None:
+            hb.executors = await asyncio.to_thread(self.core.executor_manifest)
+            hb.executor_snapshot_version = 1
             desktop = next((d for d in devices if d.platform == "desktop"), None)
             if desktop is not None:
                 from mino_scout.executors.desktop_executor import DesktopExecutor
-                hb.executors = [P.ExecutorManifest(id="desktop", available=desktop.desktop_state == "ready",
-                                                 provides=DesktopExecutor.provides if desktop.desktop_state == "ready" else [],
-                                                 reason=desktop.blocked_reason)]
+                # HEARTBEAT.executors is a full snapshot. Preserve every registered
+                # executor when replacing the desktop readiness entry.
+                by_id = {executor.id: executor for executor in hb.executors}
+                by_id["desktop"] = P.ExecutorManifest(id="desktop", available=desktop.desktop_state == "ready",
+                    provides=DesktopExecutor.provides if desktop.desktop_state == "ready" else [],
+                    reason=desktop.blocked_reason)
+                hb.executors = list(by_id.values())
         await self._send(P.MsgType.HEARTBEAT, hb)
         self._connection("heartbeat", connected=True, registered=True)
         try:
