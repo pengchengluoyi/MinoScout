@@ -207,6 +207,59 @@ class AdbExecutor:
             return None
         return _select_focused_input(dump.nodes, point=point, expect=expect)
 
+    @staticmethod
+    def _input_target_before_tap(serial: str, point: tuple[int, int]):
+        """点击前按设备坐标绑定唯一可写框，不能用键盘出现后的 bounds 反查旧点击。"""
+        from mino_scout.hierarchy import dump_ui_nodes
+
+        try:
+            dump = dump_ui_nodes(serial, force_fresh=True)
+            if not dump.ok:
+                return None
+            inputs = [n for n in dump.nodes if n.enabled and n.visible and "EditText" in n.cls and n.area > 0]
+            hits = [n for n in inputs if n.bounds[0] <= point[0] < n.bounds[2]
+                    and n.bounds[1] <= point[1] < n.bounds[3]]
+            if len(hits) != 1:
+                return None
+            node = hits[0]
+            identity = ""
+            if node.resource_id and sum(n.package == node.package and n.resource_id == node.resource_id for n in inputs) == 1:
+                identity = "resource_id"
+            elif node.hint and sum(n.package == node.package and n.hint == node.hint for n in inputs) == 1:
+                identity = "hint"
+            return node, identity
+        except Exception as exc:  # noqa: BLE001 — 取证失败不能使已授权点击变成新异常。
+            SLog.w(TAG, f"input target capture failed: {type(exc).__name__}")
+            return None
+
+    def _record_focus_after_tap(self, event, ctx, serial: str, target) -> None:
+        """只记录点击前已绑定且点击后确有焦点的同一输入框；标识冲突仍不发引用。"""
+        from mino_scout.hierarchy import dump_ui_nodes
+
+        if not ctx.run_id or target is None:
+            return
+        before, identity = target
+        try:
+            dump = dump_ui_nodes(serial, force_fresh=True)
+            if not dump.ok:
+                return
+            candidates = [n for n in dump.nodes if n.enabled and n.visible and "EditText" in n.cls
+                          and n.area > 0 and n.package == before.package]
+            if identity:
+                expected = getattr(before, identity)
+                candidates = [n for n in candidates if getattr(n, identity) == expected]
+            else:
+                candidates = [n for n in candidates if _same_input_field(
+                    n, (before.package, before.resource_id, before.bounds))]
+            if len(candidates) != 1 or not candidates[0].focused:
+                return
+            node = candidates[0]
+            self._focus_actions[(str(ctx.device.sn or ""), str(ctx.run_id))] = (
+                f"focus:{ctx.run_id}:{event.seq}", node.package, node.resource_id, node.bounds,
+            )
+        except Exception as exc:  # noqa: BLE001 — 不重放已执行点击，缺引用交给原有恢复。
+            SLog.w(TAG, f"input focus capture failed: {type(exc).__name__}")
+
     # 上报给 Nexus 的 abstract cap（协议 §4.1 的 executors[].provides）。
     # 词表真源是 Nexus 的 abstract_caps.yaml —— 本仓只报字符串，不解释含义。
     # 与 MiniOrangeServer 的 plugins/executors/adb.yaml 保持一致。
@@ -292,17 +345,6 @@ class AdbExecutor:
             if cap == "tap_element":
                 self._focus_actions.pop(focus_key, None)
                 result = self._tap_element(event, ctx, serial, started_at, t0)
-                if result.status == EventStatus.PASS and ctx.run_id:
-                    receipt = result.raw_response if isinstance(result.raw_response, dict) else {}
-                    try:
-                        point = (int(receipt["x"]), int(receipt["y"]))
-                    except (KeyError, TypeError, ValueError):
-                        point = None
-                    node = self._focused_input(serial, point=point) if point is not None else None
-                    if node is not None:
-                        self._focus_actions[focus_key] = (
-                            f"focus:{ctx.run_id}:{event.seq}", node.package, node.resource_id, node.bounds,
-                        )
                 return result
             if cap == "multi_tap":
                 return self._multi_tap(event, ctx, serial, started_at, t0)
@@ -797,6 +839,8 @@ class AdbExecutor:
                 event, started_at, t0,
                 reason + (f"：{extra}" if extra else ""),
             )
+        point = self._map_to_display(serial, x, y) if how in ("xy", "fallback_xy") else (x, y)
+        focus_target = self._input_target_before_tap(serial, point)
         ok, inject, extra = self._inject_tap(
             serial, x, y, scale=how in ("xy", "fallback_xy"),
         )
@@ -805,6 +849,7 @@ class AdbExecutor:
         audit = {**audit, "inject": inject, **extra}
         self._invalidate_hierarchy(serial)
         if ok:
+            self._record_focus_after_tap(event, ctx, serial, focus_target)
             return make_event_result(
                 event, status=EventStatus.PASS, executor_used=self.id, started_at=started_at,
                 elapsed_ms=elapsed, summary=f"点击 {label}", raw_response=audit,

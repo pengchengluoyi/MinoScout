@@ -35,6 +35,7 @@ from mino_scout.executors.base import (
     now_iso,
 )
 from mino_scout.log import SLog
+from mino_scout.execution_boundary import started as execution_started, ui_write
 from mino_scout.schemas import CapturedScreen, EventResult, PlanEvent
 
 TAG = "Router"
@@ -102,13 +103,22 @@ class Router:
         last: Optional[EventResult] = None
 
         for ex_id in ordered:
+            stop_check = ctx.shared.get("write_stopped")
+            if ui_write(event.capability_id) and callable(stop_check) and stop_check():
+                result = make_event_result(event, status=EventStatus.BLOCKED, executor_used="router",
+                    started_at=started, elapsed_ms=int((time.time() - t0) * 1000),
+                    summary="运行已停止后续写动作，未调用后备执行器",
+                    raw_response={"execution": {"execution_started": "no", "phase": "admission", "reason_code": "run_write_stopped"},
+                                  "execution_control": {"stop_run": True, "reason_code": "run_write_stopped", "resource_isolated": True}})
+                result.attempts = attempts
+                return result
             executor = self.executors[ex_id]  # _resolve_order 已保证存在且 supports
             a_t0 = time.time()
             try:
                 result = executor.execute(event, ctx)
             except Exception as exc:
                 # executor 契约是「永不抛」。真抛了说明它有 bug —— 兜住，
-                # 记成 fail 继续走 fallback，并把这件事明确写进日志。
+                # 缺少写边界证明时停止 fallback，保留未知结果。
                 SLog.e(TAG, f"executor {ex_id} 违反契约抛了异常 cap={event.capability_id}: {exc!r}")
                 result = make_event_result(
                     event,
@@ -130,10 +140,23 @@ class Router:
             )
             last = result
 
-            detail = result.raw_response if isinstance(result.raw_response, dict) else {}
-            if detail.get("execution_started") is True and result.status not in _TERMINAL:
-                result.status = EventStatus.BLOCKED
-                result.summary = result.summary or "写动作已经开始，结果待观察，禁止重放"
+            detail = dict(result.raw_response or {})
+            boundary = execution_started(detail)
+            if ui_write(event.capability_id):
+                if result.status is EventStatus.PASS and boundary == "unknown":
+                    boundary = "yes"  # Executor 已返回完成；业务效果仍需独立检查。
+                if result.status is not EventStatus.PASS and boundary != "no":
+                    result.status = EventStatus.BLOCKED
+                    result.summary = "写动作结果未核验，已停止后备执行并保留资源隔离"
+                    detail["execution_control"] = {
+                        "stop_run": True, "state": "write_stopped", "reason_code": "write_outcome_unknown",
+                        "stop_confirmed": False, "resource_isolated": True,
+                        "action_ref": {"run_id": run_id, "step_idx": step_idx},
+                    }
+                detail["execution"] = {**(detail.get("execution") if isinstance(detail.get("execution"), dict) else {}),
+                    "execution_started": boundary, "phase": "executor", "reason_code":
+                    "write_outcome_unknown" if result.status is not EventStatus.PASS and boundary != "no" else ""}
+                result.raw_response = detail
             if result.status in _TERMINAL:
                 result.attempts = attempts
                 result.elapsed_ms = result.elapsed_ms or int((time.time() - t0) * 1000)

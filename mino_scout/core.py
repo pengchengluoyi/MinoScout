@@ -26,6 +26,7 @@ from mino_scout import screen as SCREEN
 from mino_scout.executors.base import DeviceRef, Executor, make_event_result, now_iso
 from mino_scout.log import SLog, current_run_id, current_step_idx
 from mino_scout.router import Router
+from mino_scout.execution_boundary import ui_write, started as execution_started
 from mino_scout.schemas import CapturedScreen, EventResult, EventStatus, PlanEvent
 
 TAG = "ScoutCore"
@@ -198,6 +199,15 @@ class ScoutCore:
                 self._requests.finish(req, result)
             return result
 
+        stopped = self._requests.stopped(req.run_id)
+        if stopped and ui_write(req.capability_id):
+            result = make_event_result(_event_from_execute(req), status=EventStatus.BLOCKED,
+                executor_used="core", started_at=now_iso(), elapsed_ms=0,
+                summary="当前运行写入已停止，原动作结果未核验",
+                raw_response={"execution": {"execution_started": "no", "phase": "admission", "reason_code": "run_write_stopped"},
+                              "execution_control": {"stop_run": True, **stopped}})
+            self._requests.finish(req, result)
+            return result
         timeout = float(req.timeout_sec or 0) or 30.0
         on_playwright = _use_playwright_thread(req)
         pool = self._playwright_executor(req) if on_playwright else self._pool
@@ -211,7 +221,10 @@ class ScoutCore:
         # timing out does not prove that the action stopped.
         def completed(future):
             try:
-                self._requests.finish(req, future.result())
+                value = future.result()
+                if ui_write(req.capability_id) and value.status is not EventStatus.PASS and execution_started(value.raw_response) != "no":
+                    self._requests.stop(req.run_id, "write_outcome_unknown", {"run_id": req.run_id, "step_idx": req.step_idx})
+                self._requests.finish(req, value)
             except Exception:
                 pass
         fut.add_done_callback(completed)
@@ -222,8 +235,18 @@ class ScoutCore:
                 retired.set()
                 self._retire_playwright_shard(req, holder.get("ident"))
             result = _timeout_result(req, timeout, lane_reset=retired is not None)
+            if ui_write(req.capability_id):
+                stop = self._requests.stop(req.run_id, "write_timeout_unknown", {"run_id": req.run_id, "step_idx": req.step_idx})
+                result.raw_response["execution_control"] = {"stop_run": True, **stop,
+                    "stop_confirmed": False, "resource_isolated": True}
+            self._requests.finish(req, result, seal=True, worker_done=fut.done())
             SLog.w(TAG, f"execute timeout {timeout}s cap={req.capability_id} key={key}")
             return result
+        # Future.result may wake the caller before its completion callback finishes.
+        # Publish the same stop/cache state before acknowledging completion.
+        if ui_write(req.capability_id) and result.status is not EventStatus.PASS and execution_started(result.raw_response) != "no":
+            self._requests.stop(req.run_id, "write_outcome_unknown", {"run_id": req.run_id, "step_idx": req.step_idx})
+        self._requests.finish(req, result)
         return result
 
     def _execute_playwright(
@@ -359,6 +382,7 @@ class ScoutCore:
             run_id=req.run_id,
             step_idx=req.step_idx,
             capture_prefer=_prefer_for(device),
+            shared={"write_stopped": lambda: self._requests.stopped(req.run_id)},
         )
 
     def _dispatch_cancel(self, req: P.Execute) -> EventResult:
@@ -369,7 +393,9 @@ class ScoutCore:
             executor_used="core",
             started_at=now_iso(),
             elapsed_ms=0,
-            summary=f"已停止 run（清 {dropped} 条幂等缓存）；已发给设备的动作不回滚",
+            summary=f"已阻止 run 的后续写动作（清 {dropped} 条缓存）；底层停止需独立确认",
+            raw_response={"execution": {"execution_started": "no", "phase": "cancel", "reason_code": "task_cancelled"},
+                          "executor_stopped": not self._requests.active(req.run_id)},
         )
 
     def _dispatch_node(self, req: P.Execute, cap: str) -> EventResult:
@@ -730,6 +756,9 @@ class ScoutCore:
         协议 §4.8：语义是"不再继续"，**不是回滚** —— 已经发给设备的动作撤不回来。
         """
         self._requests.stop(run_id, "task_cancelled", {}, terminal=True)
+        if self._requests.active(run_id):
+            SLog.w(TAG, f"cancel run={run_id}：仍有底层动作运行，停止未确认，保留资源")
+            return 0
         self._web_v5.close(run_id, time.monotonic() + 2)
         with self._lock:
             keys = [k for k in self._done if k[0] == run_id]
@@ -974,7 +1003,7 @@ def _with_executor_order(
 
 def _timeout_result(req: P.Execute, timeout: float, *, lane_reset: bool = False) -> EventResult:
     if lane_reset:
-        detail = "（这条 Playwright 线程还在跑，已换一条新线程接手后续指令）"
+        detail = "（原 Playwright 线程可能仍在运行，本 run 禁止后续写入）"
     else:
         detail = "（Python 线程无法强杀，底层 adb 可能仍在跑）"
     return make_event_result(
@@ -984,8 +1013,10 @@ def _timeout_result(req: P.Execute, timeout: float, *, lane_reset: bool = False)
         started_at=now_iso(),
         elapsed_ms=int(timeout * 1000),
         summary=f"timeout after {timeout}s",
-        error=f"动作超过 timeout_sec={timeout}s 已终止{detail}",
-        raw_response={"timeout": True, "timeout_sec": timeout, "lane_reset": lane_reset},
+        error=f"动作超过 timeout_sec={timeout}s，已停止等待，底层停止未确认{detail}",
+        raw_response={"timeout": True, "timeout_sec": timeout, "lane_reset": lane_reset,
+            "execution": {"execution_started": "unknown", "phase": "wait", "reason_code": "write_timeout_unknown"},
+            "stop_confirmed": False},
     )
 
 

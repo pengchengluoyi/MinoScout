@@ -6,6 +6,8 @@ import threading
 from dataclasses import asdict
 from typing import Any
 
+from mino_scout.execution_boundary import ui_write
+
 
 def _same(left, right):
     if type(left) is not type(right):
@@ -37,17 +39,28 @@ class RequestGuard:
                     old["done"] = False
                     return "new", None
                 return "cached", copy.deepcopy(old["result"])
-            if req.device_hint.get("execution_mode") == "v5" and req.step_idx > 0:
-                if any(rid == req.run_id and idx > 0 and not entry["done"]
+            if req.step_idx > 0 and (req.device_hint.get("execution_mode") == "v5" or ui_write(req.capability_id)):
+                if any(rid == req.run_id and idx > 0 and entry.get("worker_active", not entry["done"])
                        for (rid, idx), entry in self.requests.items()):
                     return "request_inflight", None
-            self.requests[key] = {"content": copy.deepcopy(content), "done": False}
+            self.requests[key] = {"content": copy.deepcopy(content), "done": False, "worker_active": True}
             return "new", None
 
-    def finish(self, req, result) -> None:
+    def finish(self, req, result, *, seal=False, worker_done=True) -> None:
         with self.lock:
             entry = self.requests[(req.run_id, req.step_idx)]
-            entry.update(done=True, result=copy.deepcopy(result))
+            if worker_done:
+                entry["worker_active"] = False
+            if entry.get("sealed"):
+                # 晚结果只证明 worker 已返回，不能替换已返回的超时结论。
+                entry["late_status"] = str(getattr(result.status, "value", result.status))
+                return
+            entry.update(done=True, result=copy.deepcopy(result), sealed=seal)
+
+    def active(self, run_id: str) -> bool:
+        with self.lock:
+            return any(rid == run_id and entry.get("worker_active")
+                       for (rid, idx), entry in self.requests.items() if idx >= 0)
 
     def stop(self, run_id: str, reason: str, action_ref: dict, *, terminal=False) -> dict:
         with self.lock:
