@@ -114,4 +114,5 @@ class RequestGuard:
                          for (rid, _), row in self.requests.items())
             confirmed = not active and entry.get("completion_proven") is True
             return {"stop_confirmed": confirmed, "reason_code": "worker_completed" if confirmed else "stop_unconfirmed",
-                    "completion_boundary": entry.get("completion_boundary", "unknown")}
+                    "completion_boundary": entry.get("completion_boundary", "unknown"),
+                    "worker_active": active, "action_present": True}

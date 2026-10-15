@@ -363,7 +363,10 @@ class AdbExecutor:
                             elapsed_ms=int((time.time() - t0) * 1000),
                             summary="contract_unsupported: 焦点点击引用失效",
                             error="contract_unsupported: 焦点点击引用失效",
-                            raw_response=self._focus_mismatch_diag(serial, event, focus),
+                            raw_response={**self._focus_mismatch_diag(serial, event, focus),
+                                          "execution": {"execution_started": "no", "phase": "resolve",
+                                                        "reason_code": "focus_reference_invalid",
+                                                        "source": "adb.native.v1"}},
                         )
                 result = self._input_text(event, ctx, serial, started_at, t0)
                 self._focus_actions.pop(focus_key, None)

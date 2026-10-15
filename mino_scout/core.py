@@ -172,6 +172,11 @@ class ScoutCore:
             shaped = ref.get("run_id") == req.run_id and type(ref.get("step_idx")) is int
             if shaped and claimed == generation:
                 evidence = {**self._requests.stop_evidence(req.run_id, ref["step_idx"], req.sn), "mode": "same_process"}
+                if req.params.get("execution_mode") == "v5" and evidence.get("action_present"):
+                    # A strict write ran inside a lane worker; stop means that process tree is gone.
+                    terminated = evidence.get("worker_active") is False and self._web_v5.close(req.run_id, time.monotonic() + 2)
+                    evidence.update(lane_terminated=terminated, stop_confirmed=terminated,
+                                    reason_code="lane_process_terminated" if terminated else "lane_quarantined")
             elif shaped and req.params.get("mode") == "retired_generation":
                 from mino_scout.process_retirement import retired_evidence
                 evidence = retired_evidence(self._requests, req.run_id, ref["step_idx"], req.sn)

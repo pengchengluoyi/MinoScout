@@ -615,6 +615,8 @@ Nexus POST /case-runner/tasks/{task_id}/write-safety/recheck 校验任务所有�
 
 **旧进程退役证据（2026-10-15 补充）**：原写意图的进程代际与当前不同或缺失时，Nexus 发送 write_stop_status 并带 params.mode=retired_generation、scout_process_generation=原值（缺失为空串）。Scout 若在本进程仍持有该 action_ref 的请求记录，按同进程规则返回 mode=same_process、action_present=true；否则封存该 run 并返回 mode=retired_generation、action_present=false、single_instance_lock（本进程持有 scout.lock）、process_started_at（本进程启动 epoch 秒）、foreign_processes（安装目录下非本进程树的运行时进程，以及指定 sn 的 adb 客户端进程数；无法判定为 -1）。仅 single_instance_lock=true、foreign_processes=0 时 stop_confirmed=true，reason_code=predecessor_retired。Nexus 接受条件：证据为当前在线代际；原代际存在且不同，或原代际缺失且 process_started_at 晚于任务 finished_at 至少 120 秒；缺代际的同进程证据仅在 action_present=true 时接受。复核记录 recovery.mode。该证据只证明执行进程及其运行时子进程已不在，写入结果仍为 unknown，原 verdict 不改。源码运行（非安装包）无法判定运行时目录，保持隔离。
 
+**严格 v5 与解除后基线（2026-10-15 补充）**：execution_mode=v5 的任务可复核。Nexus 在 write_stop_status 参数带 execution_mode；Scout 同进程证据在 action_present 且 worker_active=false 时关闭该 attempt 的 lane，并在 lane 进程树确认终止后返回 lane_terminated=true、reason_code=lane_process_terminated，否则为 lane_quarantined。Nexus 对 v5 同进程证据要求 lane_terminated=true；旧进程退役证据规则不变。每条动作记为 recovered 之前，Nexus 先把该 sn × 被测包的 device_app_sessions 置为 session=unknown、stale=1、stale_reason=write_recovered_unknown 并清除绑定账号，再写持久证据，避免预约释放后下一个任务沿用旧登录态或身份。全部收口后释放任务资源；v5 另按各 attempt run_id 释放账号租约。响应 baseline_required 列出被标记的设备。写入结果仍为 unknown，原 verdict 不改。
+
 含 not_visible 的检查在新发布计划固化 single_observation.v1/max_reads=1；复合谓词同一次取证，其他谓词默认等待不变。旧冻结否定计划拒绝并要求重新发布，不静默更改历史。Scout 在读取事实前确认 document.readyState=complete，回传 page_ready 和 observation_contract；Nexus 缺此证据不可判不存在。这只证明页面文档就绪，业务异步加载是否结束仍须由用例已有前置/检查点保证，不声称检测了持续不出现。
 
 
@@ -627,3 +629,11 @@ Nexus 节点列表新增只读 `platform_contract_audit`：mode=shadow、activat
 资源准入支持规范 mac/win SN，并与历史 desktop SN 及同宿主 headed Web 继续共用 `desktop:<node_id>:console` 资源锁。新 SN 与 node_id 不一致拒绝；headless Web 独立槽保持。此兼容基础不自动迁移设备，不释放已有隔离。
 
 原子切换仍依赖 N1/N2 与受控数据迁移。不能提前宣称新词表已全局生效；Scout 注册与输入能力、Nexus 运行消费者及 Workbench 写入口将在整体切换切片同步调整。
+
+## N1/N2 固定装配与绑定关联补充（2026-10-15）
+
+ExecutionBinding v1 的 Scout 候选须按当前 manifest 逐个验证：事件本身出现在 provides，或 selected_impl.requires_caps 中全部抽象能力均已提供。Nexus 与 Scout 使用同一规则；available=false、撤销、连接/进程/能力代际变化均使旧绑定不能继续派发。不新增协议 dataclass 字段，不放宽缺装配写前拒绝。
+
+runs_on=nexus 只由 Nexus 已知本地适配器产生，不发送给 Scout；其子动作必须各自使用提交绑定中的操作引用。普通设备请求、结果与框架观察记录绑定 ID/operation_ref 和代际；本地结果记录绑定关联。实际 EXECUTE 投影包含完整低层装配与精确输入组合；输入参数最终盖章后再核对，不能借目标/写入模式变化绕过合同。
+
+普通 attempt 在业务 UI 操作前提交绑定事务；失败不进入循环，也不通过外层清理新建无绑定 close_app。完成时在绑定内清理，再原子写会话终结；外层仅发送管理性取消通知。未知写的隔离与停止确认仍遵循既有 I02 合同。动态插件执行没有 v1 装配时拒绝，不复用普通设备绑定越权派发。

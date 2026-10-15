@@ -60,7 +60,11 @@ class BindingGuard:
                 return "bound_executor_unavailable"
             from mino_scout.web_v5 import READS, WRITES, CLEANUP
             strict = req.device_hint.get("execution_mode") == "v5"
-            provided = req.capability_id in manifest.get("provides", [])
+            provides = set(manifest.get("provides") or [])
+            required = selected.get("requires_caps")
+            provided = req.capability_id in provides or (
+                isinstance(required, list) and bool(required)
+                and all(isinstance(item, str) and item in provides for item in required))
             if strict and order[0] == "playwright":
                 provided = req.capability_id in READS | WRITES | CLEANUP
             if not provided:
