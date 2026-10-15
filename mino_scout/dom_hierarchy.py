@@ -25,6 +25,7 @@ class DomDump:
     web_focus: dict[str, Any] | None = None
     aria_snapshot: str = ""
     tabs: list[dict[str, Any]] | None = None
+    observation: dict[str, Any] | None = None
 
 
 def _aria_snapshot_text(page: Any, params: dict[str, Any] | None, *, max_chars: int) -> str:
@@ -71,7 +72,9 @@ def dump_dom_nodes(
             error=f"DOM 采集失败: {exc}",
             elapsed_ms=int((time.time() - t0) * 1000),
         )
-    nodes = [n for n in (raw or []) if isinstance(n, dict)]
+    data = raw if isinstance(raw, dict) else {"nodes": raw or []}
+    nodes = [n for n in data.get("nodes") or [] if isinstance(n, dict)]
+    observation = dict(data.get("observation") or {})
     mark_focused_node(nodes, web_focus)
     aria = _aria_snapshot_text(page, p, max_chars=int(p.get("aria_max_chars") or 6000))
     tabs = hub.list_tabs(str(sn or ""), run_id=str(run_id or "")) if p.get("include_tabs") else None
@@ -105,4 +108,5 @@ def dump_dom_nodes(
         web_focus=web_focus,
         aria_snapshot=aria,
         tabs=tabs,
+        observation=observation,
     )

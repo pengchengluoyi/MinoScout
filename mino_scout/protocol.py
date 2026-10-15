@@ -1,10 +1,6 @@
-"""MinoScout ⇄ MinoNexus 协议模型。
+"""MinoNexus ⇄ MinoScout shared wire contract; stdlib only.
 
-字段级契约见两仓同步的 docs/PROTOCOL.md；本文件须与 Nexus 的实现保持一致。
-tests/fixtures/protocol/*.json 仅供本地 round-trip 校验，不作为发布依赖。
-
-刻意零依赖（只用 stdlib dataclasses），这样守门脚本 scripts/verify_protocol_contract.py
-可以用裸 python3 跑，不需要装环境。
+Contract: synchronized docs/PROTOCOL.md and this module. Local fixtures are not shipped.
 """
 from __future__ import annotations
 
@@ -50,6 +46,10 @@ class EventStatus(str, Enum):
 
 
 # 框架层 capability_id。N→S 是节点指令，S→N 是节点事件，形状与设备能力相同。
+# Strategy is task metadata; actual point_policy remains node/coordinate.
+OBSERVATION_STRATEGIES = ("visual", "dom_preferred")
+OBSERVATION_CONTRACT_VERSION = 1
+
 NODE_COMMAND_CAPS = frozenset({
     "node.stop", "node.restart", "node.update", "node.log_tail",
     "node.sleep", "node.wake",

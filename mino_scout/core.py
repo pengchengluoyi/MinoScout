@@ -592,7 +592,7 @@ class ScoutCore:
                     "source": "playwright",
                 }
             nodes = list(dump.nodes or [])
-            extra: dict[str, Any] = {"nodes": nodes}
+            extra: dict[str, Any] = {"nodes": nodes, "observation": dict(dump.observation or {})}
             if isinstance(dump.web_focus, dict) and dump.web_focus:
                 extra["web_focus"] = dump.web_focus
             if dump.aria_snapshot:
@@ -607,6 +607,7 @@ class ScoutCore:
                 "nodes": nodes,
                 "web_focus": dump.web_focus or {},
                 "aria_snapshot": dump.aria_snapshot or "",
+                "observation": dict(dump.observation or {}),
                 "tabs": dump.tabs or [],
                 "elapsed_ms": int(dump.elapsed_ms or 0),
             }
@@ -615,15 +616,23 @@ class ScoutCore:
                 "error": "hierarchy 目前只支持 adb 通道（remote/ios_wda 待 E3 搬迁）",
                 "source": "adb",
             }
-        dump = H.dump_ui_nodes(device.adb_serial)
+        dump = H.dump_ui_nodes(device.adb_serial, force_fresh=True)
         if not dump.ok:
             return EventStatus.FAIL, {"error": dump.error, "source": "adb"}
-        nodes = [n.to_brief() for n in dump.nodes]
+        import uuid
+        semantic = [n for n in dump.nodes if n.visible and n.area > 0 and
+                    (n.text or n.content_desc or n.resource_id or n.hint or n.clickable or n.editable or n.checkable)]
+        nodes = [n.to_brief() for n in semantic[:320]]
+        observation = {"version": 1, "snapshot_id": "native:" + uuid.uuid4().hex,
+                       "source": "adb", "scope": "visible_tree", "node_count": len(nodes),
+                       "node_limit": 320, "truncated": len(semantic) > 320,
+                       "missing": ["node_limit"] if len(semantic) > 320 else []}
         return EventStatus.PASS, {
             "source": "adb",
             "summary": f"UI 层级 {len(dump)} 节点",
-            "extra": {"nodes": nodes},
+            "extra": {"nodes": nodes, "observation": observation},
             "nodes": nodes,
+            "observation": observation,
             "elapsed_ms": getattr(dump, "elapsed_ms", 0),
         }
 

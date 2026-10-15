@@ -130,6 +130,10 @@ class Router:
             )
             last = result
 
+            detail = result.raw_response if isinstance(result.raw_response, dict) else {}
+            if detail.get("execution_started") is True and result.status not in _TERMINAL:
+                result.status = EventStatus.BLOCKED
+                result.summary = result.summary or "写动作已经开始，结果待观察，禁止重放"
             if result.status in _TERMINAL:
                 result.attempts = attempts
                 result.elapsed_ms = result.elapsed_ms or int((time.time() - t0) * 1000)

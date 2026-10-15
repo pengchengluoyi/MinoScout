@@ -401,6 +401,11 @@ class PlaywrightExecutor:
             return self._fail(event, started_at, t0, f"PlaywrightExecutor 不处理 {cap}")
         except Exception as exc:
             SLog.e(TAG, f"execute exception cap={cap} sn={sn}: {exc}")
+            if cap in {"tap_element", "long_press_element", "multi_tap", "input_text", "press_key", "swipe_direction", "swipe_element_to_element"}:
+                return make_event_result(event, status=EventStatus.BLOCKED, executor_used=self.id,
+                    started_at=started_at, elapsed_ms=int((time.time()-t0)*1000),
+                    summary="设备写动作结果不确定，请先观察确认", error=f"exception: {exc}",
+                    raw_response={"execution_started": True, "error_kind": "write_outcome_unknown"})
             return self._fail(event, started_at, t0, f"exception: {exc}")
 
     def _auth_body(
@@ -698,6 +703,31 @@ class PlaywrightExecutor:
         return self._ok(event, started_at, t0, f"点击 {label}")
 
     def _tap_node(self, event, page, started_at, t0, params) -> EventResult:
+        if params.get("node_ref"):
+            execution_started = False
+            try:
+                handle = page.evaluate_handle("""p => {
+                    const state=window.__minoObservation;
+                    if (!state || state.snapshot!==p.snapshot_id) throw new Error('stale_observation');
+                    const entry=state.elements.get(p.node_ref);
+                    if (!entry || !entry.el.isConnected || entry.el.disabled || entry.el.getAttribute('aria-disabled')==='true') throw new Error('stale_node_ref');
+                    return entry.el;
+                }""", {"node_ref": params["node_ref"], "snapshot_id": params.get("snapshot_id")})
+                element = handle.as_element()
+                if element is None or not element.is_visible() or not element.is_enabled():
+                    raise ValueError("stale_node_ref")
+                # Trial uses Playwright actionability without sending the click.
+                element.click(trial=True, timeout=2000)
+                execution_started = True
+                element.click(timeout=4000)
+                self._settle_page(page)
+                return self._ok(event, started_at, t0, "点击当前观察节点")
+            except Exception as exc:
+                return make_event_result(event, status=EventStatus.BLOCKED, executor_used=self.id,
+                    started_at=started_at, elapsed_ms=int((time.time()-t0)*1000),
+                    summary="节点点击结果不确定，先观察确认" if execution_started else "观察节点已失效，请重新采集",
+                    error=str(exc), raw_response={"execution_started": execution_started,
+                        "error_kind": "write_outcome_unknown" if execution_started else "stale_observation"})
         name = _anchor_name(params)
         if not name:
             return self._fail(event, started_at, t0, "DOM 点击缺少锚点")

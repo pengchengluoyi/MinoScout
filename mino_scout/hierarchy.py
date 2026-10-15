@@ -57,6 +57,12 @@ class UiNode:
     focused: bool = False
     bounds: tuple[int, int, int, int] = (0, 0, 0, 0)
     hint: str = ""
+    checkable: bool = False
+    checked: bool = False
+    checked_known: bool = False
+    editable: bool = False
+    sensitive: bool = False
+    visible: bool = True
     parent: Optional["UiNode"] = field(default=None, repr=False)
 
     @property
@@ -81,10 +87,18 @@ class UiNode:
         cx, cy = self.center
         return {
             "resource_id": self.resource_id,
-            "text": self.text,
+            "text": "" if self.sensitive else self.text,
             "content_desc": self.content_desc,
             "class": self.cls,
             "clickable": self.clickable,
+            "enabled": self.enabled,
+            "focused": self.focused,
+            "checkable": self.checkable,
+            "checked": self.checked,
+            "checked_known": self.checked_known,
+            "editable": self.editable,
+            "sensitive": self.sensitive,
+            "visible": self.visible,
             "bounds": list(self.bounds),
             "center": [cx, cy],
         }
@@ -263,6 +277,12 @@ def _parse_xml(xml_text: str) -> UiDump:
                 focused=(a.get("focused") == "true"),
                 bounds=_parse_bounds(a.get("bounds") or ""),
                 hint=(a.get("hint") or "").strip(),
+                checkable=a.get("checkable") == "true",
+                checked=a.get("checked") == "true",
+                checked_known="checked" in a,
+                editable=a.get("editable") == "true" or "edittext" in str(a.get("class") or "").lower(),
+                sensitive=a.get("password") == "true",
+                visible=a.get("visible-to-user") != "false",
                 parent=parent,
             )
             nodes.append(node)

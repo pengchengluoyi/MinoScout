@@ -442,7 +442,7 @@ sequenceDiagram
 本地调试时可用 `tests/fixtures/protocol/` 校验协议实现，两仓若有样例应保持一致；这些文件不纳入 Git。
 
 ```
-fixtures_sha256 = 9a801333ceaaa6cfd0db3736e48352e3e4e02a954344bbe89a832e2b4bcb37f6
+fixtures_sha256 = 0be21298b045a908bb1a829cdb12413035724416327ff26eea33812a2ffebfa5
 ```
 
 有本地样例时，两仓各自确认：① `protocol.py` 能 round-trip 全部 fixture；② fixture 目录哈希与上面记录一致。
@@ -544,3 +544,16 @@ Nexus 将 Evidence、verification/verdict、session_meta、计数在一个 SQLit
 Nexus 的 `NodeConnection.request` 在序列化 EXECUTE 前统一补齐未编号辅助请求；插件调用在建立载荷时使用同一 helper，RouterProxy 取证、插件和结束通知使用同一负编号分配器。重复发送同一载荷不重新编号；传入的正编号、任务归属、focus_ref 与动作证据引用不变。V5 缺 run_id 必须拒绝，不能补伪造任务。
 
 辅助取证的新请求使用独立编号，不靠复用 `-1` 绕过完整内容比对。Scout 现有 `read_web_target_facts/screenshot/probe` 在同内容完成后的只读刷新规则不变；新增观察的身份与重取的身份必须分清。微信/其他 IM 的发送、确认、流更新、历史查询和持有权配置也经过相同发送闸门；保留业务 delivery_id 和入站 receipt 去重，不能为消除冲突关闭 Scout RequestGuard。
+
+
+## DOM 优先观察合同（2026-10-14）
+
+任务策略 `action_scheme` 接受 `dom_preferred` / `visual`；旧任务的 `dom` 归一为 `dom_preferred`。策略不等于能力目录实现类别；目录 `schemes` 继续是 `dom` / `visual`。每个 EXECUTE 的实际定位方式由 `params.point_policy=node|coordinate` 声明，一条写请求只能选一种方式。
+
+Web hierarchy 的 `RESULT.extra.observation`（在 Scout 内部 EventResult 上为 `raw_response.observation`）可包含 `version=1`、`snapshot_id`、`source`、`scope=viewport|visible_tree`、`truncated`、`missing`、`node_count`、`node_limit`。这是可选字段；旧节点没有该合同仍可提供旧层级。当前视口不等于完整文档，不得据截断观察断言全页面不存在。
+
+节点可包含 `node_ref`、`snapshot_id`、`role`、`enabled`、`visible`、`checkable`、`checked`、`checked_known`、`selected`、`focused`、`value`、`frame_path`、`cross_origin`。密码不回传 value/text。节点引用只在产生它的运行浏览器页面及当前采集中有效，不能跨任务、页面或重新采集复用。Scout 持有真实 DOM handle 并检查连接、可见性和可操作性；跨源 frame 缺口明确标出，不能把其占位节点当可点击目标。
+
+DOM 点击可携带 `params.node_ref` 与 `params.snapshot_id`，Nexus 绑定本轮唯一节点后下发，Scout 校验引用失效就 blocked，不按其他文本或坐标重试。`RESULT.extra.execution_started=true`（Scout 内部 `raw_response` 的同名字段）表示动作可能已写入；失败或超时也不得换 executor 或视觉重放，必须先观察确认结果。视觉兜底只发生在尚未派发的定位/观察阶段，使用同轮截图。每个动作仍截图留证；结构有效的模型请求不附图。
+
+Android 的层级请求在 Scout 强制重新采集，先筛选可见且有语义的节点再限制到 320 个；enabled/focused/checkable/checked/editable 与 password 标记从真实 XML 属性解析。密码字段文本不回传。原生树暂不发行 Web DOM handle 引用，继续使用既有节点锚点，不伪造 ref。
