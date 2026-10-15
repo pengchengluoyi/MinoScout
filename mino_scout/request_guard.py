@@ -6,7 +6,7 @@ import threading
 from dataclasses import asdict
 from typing import Any
 
-from mino_scout.execution_boundary import ui_write
+from mino_scout.execution_boundary import ui_write, started
 
 
 def _same(left, right):
@@ -37,6 +37,7 @@ class RequestGuard:
                     return "request_inflight", None
                 if req.step_idx < 0 and req.capability_id in {"read_web_target_facts", "screenshot", "probe"}:
                     old["done"] = False
+                    old["worker_active"] = True
                     return "new", None
                 return "cached", copy.deepcopy(old["result"])
             if req.step_idx > 0 and (req.device_hint.get("execution_mode") == "v5" or ui_write(req.capability_id)):
@@ -68,6 +69,10 @@ class RequestGuard:
             entry = self.requests[(req.run_id, req.step_idx)]
             if worker_done:
                 entry["worker_active"] = False
+                boundary = started(result.raw_response)
+                status = str(getattr(result.status, "value", result.status))
+                entry["completion_proven"] = entry.get("completion_proven") is True or boundary == "no" or (boundary == "yes" and status == "pass")
+                entry["completion_boundary"] = boundary
             if entry.get("sealed"):
                 # 晚结果只证明 worker 已返回，不能替换已返回的超时结论。
                 entry["late_status"] = str(getattr(result.status, "value", result.status))
@@ -92,3 +97,21 @@ class RequestGuard:
         with self.lock:
             state = self.runs.get(run_id, {})
             return dict(state) if state.get("state") in {"write_stopped", "terminal"} else {}
+
+    def owns(self, run_id, step_idx) -> bool:
+        with self.lock:
+            return (run_id, step_idx) in self.requests
+
+    def stop_evidence(self, run_id, step_idx, sn):
+        """Seal the old run; never reset its verdict, identity cache or stop latch."""
+        with self.lock:
+            entry = self.requests.get((run_id, step_idx))
+            if not entry or entry["content"].get("sn") != sn:
+                return {"stop_confirmed": False, "reason_code": "action_evidence_missing"}
+            self.stop(run_id, "recovery_review", {}, terminal=True)
+            active = any(rid == run_id and row.get("worker_active")
+                         and row["content"].get("capability_id") != "write_stop_status"
+                         for (rid, _), row in self.requests.items())
+            confirmed = not active and entry.get("completion_proven") is True
+            return {"stop_confirmed": confirmed, "reason_code": "worker_completed" if confirmed else "stop_unconfirmed",
+                    "completion_boundary": entry.get("completion_boundary", "unknown")}

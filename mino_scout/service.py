@@ -150,9 +150,18 @@ class _RunLockHold:
             pass
 
 
+_RUN_LOCK_HELD = False
+
+
+def run_lock_held() -> bool:
+    """本进程正持有单实例锁；旧 Scout 进程存活时不可能为真。"""
+    return _RUN_LOCK_HELD
+
+
 @contextmanager
 def daemon_run_lock(*, stale_wait_sec: float = _STALE_LOCK_WAIT_SEC) -> Iterator[bool]:
     """Yield True 表示已取得 flock，可 dial Nexus；False 时调用方应直接退出 run。"""
+    global _RUN_LOCK_HELD
     hold = _RunLockHold()
     ok, msg = hold.try_acquire(stale_wait_sec=stale_wait_sec)
     if not ok:
@@ -162,8 +171,10 @@ def daemon_run_lock(*, stale_wait_sec: float = _STALE_LOCK_WAIT_SEC) -> Iterator
         return
     try:
         write_pid()
+        _RUN_LOCK_HELD = True
         yield True
     finally:
+        _RUN_LOCK_HELD = False
         hold.release()
 
 

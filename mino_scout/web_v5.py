@@ -121,10 +121,20 @@ def _worker(conn):
                         except Exception:
                             count = loc.count()
                             raise ValueError("target_not_found" if count == 0 else "target_ambiguous" if count > 1 else "target_not_visible")
+                    observation_contract = params.get("observation_contract", "")
+                    page_ready = False
+                    if cap == "read_web_target_facts" and observation_contract:
+                        if observation_contract != "single_observation.v1":
+                            raise ValueError("observation_contract_unsupported")
+                        page_ready = page.evaluate("document.readyState") == "complete"
+                        if not page_ready:
+                            raise ValueError("page_not_ready")
                     count = loc.count()
                     facts = {"control_id": control["control_id"], "control_revision": control["revision"],
                              "scope_resolved": True, "collection_complete": True, "count": count,
                              "fact_complete": {"count": True}}
+                    if observation_contract:
+                        facts.update(observation_contract=observation_contract, page_ready=page_ready)
                     if count == 1:
                         # Reject shadow traversal even when Playwright's locator supports it.
                         meta = loc.evaluate("e => ({shadow:e.getRootNode()!==document,password:e.type==='password',tag:e.tagName})", timeout=ms)

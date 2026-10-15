@@ -345,7 +345,7 @@ class PlaywrightExecutor:
                     focus_error = self._focus_page_error(focus_key, page)
                     if focus_error:
                         self._forget_focus(focus_key)
-                        return self._fail(event, started_at, t0, focus_error)
+                        return self._fail(event, started_at, t0, focus_error, execution_started="no")
                 result = self._input(event, ctx, page, started_at, t0)
                 self._forget_focus(focus_key)
                 return result
@@ -868,7 +868,7 @@ class PlaywrightExecutor:
             if not ctx.run_id or not focus_ref.startswith(f"focus:{ctx.run_id}:") or not focus_ref.rsplit(":", 1)[-1].isdigit():
                 return self._fail(
                     event, started_at, t0,
-                    "contract_unsupported: current_focus 缺少有效 focus_ref",
+                    "contract_unsupported: current_focus 缺少有效 focus_ref", execution_started="no",
                 )
             return self._input_focused(event, page, started_at, t0, text, tag, params)
         try:
@@ -937,7 +937,7 @@ class PlaywrightExecutor:
                 except Exception:
                     pass
         if reason:
-            return self._fail(event, started_at, t0, f"focus_unavailable: {reason}")
+            return self._fail(event, started_at, t0, f"focus_unavailable: {reason}", execution_started="no")
         try:
             if mode != "append":
                 page.keyboard.press("ControlOrMeta+A")
@@ -1039,12 +1039,15 @@ class PlaywrightExecutor:
                 "execution_started": execution_started, "phase": "completed", "source": "playwright.native.v1"}},
         )
 
-    def _fail(self, event, started_at, t0, msg: str) -> EventResult:
+    def _fail(self, event, started_at, t0, msg: str, *, execution_started: str = "unknown") -> EventResult:
         if event.params.get("sensitive"):
             msg = "敏感输入失败（详细内容已脱敏）"
         return make_event_result(
             event, status=EventStatus.FAIL, executor_used=self.id,
             started_at=started_at, elapsed_ms=int((time.time() - t0) * 1000),
             summary=msg, error=msg,
-            raw_response={"sensitive": bool(event.params.get("sensitive"))},
+            raw_response={"sensitive": bool(event.params.get("sensitive")), "execution": {
+                "execution_started": execution_started,
+                "phase": "preflight" if execution_started == "no" else "executor",
+                "source": "playwright.native.v1"}},
         )

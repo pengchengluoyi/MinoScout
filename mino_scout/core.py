@@ -164,6 +164,23 @@ class ScoutCore:
         from mino_scout.web_v5 import CLEANUP, READS, WRITES
         register_inputs(req.params)
         register_inputs(req.device_hint)
+        if req.capability_id == "write_stop_status":
+            # Administrative recheck: no device I/O, no business result replacement.
+            ref = req.params.get("action_ref") or {}
+            generation = self.binding_guard.process_generation
+            claimed = req.params.get("scout_process_generation")
+            shaped = ref.get("run_id") == req.run_id and type(ref.get("step_idx")) is int
+            if shaped and claimed == generation:
+                evidence = {**self._requests.stop_evidence(req.run_id, ref["step_idx"], req.sn), "mode": "same_process"}
+            elif shaped and req.params.get("mode") == "retired_generation":
+                from mino_scout.process_retirement import retired_evidence
+                evidence = retired_evidence(self._requests, req.run_id, ref["step_idx"], req.sn)
+            else:
+                evidence = {"stop_confirmed": False, "reason_code": "process_or_action_mismatch"}
+            return make_event_result(_event_from_execute(req), status=EventStatus.PASS,
+                executor_used="core", started_at=now_iso(), elapsed_ms=0, summary=evidence["reason_code"],
+                raw_response={"stop_evidence": {**evidence, "contract": "write_stop.v1",
+                    "action_ref": ref, "sn": req.sn, "scout_process_generation": generation}})
         state, cached = self._requests.begin(req)
         if state == "cached":
             return cached
@@ -428,7 +445,7 @@ class ScoutCore:
             elapsed_ms=0,
             summary=f"已阻止 run 的后续写动作（清 {dropped} 条缓存）；底层停止需独立确认",
             raw_response={"execution": {"execution_started": "no", "phase": "cancel", "reason_code": "task_cancelled"},
-                          "executor_stopped": not self._requests.active(req.run_id)},
+                          "executor_stopped": False, "stop_confirmation_required": True},
         )
 
     def _dispatch_node(self, req: P.Execute, cap: str) -> EventResult:
