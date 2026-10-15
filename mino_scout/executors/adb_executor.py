@@ -1178,9 +1178,11 @@ class AdbExecutor:
             # 整串交给 adb shell（命令已过白名单，不含重定向/管道到 sh）
             return self._adb_shell(serial, cmd)
 
+        from mino_scout.execution_boundary import READS
         outcome = run_low_level(
             low, dict(event.params or {}), _shell,
             log_prefix=f"[{ctx.run_id}] cap={cap} ",
+            read_only=cap in READS, receipt_source="adb.low_level.v1",
         )
         elapsed = int((time.time() - t0) * 1000)
         SLog.i(TAG, f"[{ctx.run_id}] low_level cap={cap} kind={low.get('kind')} "

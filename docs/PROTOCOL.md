@@ -580,3 +580,28 @@ Nexus 普通任务在已有 run payload 记录不含动态输入/秘密的写意
 ### V5 R5：普通原生动作的显式完成回执（2026-10-15）
 
 `execution.execution_started` 仍为 yes/no/unknown。Router 不得从任意 executor 的 status=pass 推断 yes；缺失即 unknown，即使 pass 也必须停止后备、保留资源隔离，不能让消费端收到合成的安全回执。已核实的原生动作在实际设备调用成功的完成出口写显式 yes 和 source（adb.native.v1 / playwright.native.v1）；本地等待/纯取证写 no。yes 是设备执行边界事实，不证明业务预期已满足。失败或未适配实现没有边界事实时仍 unknown，不为了维持成功率默认为 no 或 yes。普通/严格原有更强检查保留；迟到结果不覆盖已冻结未知结论。
+
+
+### V5 R5：执行绑定代际载荷与旧节点兼容（2026-10-15）
+
+以下字段均可缺省；缺省仍为旧执行合同，不能凭 Scout 包版本推断支持。
+
+| 消息 | 新增字段 | 缺省/来源 |
+| --- | --- | --- |
+| REGISTER | scout_process_generation、capability_revision、execution_binding_version | 空串/空串/0；进程代际由 Scout 每次真实解释器启动生成，声明能力时显式报绑定版本 1 |
+| REGISTERED | node_connection_generation | 空串；Nexus 每次成功注册生成，不复用旧连接 |
+| HEARTBEAT | 上述三个 Scout 字段、node_connection_generation | 空串/空串/0/空串；ACK 后回传当前连接身份 |
+| EXECUTE | execution_contract_version、binding_id、binding_revision、operation_ref、node_connection_generation、scout_process_generation、capability_revision、input_contract_version | 空串/空串/0/空串/空串/空串/空串/0；仅显式 execution_binding.v1 启用绑定校验 |
+
+capability_revision 是完整 executor 声明（id/available/provides）与 runtime_capabilities 的规范化快照身份；两仓使用同一 stdlib 算法。更新元数据与快照同锁生效。执行器全量/增量规则保持原合同：snapshot_version=1 时 None 不更新、[] 撤销全部；旧版本 0 保留兼容增量。不一致快照不能宣称 binding ready。旧连接心跳不能改写替换后的会话；进程代际变化需重新注册，不能只发心跳换身份。
+
+新合同绑定精确单个 executor、selected_impl、low_level、runs_on=scout 及 params_contract/result_contract={version:1}，漏装配拒绝，不做后备选路。参数适配器版本 1 与原生 input_text 合同版本 2 是不同维度；input_text 还需 EXECUTE.input_contract_version=2，并精确符合当前 runtime 的 target_mode/write_mode/platform 组合，不能把独立支持集合做笛卡尔积。bool 不能当整数版本。
+
+Scout 在请求准入、队列后的执行入口，以及严格 Web 取得 lane 和发送 worker IPC 前分别复核代际。校验拒绝返回 blocked、execution_started=no；不得因拒绝释放既有未知写隔离。尚未使用的新 lane 可回收，已启动或隔离的 worker 仍走原停止/回收合同。本切片仅实现 wire 和副作用前复核，不会自动把所有现合同任务切到新绑定合同；旧安装 Scout 继续报告绑定版本 0。
+
+
+### V5 R5：low_level 实际调用回执与恢复停止（2026-10-15）
+
+原生分支以外的声明式 shell/shell_seq/shell_batch 同样必须提供 execution 回执。执行前模板/白名单拒绝以及本地明确找不到 adb 二进制为 no；实际 shell 完成提供 yes（来源 adb.low_level.v1）；超时、远端非零、调用异常无法证明没有副作用，保持 unknown。先前已执行后发生声明/解析失败不能回退成 no。known read 的最佳努力部分取证仍允许，write 的 shell_batch 只有所有项成功才算完成。聚合 pass 不生成调用边界；回执来自实际 shell 调用出口。
+
+恢复规则收到 resource_isolated 或 execution_control.stop_run 时必须立即结束本规则，不再执行解锁、后续恢复动作或下一轮 verify。停止信息贯通 RecoveryOutcome、屏幕守护、本地屏幕就绪工具及 agent 的 blocked 终结；新截图可读不能冲掉未结算写动作。内存停止信号仅用于停止循环，不能释放任何持久未知写隔离；任务终态、版本升级、重启均不是解除依据。

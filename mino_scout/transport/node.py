@@ -284,6 +284,7 @@ class NodeTransport:
                 if not stopper.done():
                     stopper.cancel()
                 self._ws = None
+                self.core.binding_guard.set_connection("")
                 self._connection("disconnected")
 
     async def _recv_loop(self, ws: Any) -> None:
@@ -297,6 +298,7 @@ class NodeTransport:
 
         self.core._plugins_ready = False
         self.core._plugin_warning = ""
+        self.core.binding_guard.set_connection("")
 
         def _reexec_if_stale() -> bool:
             from mino_scout.stale_process import ensure_process_matches_app_layer
@@ -317,6 +319,8 @@ class NodeTransport:
 
         from mino_scout.desktop import get_desktop_runtime
 
+        runtime_caps = runtime_input_capabilities()
+        epoch = self.core.binding_guard.announce(execs, runtime_caps)
         payload = P.Register(
             node_id=self.core.node_id,
             token=self.token,
@@ -329,7 +333,8 @@ class NodeTransport:
             executors=execs,
             devices=devices,
             plugins=[],  # 首次注册不得携带未验证 owner 的旧插件配置。
-            runtime_capabilities=runtime_input_capabilities(),
+            runtime_capabilities=runtime_caps,
+            **epoch,
             host=await asyncio.to_thread(get_desktop_runtime().host, self.core.node_id, next((d for d in devices or [] if d.platform == "desktop"), None)),
         )
         reply = await self._request(P.MsgType.REGISTER, payload)
@@ -356,6 +361,7 @@ class NodeTransport:
                 f"协议版本不一致：Scout v{P.PROTOCOL_VERSION} vs Nexus v{reg.protocol_version}。"
                 "按协议 §7 不做降级协商"
             )
+        self.core.binding_guard.set_connection(reg.node_connection_generation)
         self._session_token = reg.session_token
         self.heartbeat_sec = reg.heartbeat_interval_sec or self.heartbeat_sec
         avail = [e.id for e in execs if e.available]
@@ -506,6 +512,11 @@ class NodeTransport:
                     provides=DesktopExecutor.provides if desktop.desktop_state == "ready" else [],
                     reason=desktop.blocked_reason)
                 hb.executors = list(by_id.values())
+        epoch = self.core.binding_guard.announce(hb.executors, hb.runtime_capabilities)
+        hb.scout_process_generation = epoch["scout_process_generation"]
+        hb.capability_revision = epoch["capability_revision"]
+        hb.execution_binding_version = epoch["execution_binding_version"]
+        hb.node_connection_generation = self.core.binding_guard.connection_generation
         await self._send(P.MsgType.HEARTBEAT, hb)
         self._connection("heartbeat", connected=True, registered=True)
         try:

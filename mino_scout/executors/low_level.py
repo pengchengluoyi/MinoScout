@@ -164,7 +164,12 @@ def parse_output(text: str, parser: str) -> Any:
 class LowLevelOutcome:
     """一次 low_level 执行的结果（executor 再包装成 EventResult）。"""
 
-    def __init__(self) -> None:
+    def __init__(self, *, read_only=False, receipt_source="low_level.shell.v1") -> None:
+        self.read_only = read_only
+        self.receipt_source = receipt_source
+        self.dispatched = 0
+        self.completed = 0
+        self.uncertain = False
         self.ok: bool = True
         self.summary: str = ""
         self.error: str = ""
@@ -172,7 +177,12 @@ class LowLevelOutcome:
         self.commands: list[dict[str, Any]] = []   # 审计用：每条命令与 rc
 
     def as_raw_response(self) -> dict[str, Any]:
-        return {"low_level": self.data, "cmds": self.commands}
+        # These facts come from actual shell call sites, not aggregate PASS.
+        boundary = ("no" if self.read_only or not self.dispatched or not self.completed and not self.uncertain
+                    else "unknown" if self.uncertain else "yes")
+        phase = "completed" if self.ok else "resolve" if boundary == "no" else "action"
+        return {"low_level": self.data, "cmds": self.commands,
+                "execution": {"execution_started": boundary, "phase": phase, "source": self.receipt_source}}
 
 
 ShellRunner = Callable[[str], tuple[int, str, str]]
@@ -185,6 +195,8 @@ def run_low_level(
     shell: ShellRunner,
     *,
     log_prefix: str = "",
+    read_only: bool = False,
+    receipt_source: str = "low_level.shell.v1",
 ) -> LowLevelOutcome:
     """按 low_level 声明执行，返回 LowLevelOutcome。
 
@@ -194,7 +206,7 @@ def run_low_level(
     params  事件参数（用于渲染 {placeholder}）
     shell   executor 提供的单条 shell 执行回调
     """
-    out = LowLevelOutcome()
+    out = LowLevelOutcome(read_only=read_only, receipt_source=receipt_source)
     kind = str((low or {}).get("kind") or "").strip().lower()
     if not kind:
         # 兼容只写了 shell 字段、没写 kind 的老声明
@@ -215,12 +227,25 @@ def run_low_level(
         out.error = str(exc)
         out.summary = "low_level 声明被拒绝"
         SLog.w(TAG, f"{log_prefix}rejected: {exc}")
+    except Exception:
+        out.ok = False
+        out.error = "low_level_runner_error"
+        out.summary = "低层动作执行异常，保留实际调用边界"
     return out
 
 
 def _exec_one(cmd: str, shell: ShellRunner, out: LowLevelOutcome) -> tuple[int, str, str]:
     assert_command_allowed(cmd)
-    rc, stdout, stderr = shell(cmd)
+    out.dispatched += 1
+    try:
+        rc, stdout, stderr = shell(cmd)
+    except Exception:
+        out.uncertain = True
+        raise
+    if rc == 0:
+        out.completed += 1
+    elif rc != -2:  # AdbExecutor._adb_shell: local binary missing, nothing dispatched.
+        out.uncertain = True
     out.commands.append({"cmd": cmd, "rc": rc})
     return rc, stdout, stderr
 
@@ -287,7 +312,8 @@ def _run_batch(low: dict, params: dict, shell: ShellRunner, out: LowLevelOutcome
         else:
             out.data[name] = {"error": (stderr or stdout or f"rc={rc}")[:200]}
     # 取证类只要有一条成功就算可用（拿到部分事实比整体失败更有价值）
-    out.ok = okc > 0
+    # Partial best-effort success is a read contract, not a write receipt.
+    out.ok = okc > 0 if out.read_only else okc == len(commands)
     out.summary = f"采集 {okc}/{len(commands)} 项"
     if not out.ok:
         out.error = "全部采集项均失败"

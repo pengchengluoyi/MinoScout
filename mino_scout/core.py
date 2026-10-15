@@ -153,6 +153,8 @@ class ScoutCore:
         from mino_scout.request_guard import RequestGuard
         from mino_scout.web_v5 import WebV5Runtime
         self._requests = RequestGuard()
+        from mino_scout.execution_binding import BindingGuard
+        self.binding_guard = BindingGuard()
         self._web_v5 = WebV5Runtime()
 
     # ---------------- EXECUTE（唯一 dispatch） ----------------
@@ -183,6 +185,10 @@ class ScoutCore:
                 self._requests.finish(req, result, seal=True, worker_done=False)
             return result
         key = (req.run_id, req.step_idx)
+        rejected = self._binding_rejection(req)
+        if rejected is not None:
+            self._requests.finish(req, rejected)
+            return rejected
         if req.device_hint.get("execution_mode", "legacy") == "v5":
             stopped = self._requests.stopped(req.run_id)
             if stopped and req.capability_id not in READS | CLEANUP:
@@ -192,7 +198,7 @@ class ScoutCore:
                 output = {"status": "fail", "data": {"execution": {"execution_started": "no",
                     "phase": "admission", "reason_code": "node_pin_mismatch"}}}
             else:
-                output = self._web_v5.execute(req)
+                output = self._web_v5.execute(req, admit=lambda: self.binding_guard.validate(req))
             raw = output["data"]
             reason = raw.get("execution", {}).get("reason_code", "")
             with self._requests.lock:
@@ -350,7 +356,21 @@ class ScoutCore:
             current_run_id.reset(token_run)
             current_step_idx.reset(token_step)
 
+    def _binding_rejection(self, req: P.Execute):
+        reason = self.binding_guard.validate(req)
+        if not reason:
+            return None
+        return make_event_result(_event_from_execute(req), status=EventStatus.BLOCKED,
+            executor_used="core", started_at=now_iso(), elapsed_ms=0, summary=reason,
+            raw_response={"execution": {"execution_started": "no", "phase": "binding", "reason_code": reason},
+                "execution_binding": {"binding_id": req.binding_id, "binding_revision": req.binding_revision,
+                    "operation_ref": req.operation_ref}})
+
     def _dispatch(self, req: P.Execute) -> EventResult:
+        # Recheck after the executor queue, immediately before native dispatch.
+        rejected = self._binding_rejection(req)
+        if rejected is not None:
+            return rejected
         cap = _canonical_cap(req.capability_id)
         req = replace(req, capability_id=cap)
 
@@ -871,15 +891,19 @@ class ScoutCore:
         from mino_scout.input_contract import runtime_input_capabilities
         from mino_scout.plugins.state import status_list
 
+        runtime_caps = runtime_input_capabilities()
+        epoch = self.binding_guard.announce(None, runtime_caps)
         return P.Heartbeat(
             node_id=self.node_id,
+            node_connection_generation=self.binding_guard.connection_generation,
+            **epoch,
             uptime_sec=int(time.time() - self._started),
             busy=bool(active),
             active_runs=active,
             device_workload=workload,
             scout_version=report_scout_version(),
             plugins=status_list(self.node_id) if self._plugins_ready else [],
-            runtime_capabilities=runtime_input_capabilities(),
+            runtime_capabilities=runtime_caps,
         )
 
     def _remember_run(self, run_id: str) -> None:

@@ -274,7 +274,7 @@ class WebV5Runtime:
                 finally:
                     lane["lock"].release()
 
-    def execute(self, req):
+    def execute(self, req, *, admit=None):
         deadline = time.monotonic() + max(.001, req.timeout_sec)
         cap = req.capability_id
         if cap in CLEANUP:
@@ -296,6 +296,17 @@ class WebV5Runtime:
             if not lane["lock"].acquire(blocking=False):
                 raise ValueError("lane_request_inflight")
             try:
+                # Queue/lane waiting must not let an expired binding reach a worker.
+                reason = admit() if callable(admit) else ""
+                if reason:
+                    # A fresh, unused lane has no process or possible side effect.
+                    # Existing/quarantined workers keep their reservation for cleanup.
+                    with self.condition:
+                        if (lane["process"] is None and lane["conn"] is None and not lane["children"]
+                                and not lane["quarantined"] and lane["run"] == req.run_id):
+                            lane["run"] = ""
+                            self.condition.notify_all()
+                    return {"status": "blocked", "data": response(reason=reason)}
                 if lane["process"] is None:
                     ctx = mp.get_context("spawn")
                     parent, child = ctx.Pipe()
@@ -303,6 +314,11 @@ class WebV5Runtime:
                     proc.start()
                     child.close()
                     lane.update(process=proc, conn=parent)
+                # Process startup can outlive a registration change. Recheck at
+                # the final IPC boundary; no request has reached this worker yet.
+                reason = admit() if callable(admit) else ""
+                if reason:
+                    return {"status": "blocked", "data": response(reason=reason)}
                 lane["conn"].send(asdict(req))
                 while True:
                     if not lane["conn"].poll(max(0, deadline - time.monotonic())):

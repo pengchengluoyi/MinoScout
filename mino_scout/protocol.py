@@ -122,6 +122,9 @@ class Register:
     # None：旧节点没报运行能力。不能用版本号猜测是否支持当前焦点输入。
     runtime_capabilities: Optional[list[dict[str, Any]]] = None
     host: dict[str, Any] = field(default_factory=dict)
+    scout_process_generation: str = ""
+    capability_revision: str = ""
+    execution_binding_version: int = 0
 
 
 @dataclass
@@ -136,6 +139,7 @@ class Registered:
     node_id: str = ""
     node_token: str = ""
     owner_user_id: str = ""
+    node_connection_generation: str = ""
 
 
 @dataclass
@@ -163,6 +167,10 @@ class Heartbeat:
     runtime_capabilities: Optional[list[dict[str, Any]]] = None
     executors: Optional[list[ExecutorManifest]] = None
     executor_snapshot_version: int = 0  # 0: legacy delta; 1: complete executors snapshot
+    scout_process_generation: str = ""
+    node_connection_generation: str = ""
+    capability_revision: str = ""
+    execution_binding_version: int = 0
 
 
 @dataclass
@@ -181,6 +189,14 @@ class Execute:
     timeout_sec: float = 30.0
     device_id: str = ""
     platform: str = ""  # android | ios | web | playwright | other
+    execution_contract_version: str = ""
+    binding_id: str = ""
+    binding_revision: int = 0
+    input_contract_version: int = 0
+    operation_ref: str = ""
+    node_connection_generation: str = ""
+    scout_process_generation: str = ""
+    capability_revision: str = ""
 
 
 @dataclass
