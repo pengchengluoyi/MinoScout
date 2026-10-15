@@ -431,7 +431,7 @@ class AdbExecutor:
             return make_event_result(
                 event, status=EventStatus.PASS, executor_used=self.id, started_at=started_at,
                 elapsed_ms=elapsed, summary=f"启动 {pkg}",
-                raw_response={"stdout": out[:240]},
+                raw_response={**({"stdout": out[:240]}), "execution": {"execution_started": "yes", "phase": "completed", "source": "adb.native.v1"}},
             )
         return make_event_result(
             event, status=EventStatus.FAIL, executor_used=self.id, started_at=started_at,
@@ -449,6 +449,7 @@ class AdbExecutor:
             return make_event_result(
                 event, status=EventStatus.PASS, executor_used=self.id, started_at=started_at,
                 elapsed_ms=elapsed, summary=f"强停 {pkg}",
+                raw_response={"execution": {"execution_started": "yes", "phase": "completed", "source": "adb.native.v1"}},
             )
         return make_event_result(
             event, status=EventStatus.FAIL, executor_used=self.id, started_at=started_at,
@@ -471,6 +472,7 @@ class AdbExecutor:
             return make_event_result(
                 event, status=EventStatus.PASS, executor_used=self.id, started_at=started_at,
                 elapsed_ms=elapsed, summary=f"按键 {keycode}",
+                raw_response={"execution": {"execution_started": "yes", "phase": "completed", "source": "adb.native.v1"}},
             )
         return make_event_result(
             event, status=EventStatus.FAIL, executor_used=self.id, started_at=started_at,
@@ -484,6 +486,7 @@ class AdbExecutor:
         return make_event_result(
             event, status=EventStatus.PASS, executor_used=self.id, started_at=started_at,
             elapsed_ms=int((time.time() - t0) * 1000), summary=f"等待 {ms}ms",
+            raw_response={"execution": {"execution_started": "no", "phase": "completed", "source": "adb.native.v1"}},
         )
 
     def _swipe_direction(self, event, ctx, serial, started_at, t0):
@@ -531,7 +534,7 @@ class AdbExecutor:
             return make_event_result(
                 event, status=EventStatus.PASS, executor_used=self.id, started_at=started_at,
                 elapsed_ms=elapsed, summary=summary,
-                raw_response={"from": (x1, y1), "to": (x2, y2)},
+                raw_response={**({"from": (x1, y1), "to": (x2, y2)}), "execution": {"execution_started": "yes", "phase": "completed", "source": "adb.native.v1"}},
             )
         return make_event_result(
             event, status=EventStatus.FAIL, executor_used=self.id, started_at=started_at,
@@ -556,6 +559,7 @@ class AdbExecutor:
             return make_event_result(
                 event, status=EventStatus.PASS, executor_used=self.id, started_at=started_at,
                 elapsed_ms=elapsed, summary=f"拖拽 ({x1},{y1})→({x2},{y2})",
+                raw_response={"execution": {"execution_started": "yes", "phase": "completed", "source": "adb.native.v1"}},
             )
         return make_event_result(
             event, status=EventStatus.FAIL, executor_used=self.id, started_at=started_at,
@@ -852,7 +856,7 @@ class AdbExecutor:
             self._record_focus_after_tap(event, ctx, serial, focus_target)
             return make_event_result(
                 event, status=EventStatus.PASS, executor_used=self.id, started_at=started_at,
-                elapsed_ms=elapsed, summary=f"点击 {label}", raw_response=audit,
+                elapsed_ms=elapsed, summary=f"点击 {label}", raw_response={**(audit), "execution": {"execution_started": "yes", "phase": "completed", "source": "adb.native.v1"}},
             )
         return make_event_result(
             event, status=EventStatus.FAIL, executor_used=self.id, started_at=started_at,
@@ -895,6 +899,7 @@ class AdbExecutor:
         return make_event_result(
             event, status=EventStatus.PASS, executor_used=self.id, started_at=started_at,
             elapsed_ms=elapsed, summary=f"连点 ({x},{y}) ×{count} 间隔{interval}ms",
+            raw_response={"execution": {"execution_started": "yes", "phase": "completed", "source": "adb.native.v1"}},
         )
 
     def _point_label(self, how: str, audit: dict, x: int, y: int) -> str:
@@ -936,7 +941,7 @@ class AdbExecutor:
         if rc == 0:
             return make_event_result(
                 event, status=EventStatus.PASS, executor_used=self.id, started_at=started_at,
-                elapsed_ms=elapsed, summary=f"长按 {label} {duration}ms", raw_response=audit,
+                elapsed_ms=elapsed, summary=f"长按 {label} {duration}ms", raw_response={**(audit), "execution": {"execution_started": "yes", "phase": "completed", "source": "adb.native.v1"}},
             )
         return make_event_result(
             event, status=EventStatus.FAIL, executor_used=self.id, started_at=started_at,
@@ -964,7 +969,7 @@ class AdbExecutor:
                 started_at=started_at,
                 elapsed_ms=elapsed,
                 summary=str(outcome.get("summary") or "输入法已切换"),
-                raw_response=outcome,
+                raw_response={**(outcome), "execution": {"execution_started": "yes", "phase": "completed", "source": "adb.native.v1"}},
             )
         return make_event_result(
             event,
@@ -996,6 +1001,7 @@ class AdbExecutor:
                 return make_event_result(
                     event, status=EventStatus.PASS, executor_used=self.id, started_at=started_at,
                     elapsed_ms=elapsed, summary=f"输入 {len(text)} 字 已写入当前焦点",
+                    raw_response={"execution": {"execution_started": "yes", "phase": "completed", "source": "adb.native.v1"}},
                 )
             return make_event_result(
                 event, status=EventStatus.FAIL, executor_used=self.id, started_at=started_at,
@@ -1017,7 +1023,7 @@ class AdbExecutor:
         if rc == 0:
             return make_event_result(
                 event, status=EventStatus.PASS, executor_used=self.id, started_at=started_at,
-                elapsed_ms=elapsed, summary=f"输入 {len(text)} 字", raw_response=audit,
+                elapsed_ms=elapsed, summary=f"输入 {len(text)} 字", raw_response={**(audit), "execution": {"execution_started": "yes", "phase": "completed", "source": "adb.native.v1"}},
             )
         return make_event_result(
             event, status=EventStatus.FAIL, executor_used=self.id, started_at=started_at,

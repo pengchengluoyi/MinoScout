@@ -41,10 +41,27 @@ class RequestGuard:
                 return "cached", copy.deepcopy(old["result"])
             if req.step_idx > 0 and (req.device_hint.get("execution_mode") == "v5" or ui_write(req.capability_id)):
                 if any(rid == req.run_id and idx > 0 and entry.get("worker_active", not entry["done"])
+                       and (req.device_hint.get("execution_mode") == "v5"
+                            or ui_write(entry["content"]["capability_id"]))
                        for (rid, idx), entry in self.requests.items()):
                     return "request_inflight", None
             self.requests[key] = {"content": copy.deepcopy(content), "done": False, "worker_active": True}
             return "new", None
+
+    def active_requests(self, run_id: str) -> list[dict]:
+        """Bounded admission evidence, never request parameters or credentials."""
+        with self.lock:
+            return [{"action_ref": {"run_id": rid, "step_idx": idx},
+                     "capability_id": entry["content"]["capability_id"],
+                     "effect_class": "write" if ui_write(entry["content"]["capability_id"]) else "read"}
+                    for (rid, idx), entry in self.requests.items()
+                    if rid == run_id and entry.get("worker_active")][:16]
+
+    def same_write_active(self, req) -> bool:
+        with self.lock:
+            entry = self.requests.get((req.run_id, req.step_idx))
+            return bool(req.step_idx > 0 and ui_write(req.capability_id) and entry
+                        and entry.get("worker_active") and _same(entry["content"], asdict(req)))
 
     def finish(self, req, result, *, seal=False, worker_done=True) -> None:
         with self.lock:

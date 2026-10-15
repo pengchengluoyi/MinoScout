@@ -274,7 +274,7 @@ class PlaywrightExecutor:
                     return self._fail(event, started_at, t0, "wait_ms 时长无效")
                 ms = max(0, min(ms, 120_000))
                 time.sleep(ms / 1000.0)
-                return self._ok(event, started_at, t0, f"等待 {ms}ms")
+                return self._ok(event, started_at, t0, f"等待 {ms}ms", execution_started="no")
             if cap == "launch_app":
                 p = event.params or {}
                 url = pick_goto_url(
@@ -293,14 +293,14 @@ class PlaywrightExecutor:
                     )
                 elif url:
                     goto_url(page, url, params=p)
-                return self._ok(event, started_at, t0, f"打开 {url or page.url}")
+                return self._ok(event, started_at, t0, f"打开 {url or page.url}", execution_started="yes")
             if cap == "close_app":
                 p = event.params or {}
                 if p.get("shutdown_browser") or p.get("shutdown"):
                     hub.close_run(sn, run_id, shutdown_browser=True)
-                    return self._ok(event, started_at, t0, "关闭本任务 Chromium")
+                    return self._ok(event, started_at, t0, "关闭本任务 Chromium", execution_started="yes")
                 hub.close_case(sn, run_id=run_id)
-                return self._ok(event, started_at, t0, "关闭页面")
+                return self._ok(event, started_at, t0, "关闭页面", execution_started="yes")
             if cap == "read_web_auth":
                 return self._read_web_auth(
                     event, hub.current_page(sn, run_id=run_id), started_at, t0
@@ -326,7 +326,7 @@ class PlaywrightExecutor:
             if cap == "reload_page":
                 try:
                     page.reload(wait_until="domcontentloaded", timeout=15_000)
-                    return self._ok(event, started_at, t0, "已刷新当前页面")
+                    return self._ok(event, started_at, t0, "已刷新当前页面", execution_started="yes")
                 except Exception as exc:
                     return self._fail(event, started_at, t0, f"刷新页面失败: {exc}")
             if cap == "tap_element":
@@ -356,12 +356,12 @@ class PlaywrightExecutor:
                 if low in ("back", "browser_back") and p.get("browser_back", True):
                     try:
                         page.go_back(wait_until="domcontentloaded", timeout=10_000)
-                        return self._ok(event, started_at, t0, "浏览器后退")
+                        return self._ok(event, started_at, t0, "浏览器后退", execution_started="yes")
                     except Exception as exc:
                         return self._fail(event, started_at, t0, f"浏览器后退失败: {exc}")
                 mapped = {"back": "Escape", "home": "Home", "enter": "Enter", "esc": "Escape"}.get(low, key)
                 page.keyboard.press(mapped)
-                return self._ok(event, started_at, t0, f"按键 {mapped}")
+                return self._ok(event, started_at, t0, f"按键 {mapped}", execution_started="yes")
             if cap == "swipe_direction":
                 p = event.params or {}
                 direction = str(p.get("direction") or "down").lower()
@@ -386,7 +386,7 @@ class PlaywrightExecutor:
                 page.mouse.down()
                 page.mouse.move(delta[2], delta[3], steps=12)
                 page.mouse.up()
-                return self._ok(event, started_at, t0, summary)
+                return self._ok(event, started_at, t0, summary, execution_started="yes")
             if cap == "swipe_element_to_element":
                 p = event.params or {}
                 if None in (p.get("from_x"), p.get("from_y"), p.get("to_x"), p.get("to_y")):
@@ -397,7 +397,7 @@ class PlaywrightExecutor:
                 page.mouse.down()
                 page.mouse.move(x2, y2, steps=12)
                 page.mouse.up()
-                return self._ok(event, started_at, t0, f"拖拽 ({x1},{y1})→({x2},{y2})")
+                return self._ok(event, started_at, t0, f"拖拽 ({x1},{y1})→({x2},{y2})", execution_started="yes")
             return self._fail(event, started_at, t0, f"PlaywrightExecutor 不处理 {cap}")
         except Exception as exc:
             SLog.e(TAG, f"execute exception cap={cap} sn={sn}: {exc}")
@@ -405,7 +405,8 @@ class PlaywrightExecutor:
                 return make_event_result(event, status=EventStatus.BLOCKED, executor_used=self.id,
                     started_at=started_at, elapsed_ms=int((time.time()-t0)*1000),
                     summary="设备写动作结果不确定，请先观察确认", error=f"exception: {exc}",
-                    raw_response={"execution_started": True, "error_kind": "write_outcome_unknown"})
+                       raw_response={"execution_started": True, "error_kind": "write_outcome_unknown"},
+                   )
             return self._fail(event, started_at, t0, f"exception: {exc}")
 
     def _auth_body(
@@ -435,7 +436,7 @@ class PlaywrightExecutor:
     def _read_web_auth(self, event, page, started_at: str, t0: float) -> EventResult:
         """只读当前被测网页域名上的 Cookie / 本地存储。别的站点的令牌不算已登录。不返回值。"""
         if page is None:
-            return self._ok(event, started_at, t0, self._auth_body(session="guest", reason="no_page"))
+            return self._ok(event, started_at, t0, self._auth_body(session="guest", reason="no_page"), execution_started="no")
         try:
             page_url = str(page.url or "")
         except Exception:
@@ -459,6 +460,7 @@ class PlaywrightExecutor:
                     expected_host=expect_host,
                     reason="page_not_app",
                 ),
+                execution_started="no",
             )
         try:
             cookies = page.context.cookies([page_url]) if page_url else []
@@ -559,6 +561,7 @@ class PlaywrightExecutor:
                 storage_keys=local_n + session_n,
                 reason="associated" if associated else "no_credential",
             ),
+            execution_started="no",
         )
 
     def _get_foreground_app(
@@ -617,7 +620,7 @@ class PlaywrightExecutor:
                 url_contains=str(p.get("url_contains") or p.get("url") or ""),
                 title_contains=str(p.get("title_contains") or p.get("title") or ""),
             )
-            return self._ok(event, started_at, t0, f"切换 Tab {str(page.url or '')[:80]}")
+            return self._ok(event, started_at, t0, f"切换 Tab {str(page.url or '')[:80]}", execution_started="yes")
         except Exception as exc:
             return self._fail(event, started_at, t0, f"切换 Tab 失败: {exc}")
 
@@ -637,7 +640,7 @@ class PlaywrightExecutor:
                 run_id=run_id,
                 url=str(p.get("url") or pick_goto_url(p.get("package")) or ""),
             )
-            return self._ok(event, started_at, t0, f"新开 Tab {str(page.url or '')[:80]}")
+            return self._ok(event, started_at, t0, f"新开 Tab {str(page.url or '')[:80]}", execution_started="yes")
         except Exception as exc:
             return self._fail(event, started_at, t0, f"新开 Tab 失败: {exc}")
 
@@ -661,7 +664,7 @@ class PlaywrightExecutor:
                 loc = resolve_locator_scope(page, p).locator("input[type='file']").first
         try:
             loc.set_input_files(files)
-            return self._ok(event, started_at, t0, f"上传 {len(files)} 个文件")
+            return self._ok(event, started_at, t0, f"上传 {len(files)} 个文件", execution_started="yes")
         except Exception as exc:
             return self._fail(event, started_at, t0, f"上传失败: {exc}")
 
@@ -673,12 +676,12 @@ class PlaywrightExecutor:
         try:
             if sel:
                 scope.locator(sel).first.wait_for(state="visible", timeout=timeout)
-                return self._ok(event, started_at, t0, f"已出现 {sel[:48]}")
+                return self._ok(event, started_at, t0, f"已出现 {sel[:48]}", execution_started="no")
             state = str(p.get("load_state") or p.get("wait_until") or "domcontentloaded").strip()
             if state not in ("commit", "domcontentloaded", "load", "networkidle"):
                 state = "domcontentloaded"
             page.wait_for_load_state(state, timeout=timeout)
-            return self._ok(event, started_at, t0, f"页面 {state}")
+            return self._ok(event, started_at, t0, f"页面 {state}", execution_started="no")
         except Exception as exc:
             return self._fail(event, started_at, t0, f"等待就绪超时: {exc}")
 
@@ -700,7 +703,7 @@ class PlaywrightExecutor:
         page.mouse.click(x, y)
         self._settle_page(page)
         label = f"「{name[:40]}」({x},{y})" if name else f"({x},{y})"
-        return self._ok(event, started_at, t0, f"点击 {label}")
+        return self._ok(event, started_at, t0, f"点击 {label}", execution_started="yes")
 
     def _tap_node(self, event, page, started_at, t0, params) -> EventResult:
         if params.get("node_ref"):
@@ -721,7 +724,7 @@ class PlaywrightExecutor:
                 execution_started = True
                 element.click(timeout=4000)
                 self._settle_page(page)
-                return self._ok(event, started_at, t0, "点击当前观察节点")
+                return self._ok(event, started_at, t0, "点击当前观察节点", execution_started="yes")
             except Exception as exc:
                 return make_event_result(event, status=EventStatus.BLOCKED, executor_used=self.id,
                     started_at=started_at, elapsed_ms=int((time.time()-t0)*1000),
@@ -745,7 +748,7 @@ class PlaywrightExecutor:
             )
         loc.click()
         self._settle_page(page)
-        return self._ok(event, started_at, t0, f"点击「{name[:40]}」")
+        return self._ok(event, started_at, t0, f"点击「{name[:40]}」", execution_started="yes")
 
     def _multi_tap(self, event: PlanEvent, page, started_at: str, t0: float) -> EventResult:
         params = event.params or {}
@@ -765,7 +768,7 @@ class PlaywrightExecutor:
             page.mouse.click(x, y)
             if i + 1 < count:
                 time.sleep(interval / 1000.0)
-        return self._ok(event, started_at, t0, f"连点 ({x},{y}) ×{count} 间隔{interval}ms")
+        return self._ok(event, started_at, t0, f"连点 ({x},{y}) ×{count} 间隔{interval}ms", execution_started="yes")
 
     def _repeat_node(self, event, page, started_at, t0, params) -> EventResult:
         from mino_scout.executors.multi_tap import parse_multi_tap
@@ -787,7 +790,7 @@ class PlaywrightExecutor:
             loc.click()
             if i + 1 < count:
                 time.sleep(interval / 1000.0)
-        return self._ok(event, started_at, t0, f"连点「{name[:40]}」×{count}")
+        return self._ok(event, started_at, t0, f"连点「{name[:40]}」×{count}", execution_started="yes")
 
     def _long_press(self, event: PlanEvent, page, started_at: str, t0: float) -> EventResult:
         params = event.params or {}
@@ -810,7 +813,7 @@ class PlaywrightExecutor:
             page.mouse.down()
             time.sleep(0.8)
             page.mouse.up()
-            return self._ok(event, started_at, t0, f"长按「{name[:40]}」")
+            return self._ok(event, started_at, t0, f"长按「{name[:40]}」", execution_started="yes")
         name = _name_from_params(params)
         try:
             x, y = resolve_viewport_xy(event.params or {}, page)
@@ -825,7 +828,7 @@ class PlaywrightExecutor:
         page.mouse.down()
         time.sleep(0.8)
         page.mouse.up()
-        return self._ok(event, started_at, t0, f"长按 ({x},{y})")
+        return self._ok(event, started_at, t0, f"长按 ({x},{y})", execution_started="yes")
 
     def _input(self, event: PlanEvent, ctx: ExecutorContext, page, started_at: str, t0: float) -> EventResult:
         params = event.params or {}
@@ -859,7 +862,7 @@ class PlaywrightExecutor:
                 remember(text)
                 event.params["sensitive"] = True
             loc.fill(text)
-            return self._ok(event, started_at, t0, f"输入({tag})「{name[:40]}」")
+            return self._ok(event, started_at, t0, f"输入({tag})「{name[:40]}」", execution_started="yes")
         focus_ref = str(params.get("focus_ref") or "")
         if str(params.get("target_mode") or "") == "current_focus":
             if not ctx.run_id or not focus_ref.startswith(f"focus:{ctx.run_id}:") or not focus_ref.rsplit(":", 1)[-1].isdigit():
@@ -894,6 +897,7 @@ class PlaywrightExecutor:
                 started_at,
                 t0,
                 f"输入({tag})@({x},{y}) {_input_summary_snippet(text)}",
+                execution_started="yes",
             )
         return self._fail(
             event,
@@ -940,7 +944,7 @@ class PlaywrightExecutor:
             page.keyboard.insert_text(text)
         except Exception as exc:
             return self._fail(event, started_at, t0, f"输入({tag}) 写入当前焦点失败：{type(exc).__name__}")
-        return self._ok(event, started_at, t0, f"输入({tag}) 已写入当前焦点")
+        return self._ok(event, started_at, t0, f"输入({tag}) 已写入当前焦点", execution_started="yes")
 
     @staticmethod
     def _read_editable_value(target) -> str:
@@ -1024,14 +1028,15 @@ class PlaywrightExecutor:
         except Exception:
             pass
 
-    def _ok(self, event, started_at, t0, summary: str) -> EventResult:
+    def _ok(self, event, started_at, t0, summary: str, *, execution_started: str = "unknown") -> EventResult:
         if event.params.get("sensitive"):
             summary = "敏感输入已完成（内容已脱敏）"
         return make_event_result(
             event, status=EventStatus.PASS, executor_used=self.id,
             started_at=started_at, elapsed_ms=int((time.time() - t0) * 1000),
             summary=summary,
-            raw_response={"sensitive": bool(event.params.get("sensitive"))},
+            raw_response={"sensitive": bool(event.params.get("sensitive")), "execution": {
+                "execution_started": execution_started, "phase": "completed", "source": "playwright.native.v1"}},
         )
 
     def _fail(self, event, started_at, t0, msg: str) -> EventResult:

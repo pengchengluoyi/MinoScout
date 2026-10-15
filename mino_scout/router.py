@@ -35,7 +35,7 @@ from mino_scout.executors.base import (
     now_iso,
 )
 from mino_scout.log import SLog
-from mino_scout.execution_boundary import started as execution_started, ui_write
+from mino_scout.execution_boundary import normalize_ui_result, ui_write
 from mino_scout.schemas import CapturedScreen, EventResult, PlanEvent
 
 TAG = "Router"
@@ -140,23 +140,8 @@ class Router:
             )
             last = result
 
-            detail = dict(result.raw_response or {})
-            boundary = execution_started(detail)
-            if ui_write(event.capability_id):
-                if result.status is EventStatus.PASS and boundary == "unknown":
-                    boundary = "yes"  # Executor 已返回完成；业务效果仍需独立检查。
-                if result.status is not EventStatus.PASS and boundary != "no":
-                    result.status = EventStatus.BLOCKED
-                    result.summary = "写动作结果未核验，已停止后备执行并保留资源隔离"
-                    detail["execution_control"] = {
-                        "stop_run": True, "state": "write_stopped", "reason_code": "write_outcome_unknown",
-                        "stop_confirmed": False, "resource_isolated": True,
-                        "action_ref": {"run_id": run_id, "step_idx": step_idx},
-                    }
-                detail["execution"] = {**(detail.get("execution") if isinstance(detail.get("execution"), dict) else {}),
-                    "execution_started": boundary, "phase": "executor", "reason_code":
-                    "write_outcome_unknown" if result.status is not EventStatus.PASS and boundary != "no" else ""}
-                result.raw_response = detail
+            result = normalize_ui_result(result, capability_id=event.capability_id,
+                run_id=run_id, step_idx=step_idx)
             if result.status in _TERMINAL:
                 result.attempts = attempts
                 result.elapsed_ms = result.elapsed_ms or int((time.time() - t0) * 1000)

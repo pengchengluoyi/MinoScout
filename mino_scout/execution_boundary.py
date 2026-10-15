@@ -20,3 +20,28 @@ def started(raw: Any) -> str:
     if value is False or type(value) is str and value == "no":
         return "no"
     return "unknown"
+
+
+def normalize_ui_result(result, *, capability_id: str, run_id: str, step_idx: int):
+    """Consume explicit producer receipts; an arbitrary PASS proves no boundary."""
+    if not ui_write(capability_id):
+        return result
+    from mino_scout.schemas import EventStatus
+    detail = dict(result.raw_response or {})
+    boundary = started(detail)
+    unsafe = boundary == "unknown" or (result.status is not EventStatus.PASS and boundary != "no")
+    if unsafe:
+        result.status = EventStatus.BLOCKED
+        result.summary = "写动作结果未核验，已停止后备执行并保留资源隔离"
+        detail["execution_control"] = {
+            **(detail.get("execution_control") if isinstance(detail.get("execution_control"), dict) else {}),
+            "stop_run": True, "state": "write_stopped", "reason_code": "write_outcome_unknown",
+            "stop_confirmed": False, "resource_isolated": True,
+            "action_ref": {"run_id": run_id, "step_idx": step_idx},
+        }
+    receipt = detail.get("execution") if isinstance(detail.get("execution"), dict) else {}
+    detail["execution"] = {**receipt, "execution_started": boundary,
+        "phase": receipt.get("phase") or "executor",
+        "reason_code": "write_outcome_unknown" if unsafe else receipt.get("reason_code", "")}
+    result.raw_response = detail
+    return result

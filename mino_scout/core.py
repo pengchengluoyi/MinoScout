@@ -166,9 +166,22 @@ class ScoutCore:
         if state == "cached":
             return cached
         if state != "new":
-            return make_event_result(_event_from_execute(req), status=EventStatus.FAIL if req.device_hint.get("execution_mode") == "v5" else EventStatus.BLOCKED,
+            # Same-key retry can refer to a write already running. It is not proof
+            # that the original action never started; seal uncertainty monotonically.
+            duplicate_write = state == "request_inflight" and self._requests.same_write_active(req)
+            raw = {"execution": {"execution_started": "unknown" if duplicate_write else "no",
+                                  "phase": "admission", "reason_code": state},
+                   "admission": {"active_requests": self._requests.active_requests(req.run_id)}}
+            if duplicate_write:
+                stopped = self._requests.stop(req.run_id, "write_inflight_unknown", {"run_id": req.run_id, "step_idx": req.step_idx})
+                raw["execution_control"] = {"stop_run": True, "resource_isolated": True,
+                                            "stop_confirmed": False, **stopped}
+            result = make_event_result(_event_from_execute(req), status=EventStatus.FAIL if req.device_hint.get("execution_mode") == "v5" else EventStatus.BLOCKED,
                 executor_used="core", started_at=now_iso(), elapsed_ms=0, summary=state,
-                raw_response={"execution": {"execution_started": "no", "phase": "admission", "reason_code": state}})
+                raw_response=raw)
+            if duplicate_write:
+                self._requests.finish(req, result, seal=True, worker_done=False)
+            return result
         key = (req.run_id, req.step_idx)
         if req.device_hint.get("execution_mode", "legacy") == "v5":
             stopped = self._requests.stopped(req.run_id)
