@@ -463,7 +463,9 @@ class AdbExecutor:
         params = event.params or {}
         keycode = str(params.get("key") or params.get("keycode") or "").upper()
         if not keycode:
-            return self._fail(event, started_at, t0, "press_key 缺 params.key")
+            return self._fail(event, started_at, t0, "press_key 缺 params.key", raw_response={
+                "execution": {"execution_started": "no", "phase": "validate",
+                    "reason_code": "missing_key_parameter", "source": "adb.native.v1"}})
         key_map = {
             "BACK": "4", "HOME": "3", "MENU": "82", "POWER": "26", "ENTER": "66",
             "VOLUME_UP": "24", "VOLUME_DOWN": "25", "RECENT": "187",
