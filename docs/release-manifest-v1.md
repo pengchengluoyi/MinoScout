@@ -19,7 +19,7 @@
 | items[].payload | binary；源码包不能作为通过自检的安装包 |
 | items[].layers | Scout 保留旧 version/items/layers 格式及 runtime/app/browser 的 key/依赖合同 |
 
-公共 write_manifest.py 拒绝混合提交、脏工作树、未自检源码包、重复平台（Nexus/Workbench）、文件越界或大小/摘要不符。CI 在原生构建成功后才上传 item 元数据并生成 manifest。Scout 的原有提前创建 Release 行为只创建发布容器，构建失败不会上传可安装 item/manifest。
+公共 write_manifest.py 拒绝混合提交、脏工作树、未自检源码包、重复平台（Nexus/Workbench）、文件越界或大小/摘要不符。CI 在原生构建成功后才上传 item 元数据并生成 manifest。候选分支与手动 CI 仅生成验证产物；固定版本 tag 在全部构建成功后创建 Release。Scout 不再提前创建空 Release。
 
 本地交付另给 `hi3d-local-manifest.json`，distribution=local-verification、publishable=false、无远端 URL，只引用当前目录实际文件；它不是公开更新源。GitHub 发布必须使用干净的已提交源码，并重新由 CI 构建；不得把本地 dirty 改成 false 冒充发布验收。
 
