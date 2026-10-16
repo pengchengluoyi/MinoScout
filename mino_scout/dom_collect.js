@@ -82,6 +82,7 @@
   // A visible form/dialog is only a candidate scope. Nexus must independently
   // confirm login purpose and visual absence; these facts never imply consent.
   const isVisible = e => {
+    if(e.closest('defs,clipPath,mask,pattern,symbol')) return false;
     const r=e.getBoundingClientRect();
     for (let p=e;p;p=p.parentElement) {
       const s=getComputedStyle(p);
@@ -94,22 +95,49 @@
     isVisible(e) && Array.from(e.querySelectorAll('input,textarea')).some(n =>
       isVisible(n) && !['hidden','checkbox','radio','button','submit','file'].includes(n.type)) &&
     Array.from(e.querySelectorAll('button,[role="button"],input[type="submit"]')).some(isVisible));
-  const scopes=candidates.filter(e => !candidates.some(other => other!==e && e.contains(other)));
+  let scopes=candidates.filter(e => !candidates.some(other => other!==e && e.contains(other)));
+  let scopeKind='semantic';
+  if (scopes.length===0) {
+    // Custom dialogs often have neither <form> nor ARIA role. Use the outer
+    // bounded container, not an input's nearest wrapper (terms may be siblings).
+    // Geometry only nominates a scope; the independent image observer must
+    // confirm exactly one complete login form before absence can be accepted.
+    const anchors=Array.from(document.querySelectorAll('input[type="email"],input[type="tel"],input[type="password"],input[autocomplete="email"],input[autocomplete="username"],input[autocomplete="one-time-code"]')).filter(isVisible);
+    const custom=new Set();
+    for (const anchor of anchors) {
+      let selected=null;
+      for (let e=anchor.parentElement;e && !['MAIN','BODY','HTML'].includes(e.tagName);e=e.parentElement) {
+        const r=e.getBoundingClientRect();
+        if (isVisible(e) && r.width*r.height<innerWidth*innerHeight*0.95 &&
+            r.left>=0 && r.top>=0 && r.right<=innerWidth && r.bottom<=innerHeight &&
+            Array.from(e.querySelectorAll('button,[role="button"],input[type="submit"]')).some(isVisible)) selected=e;
+      }
+      if(selected) custom.add(selected);
+    }
+    scopes=Array.from(custom).filter(e => !Array.from(custom).some(other => other!==e && other.contains(e)));
+    scopeKind='custom_bounded';
+  }
   const scope=scopes.length===1?scopes[0]:null, sr=scope?.getBoundingClientRect();
   const descendants=scope?Array.from(scope.querySelectorAll('*')).filter(isVisible):[];
   const full = e => {const r=e.getBoundingClientRect();return r.left>=0 && r.top>=0 &&
     r.right<=innerWidth && r.bottom<=innerHeight && r.left>=sr.left-1 && r.top>=sr.top-1 &&
     r.right<=sr.right+1 && r.bottom<=sr.bottom+1 &&
-    e.scrollWidth<=e.clientWidth+1 && e.scrollHeight<=e.clientHeight+1;};
+    (!['auto','scroll'].includes(getComputedStyle(e).overflowX) || e.scrollWidth<=e.clientWidth+1) &&
+    (!['auto','scroll'].includes(getComputedStyle(e).overflowY) || e.scrollHeight<=e.clientHeight+1);};
   const occluded=scope && [0.1,0.5,0.9].some(x => [0.1,0.5,0.9].some(y => {
     const top=document.elementFromPoint(sr.left+sr.width*x,sr.top+sr.height*y);
     return !top || !(top===scope || scope.contains(top));
   }));
-  const loginScope={version:1,snapshot_id:snapshot,candidate_count:scopes.length,
+  const incomplete=[];
+  if(!scope) incomplete.push('scope_not_unique');
+  if(document.readyState!=='complete') incomplete.push('document_not_ready');
+  if(scope && (!full(scope) || !descendants.every(full))) incomplete.push('scope_clipped');
+  if(occluded) incomplete.push('scope_occluded');
+  if(truncated || missing.size) incomplete.push('observation_incomplete');
+  if(descendants.some(e => e.shadowRoot || e.tagName.includes('-') || ['IFRAME','FRAME','CANVAS'].includes(e.tagName))) incomplete.push('scope_opaque');
+  const loginScope={version:1,snapshot_id:snapshot,candidate_count:scopes.length,scope_kind:scopeKind,incomplete_reasons:incomplete,
     bounds:sr?[sr.left,sr.top,sr.right,sr.bottom].map(Math.round):[],
-    complete:Boolean(scope && document.readyState==='complete' && full(scope) && !occluded &&
-      !truncated && missing.size===0 && descendants.every(full) &&
-      !descendants.some(e => e.shadowRoot || e.tagName.includes('-') || ['IFRAME','FRAME','CANVAS'].includes(e.tagName))),
+    complete:incomplete.length===0,
     checkable_count:scope?scope.querySelectorAll('input[type="checkbox"],input[type="radio"],[role="checkbox"],[role="radio"],[role="switch"],[aria-checked]').length:0};
   return {nodes:out,observation:{version:1,snapshot_id:snapshot,scope:'viewport',truncated,
     missing:Array.from(missing),node_count:out.length,node_limit:MAX,source:'playwright',viewport_wh:[innerWidth,innerHeight],form_controls:formControls,login_scope:loginScope}};

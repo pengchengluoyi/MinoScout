@@ -845,6 +845,8 @@ class AdbExecutor:
             return self._fail(
                 event, started_at, t0,
                 reason + (f"：{extra}" if extra else ""),
+                raw_response={"execution": {"execution_started": "no", "phase": "resolve",
+                    "reason_code": "tap_target_unresolved", "source": "adb.native.v1"}},
             )
         point = self._map_to_display(serial, x, y) if how in ("xy", "fallback_xy") else (x, y)
         focus_target = self._input_target_before_tap(serial, point)
@@ -1228,8 +1230,9 @@ class AdbExecutor:
             diag["diag_error"] = str(exc)[:120]
         return diag
 
-    def _fail(self, event, started_at, t0, msg: str) -> EventResult:
+    def _fail(self, event, started_at, t0, msg: str, *, raw_response=None) -> EventResult:
         return make_event_result(
             event, status=EventStatus.FAIL, executor_used=self.id, started_at=started_at,
             elapsed_ms=int((time.time() - t0) * 1000), summary=msg, error=msg,
+            raw_response=raw_response or {},
         )
