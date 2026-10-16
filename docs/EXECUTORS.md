@@ -131,3 +131,8 @@ Desktop 图像的 `compress_ratio` 为 1–10，默认 1。通过 SDK 通用 `ge
 ADB 声明的 supports 与实际 low_level 解释器保持一致：shell 使用非空 shell；shell_batch 使用包含 name/shell 的非空 commands；shell_seq 使用非空 steps。未知 kind 或无效结构不冒充支持。probe_device_state 等目录声明的批量能力可走此通路，不增加硬编码能力名单。
 
 飞书原生结果卡片将 actions 中的有效 HTTP/HTTPS URL 转成报告跳转按钮。按钮只打开页面，不回调执行请求；流式草稿不附加报告按钮。文本降级仍由 Nexus 提供完整 URL。协议字段没有变化。
+
+
+### 2026-10-16 有限宿主插件执行面
+
+除设备执行器外，`host_plugin` manifest 为既有插件处理器声明唯一具名读取 `plugin.gmail.fetch_otp`。它不属于设备 UI 通道，不进入设备 fallback，不改变设备 provides 矩阵。插件账号归属核验前 unavailable；configured 由独立插件状态与 Nexus 依赖合同核对。绑定请求必须使用完整 v1 投影，不能以空执行器或其他设备执行器取码。其他插件仍沿用原合同，不自动取得绑定资格。

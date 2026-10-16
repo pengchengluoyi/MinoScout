@@ -87,6 +87,13 @@ def handle_node_plugin(core: Any, req: P.Execute, cmd: str, event: Any, started:
     )
 
 
+def executor_manifest(*, ready: bool) -> P.ExecutorManifest:
+    """Finite implementation surface; configuration is reported separately."""
+    return P.ExecutorManifest(id="host_plugin", available=bool(ready),
+        provides=["plugin.gmail.fetch_otp"] if ready else [],
+        reason="" if ready else "plugin_owner_unverified")
+
+
 def handle_plugin_cap(core: Any, req: P.Execute, cap: str) -> EventResult:
     if not getattr(core, "_plugins_ready", False):
         return _blocked_plugin(core, _event(req), now_iso())
@@ -96,7 +103,15 @@ def handle_plugin_cap(core: Any, req: P.Execute, cap: str) -> EventResult:
     event = _event(req)
     started = now_iso()
     if cap == "plugin.gmail.fetch_otp":
-        return _gmail(core, req, event, started)
+        try:
+            result = _gmail(core, req, event, started)
+        except Exception:
+            return _fail(event, started, 'otp_plugin_failed', cap)
+        if req.binding_id:
+            result.executor_used = "host_plugin"
+            result.raw_response = {**(result.raw_response or {}), "execution_binding": {
+                "binding_id": req.binding_id, "operation_ref": req.operation_ref}}
+        return result
     try:
         if cap == "plugin.cli.feishu":
             data = _feishu(core, req)
@@ -345,6 +360,27 @@ def _public_payload(data: dict[str, Any]) -> dict[str, Any]:
 def _gmail(core: Any, req: P.Execute, event: Any, started: str) -> EventResult:
     t0 = time.time()
     params = dict(req.params or {})
+    import math
+    bound = bool(req.execution_contract_version)
+    end = time.monotonic() + max(0.0, float(req.timeout_sec))
+    def stopped():
+        return (time.monotonic() >= end or bool(core._requests.stopped(req.run_id))
+                or (bound and bool(core.binding_guard.validate(req)))
+                or not getattr(core, '_plugins_ready', False))
+    if bound:
+        try:
+            recipient = params.get('to_address')
+            since = float(params['since_ts'])
+            deadline = float(params['deadline_ts'])
+            wait = int(params['max_wait_ms'])
+            if (not isinstance(recipient, str) or '@' not in recipient
+                    or any(c.isspace() for c in recipient)
+                    or not math.isfinite(since) or since <= 0 or since > time.time()
+                    or not math.isfinite(deadline) or deadline <= time.time()
+                    or wait <= 0 or wait > 90_000 or stopped()):
+                raise ValueError('otp_request_invalid')
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return _fail(event, started, 'otp_request_invalid', 'plugin.gmail.fetch_otp', t0=t0)
     inbox = plain_value("mail", "gmail", "inbox_address")
     password = secret_value(core.node_id, "mail", "gmail", "app_password")
     if not inbox or not password:
@@ -363,6 +399,7 @@ def _gmail(core: Any, req: P.Execute, event: Any, started: str) -> EventResult:
     except (TypeError, ValueError):
         deadline_ts = None
     try:
+        diagnostics = {}
         code = fetch_otp_via_imap(
             inbox_address=inbox,
             app_password=password,
@@ -372,13 +409,19 @@ def _gmail(core: Any, req: P.Execute, event: Any, started: str) -> EventResult:
             subject_contains=str(params.get("subject_contains") or ""),
             poll_interval_ms=int(params.get("poll_interval_ms") or 3000),
             max_wait_ms=int(params.get("max_wait_ms") or 90_000),
-            deadline_ts=deadline_ts,
+            deadline_ts=min(deadline_ts or float("inf"), time.time() + max(0.0, end - time.monotonic())),
+            should_stop=stopped, diagnostics=diagnostics,
         )
     except GmailOtpError as exc:
         text = str(exc)
         if "未配置" in text:
             text = _GMAIL_HINT
-        return _fail(event, started, text, "plugin.gmail.fetch_otp", t0=t0)
+        result = _fail(event, started, text, "plugin.gmail.fetch_otp", t0=t0)
+        result.raw_response['otp_diagnostics'] = {k: v for k, v in diagnostics.items()
+            if k in {'connection_attempts', 'reconnects', 'error_code', 'phase'}}
+        return result
+    if stopped() or (deadline_ts and time.time() >= deadline_ts):
+        return _fail(event, started, 'otp_wait_stopped', 'plugin.gmail.fetch_otp', t0=t0)
     return make_event_result(
         event,
         status=EventStatus.PASS,
@@ -386,7 +429,7 @@ def _gmail(core: Any, req: P.Execute, event: Any, started: str) -> EventResult:
         started_at=started,
         elapsed_ms=int((time.time() - t0) * 1000),
         summary="已取到验证码",
-        raw_response={"code": code, "source": "gmail"},
+        raw_response={"code": code, "source": "gmail", "otp_diagnostics": diagnostics},
     )
 
 

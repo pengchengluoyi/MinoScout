@@ -158,3 +158,102 @@ def registration_shadow(host, devices, runtime_capabilities) -> dict:
     return {"mode": "shadow", "target_version": PLATFORM_CONTRACT_VERSION,
             "activated": False, "observed_device_count": len(devices),
             "issues": dict(sorted(counts.items())), "migration_required": bool(counts)}
+
+
+def native_request_platform(request: dict, *, node_id: str, host_system: str) -> str:
+    """Validate canonical native requests without interpreting aliases or SN prefixes."""
+    platform = execute_platform(request)
+    if platform not in NATIVE_PLATFORMS:
+        raise PlatformContractError("native_platform_required")
+    device_identity({"platform": platform, "sn": request.get("sn"),
+                     "session_key": (request.get("device_hint") or {}).get("session_key")},
+                    node_id=node_id, host={"os": host_os_from_system(host_system)})
+    return platform
+
+
+def runtime_capabilities_contract(rows, *, system):
+    """Validate nested declarations before they can influence routing or revision."""
+    if not isinstance(rows, list) or len(rows) > 256:
+        raise PlatformContractError("runtime_capabilities_invalid")
+    seen = set()
+    budget = [4096]
+    def walk(value, depth=0):
+        budget[0] -= 1
+        if depth > 12 or budget[0] < 0:
+            raise PlatformContractError("capability_contract_too_large")
+        if isinstance(value, dict):
+            if any(k in value for k in ("os", "native_os", "device_platform", "target_platform")):
+                raise PlatformContractError("duplicate_platform_field")
+            if "platform" in value:
+                target_platform(value["platform"])
+            if "platforms" in value or "platform_scope" in value:
+                coverage(value)
+            for child in value.values():
+                walk(child, depth + 1)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child, depth + 1)
+    for row in rows:
+        if not isinstance(row, dict):
+            raise PlatformContractError("runtime_capability_invalid")
+        walk(row)
+        cap, executor = row.get("id"), row.get("executor")
+        if not isinstance(cap, str) or not cap or not isinstance(executor, str) or not executor:
+            raise PlatformContractError("runtime_capability_identity_required")
+        if "platform" in row:
+            platforms = [target_platform(row["platform"])]
+        else:
+            c = coverage(row)
+            platforms = list(TARGET_PLATFORMS) if c["platform_scope"] == "all" else c["platforms"]
+        for p in platforms:
+            key = (cap, executor, p)
+            if key in seen:
+                raise PlatformContractError("runtime_capability_duplicate")
+            seen.add(key)
+            if executor == "desktop" and (p not in NATIVE_PLATFORMS or p != system):
+                raise PlatformContractError("executor_platform_conflict")
+            if executor in {"adb", "playwright"} and p != {"adb": "android", "playwright": "web"}[executor]:
+                raise PlatformContractError("executor_platform_conflict")
+        if cap != "input_text":
+            continue
+        if type(row.get("contract_version")) is not int or row["contract_version"] != 2:
+            raise PlatformContractError("input_contract_version_invalid")
+        combos = row.get("supported_combinations")
+        if not isinstance(combos, list) or not combos or len(combos) > 16:
+            raise PlatformContractError("input_combinations_invalid")
+        allowed = {"desktop": {"current_focus": {"replace", "append"}},
+                   "adb": {"current_focus": {"append"}, "coordinate": {"replace"}},
+                   "playwright": {"current_focus": {"replace", "append"}, "coordinate": {"replace"}, "node": {"replace"}}}.get(executor, {})
+        modes_seen = set()
+        for combo in combos:
+            if not isinstance(combo, dict) or set(combo) != {"target_mode", "write_modes"}:
+                raise PlatformContractError("input_combination_invalid")
+            mode, writes = combo["target_mode"], combo["write_modes"]
+            if not isinstance(mode, str) or mode not in allowed or mode in modes_seen:
+                raise PlatformContractError("input_target_mode_invalid")
+            modes_seen.add(mode)
+            if (not isinstance(writes, list) or not writes or
+                any(not isinstance(w, str) or w not in allowed[mode] for w in writes) or
+                len(set(writes)) != len(writes)):
+                raise PlatformContractError("input_write_modes_invalid")
+
+
+def validate_platform_announcement(message, *, fallback_host=None):
+    from dataclasses import asdict
+    if type(message.platform_contract_version) is not int or message.platform_contract_version != 1:
+        raise PlatformContractError("platform_contract_upgrade_required")
+    host = message.host or fallback_host
+    if not isinstance(host, dict):
+        raise PlatformContractError("host_os_invalid", "host.os")
+    system = host_os(host.get("os"))
+    if getattr(message, "platform", ""):
+        raise PlatformContractError("duplicate_platform_field", "REGISTER.platform")
+    devices = getattr(message, "devices", getattr(message, "device_delta", []))
+    seen = set()
+    for device in devices:
+        wire = {k: v for k, v in asdict(device).items() if k != "os" or v}
+        device_identity(wire, node_id=message.node_id, host=host)
+        if device.sn in seen:
+            raise PlatformContractError("device_identity_duplicate", "sn")
+        seen.add(device.sn)
+    runtime_capabilities_contract(message.runtime_capabilities, system=system)

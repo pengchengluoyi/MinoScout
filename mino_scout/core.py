@@ -48,6 +48,8 @@ _PLATFORM_EXECUTOR_ORDER: dict[str, tuple[str, ...]] = {
     "web": ("playwright",),
     "playwright": ("playwright",),
     "desktop": ("desktop",),
+    "mac": ("desktop",),
+    "win": ("desktop",),
     "other": (),
 }
 
@@ -417,9 +419,19 @@ class ScoutCore:
                 error=msg,
                 raw_response={"command": cmd},
             )
+        if req.platform in {"mac", "win"} or req.sn.startswith(("mac:", "win:")):
+            import platform
+            from mino_scout.platform_contract import native_request_platform
+            try:
+                native_request_platform({"platform": req.platform, "sn": req.sn, "device_hint": req.device_hint},
+                                        node_id=self.node_id, host_system=platform.system())
+            except ValueError as exc:
+                return make_event_result(_event_from_execute(req), status=EventStatus.BLOCKED, executor_used="core",
+                    started_at=now_iso(), elapsed_ms=0, error=str(exc), summary="原生平台或设备身份不匹配",
+                    raw_response={"execution": {"execution_started": "no", "phase": "resolve", "reason_code": "native_identity_conflict"}})
         if req.sn.startswith("desktop:") and (req.sn != f"desktop:{self.node_id}:console" or req.platform != "desktop"):
             return make_event_result(_event_from_execute(req), status=EventStatus.BLOCKED, executor_used="core", started_at=now_iso(), elapsed_ms=0, error="Desktop 目标或平台不匹配", summary="Desktop 目标或平台不匹配")
-        if req.platform == "desktop" and cap == "hierarchy":
+        if req.platform in {"desktop", "mac", "win"} and cap == "hierarchy":
             return make_event_result(_event_from_execute(req), status=EventStatus.BLOCKED, executor_used="desktop", started_at=now_iso(), elapsed_ms=0, error="Desktop 首版仅开放 visual 执行", summary="Desktop 首版仅开放 visual 执行")
         if cap == "probe":
             return self._dispatch_probe(req)
@@ -579,7 +591,7 @@ class ScoutCore:
         device = _device_from_execute(req, node_id=self.node_id)
         params = dict(req.params or {})
         ratio = params.get("compress_ratio")
-        compress = float(ratio if ratio is not None else (1.0 if device.platform == "desktop" else 2.0))
+        compress = float(ratio if ratio is not None else (1.0 if device.platform in {"desktop", "mac", "win"} else 2.0))
         shot = SCREEN.capture(
             device,
             timeout_sec=float(req.timeout_sec or 15.0),
@@ -742,6 +754,8 @@ class ScoutCore:
                     reason="" if available else reason,
                 )
             )
+        from mino_scout.plugins.service import executor_manifest as plugin_executor_manifest
+        execs.append(plugin_executor_manifest(ready=self._plugins_ready))
         return execs
 
     def discover_devices(self) -> list[P.DeviceManifest]:
@@ -832,7 +846,7 @@ class ScoutCore:
         get_desktop_runtime().cancel(run_id)
         rid = str(run_id or "").strip()
         if rid:
-            fake = P.Execute(run_id=rid, step_idx=-1, capability_id="cancel_run", platform="web")
+            fake = P.Execute(run_id=rid, step_idx=-1, sn="", capability_id="cancel_run", platform="web")
             try:
                 self._playwright_executor(fake).submit(lambda: _release_playwright_run(rid)).result(timeout=12.0)
             except Exception as exc:
@@ -919,6 +933,7 @@ class ScoutCore:
             node_id=self.node_id,
             node_connection_generation=self.binding_guard.connection_generation,
             **epoch,
+            platform_contract_version=1,
             uptime_sec=int(time.time() - self._started),
             busy=bool(active),
             active_runs=active,
@@ -1013,6 +1028,11 @@ def _event_from_execute(req: P.Execute) -> PlanEvent:
 
 def _device_from_execute(req: P.Execute, *, node_id: str = "") -> DeviceRef:
     hint = dict(req.device_hint or {})
+    if req.platform in {"mac", "win"} or str(req.sn).startswith(("mac:", "win:")):
+        import platform as host_platform
+        from mino_scout.platform_contract import native_request_platform
+        native_request_platform({"platform": req.platform, "sn": req.sn, "device_hint": hint},
+                                node_id=node_id, host_system=host_platform.system())
     platform = _normalize_platform(str(req.platform or hint.get("platform") or ""))
     sn = str(req.sn or req.device_id or hint.get("sn") or hint.get("device_id") or "").strip()
     device_id = str(req.device_id or sn).strip()
@@ -1192,7 +1212,8 @@ def _discover_devices(executors: dict[str, Executor], *, scout_id: str) -> list[
     remote(ClawNode) / iOS 的发现依赖 EngineFactory 与 clawnode/ 模块（E3），未搬。
     """
     from mino_scout.desktop import get_desktop_runtime
-    out: list[P.DeviceManifest] = [get_desktop_runtime().manifest(scout_id)]
+    native = get_desktop_runtime().manifest(scout_id)
+    out: list[P.DeviceManifest] = [native] if native is not None else []
     if "adb" in executors:
         out.extend(_discover_adb_devices())
     if "playwright" in executors:

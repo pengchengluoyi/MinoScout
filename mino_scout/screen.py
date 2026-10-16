@@ -277,7 +277,7 @@ def capture(
     `prefer` 保留签名兼容，不再用来把 adb 和 playwright 串成一条 fallback。
     """
     started = time.time()
-    if device.platform == "desktop":
+    if device.platform in {"desktop", "mac", "win"}:
         from mino_scout.desktop import get_desktop_runtime
         try:
             ratio = float(compress_ratio)
@@ -323,7 +323,7 @@ def capture(
         shot = CapturedScreen(ok=False, source="screen", error="设备平台没有实现截图通道")
 
     if shot.has_image():
-        if device.platform == "desktop" or allow_blank or not png_is_blank(base64.b64decode(shot.image_base64)):
+        if device.platform in {"desktop", "mac", "win"} or allow_blank or not png_is_blank(base64.b64decode(shot.image_base64)):
             SLog.i(
                 TAG,
                 f"capture ok via {shot.source} {shot.width}x{shot.height} "

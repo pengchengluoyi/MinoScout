@@ -23,7 +23,7 @@ class DesktopExecutor:
         started, tick = now_iso(), time.monotonic()
         status, error, data = EventStatus.PASS, "", {}
         try:
-            if ctx.device.platform != "desktop":
+            if ctx.device.platform not in {"desktop", "mac", "win"}:
                 raise DesktopUnavailable("不是 Desktop 设备")
             data = get_desktop_runtime().action(event.capability_id, dict(event.params or {}), ctx.device.extra, ctx.run_id)
             effect = (data.get("cua_action") or {}).get("effect")

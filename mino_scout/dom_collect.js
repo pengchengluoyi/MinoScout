@@ -34,11 +34,11 @@
     const ref = `${snapshot}:${out.length}`;
     const checkable = ['checkbox','radio','switch'].includes(role) || ['checkbox','radio'].includes(typ);
     const ariaChecked = el.getAttribute('aria-checked');
-    const checked = checkable ? ariaChecked ? ariaChecked==='mixed'?null:ariaChecked==='true' : !!el.checked : false;
+    const checked = checkable ? (ariaChecked === 'true' ? true : ariaChecked === 'false' ? false : ariaChecked !== null ? null : ['checkbox','radio'].includes(typ) ? !!el.checked : null) : null;
     const enabled = !el.disabled && el.getAttribute('aria-disabled')!=='true' && !el.closest('[inert]');
     const node = {node_ref:ref,snapshot_id:snapshot,resource_id:el.id||'',text,value,sensitive,
       content_desc:name,class:typ?`${tag}:${typ}`:tag,role,clickable,editable,enabled,checkable,checked,
-      checked_known:!checkable || checked!==null,selected:el.getAttribute('aria-selected')==='true',
+      checked_known:checkable && checked!==null,selected:el.getAttribute('aria-selected')==='true',
       focused:doc.activeElement===el,visible:true,bounds:bounds.map(Math.round),
       center:[Math.round((bounds[0]+bounds[2])/2),Math.round((bounds[1]+bounds[3])/2)],frame_path:path,cross_origin:cross};
     if (!cross) state.elements.set(ref, {el,bounds:node.bounds,tag,type:typ,name});
@@ -64,6 +64,53 @@
     }
   }
   walk(document,0,{x:0,y:0},viewport,'');
+  // Independent scope facts: compact-tree absence is never proof of form absence.
+  const credentialForms = Array.from(document.forms).filter(f =>
+    f.querySelector('input[type="email"],input[type="tel"],input[type="password"],input[autocomplete="one-time-code"]') &&
+    f.querySelector('button[type="submit"],input[type="submit"],button:not([type])'));
+  const form = credentialForms.length === 1 ? credentialForms[0] : null;
+  const fr = form?.getBoundingClientRect();
+  const opaque = Array.from(document.querySelectorAll('*')).some(e =>
+    e.shadowRoot || e.tagName.includes('-') || ['CANVAS','SVG','IFRAME','FRAME','IMG'].includes(e.tagName) ||
+    ((!['INPUT','TEXTAREA','SELECT','BUTTON','A','LABEL'].includes(e.tagName)) &&
+     (e.onclick != null || getComputedStyle(e).cursor === 'pointer')));
+  const formControls = {version:1,snapshot_id:snapshot,credential_forms:credentialForms.length,
+    complete:Boolean(form && fr.width>0 && fr.height>0 && fr.left>=0 && fr.top>=0 && fr.right<=innerWidth && fr.bottom<=innerHeight &&
+      document.readyState==='complete' && getComputedStyle(form).visibility==='visible' &&
+      Array.from(state.elements.values()).some(v => form.contains(v.el) && v.el.matches('input[type="email"],input[type="tel"],input[type="password"],input[autocomplete="one-time-code"]')) && !opaque && !truncated && missing.size===0),
+    checkable_count:document.querySelectorAll('input[type="checkbox"],input[type="radio"],[role="checkbox"],[role="radio"],[role="switch"]').length};
+  // A visible form/dialog is only a candidate scope. Nexus must independently
+  // confirm login purpose and visual absence; these facts never imply consent.
+  const isVisible = e => {
+    const r=e.getBoundingClientRect();
+    for (let p=e;p;p=p.parentElement) {
+      const s=getComputedStyle(p);
+      if (p.hidden || p.getAttribute('aria-hidden')==='true' || s.display==='none' ||
+          ['hidden','collapse'].includes(s.visibility) || Number(s.opacity)===0) return false;
+    }
+    return r.width>1 && r.height>1;
+  };
+  const candidates = Array.from(document.querySelectorAll('form,[role="dialog"],dialog[open]')).filter(e =>
+    isVisible(e) && Array.from(e.querySelectorAll('input,textarea')).some(n =>
+      isVisible(n) && !['hidden','checkbox','radio','button','submit','file'].includes(n.type)) &&
+    Array.from(e.querySelectorAll('button,[role="button"],input[type="submit"]')).some(isVisible));
+  const scopes=candidates.filter(e => !candidates.some(other => other!==e && e.contains(other)));
+  const scope=scopes.length===1?scopes[0]:null, sr=scope?.getBoundingClientRect();
+  const descendants=scope?Array.from(scope.querySelectorAll('*')).filter(isVisible):[];
+  const full = e => {const r=e.getBoundingClientRect();return r.left>=0 && r.top>=0 &&
+    r.right<=innerWidth && r.bottom<=innerHeight && r.left>=sr.left-1 && r.top>=sr.top-1 &&
+    r.right<=sr.right+1 && r.bottom<=sr.bottom+1 &&
+    e.scrollWidth<=e.clientWidth+1 && e.scrollHeight<=e.clientHeight+1;};
+  const occluded=scope && [0.1,0.5,0.9].some(x => [0.1,0.5,0.9].some(y => {
+    const top=document.elementFromPoint(sr.left+sr.width*x,sr.top+sr.height*y);
+    return !top || !(top===scope || scope.contains(top));
+  }));
+  const loginScope={version:1,snapshot_id:snapshot,candidate_count:scopes.length,
+    bounds:sr?[sr.left,sr.top,sr.right,sr.bottom].map(Math.round):[],
+    complete:Boolean(scope && document.readyState==='complete' && full(scope) && !occluded &&
+      !truncated && missing.size===0 && descendants.every(full) &&
+      !descendants.some(e => e.shadowRoot || e.tagName.includes('-') || ['IFRAME','FRAME','CANVAS'].includes(e.tagName))),
+    checkable_count:scope?scope.querySelectorAll('input[type="checkbox"],input[type="radio"],[role="checkbox"],[role="radio"],[role="switch"],[aria-checked]').length:0};
   return {nodes:out,observation:{version:1,snapshot_id:snapshot,scope:'viewport',truncated,
-    missing:Array.from(missing),node_count:out.length,node_limit:MAX,source:'playwright'}};
+    missing:Array.from(missing),node_count:out.length,node_limit:MAX,source:'playwright',viewport_wh:[innerWidth,innerHeight],form_controls:formControls,login_scope:loginScope}};
 }

@@ -5,9 +5,12 @@ from typing import Any
 
 
 def runtime_input_capabilities() -> list[dict[str, Any]]:
-    return [
+    import platform
+    from mino_scout.platform_contract import host_os_from_system
+    system = host_os_from_system(platform.system())
+    rows = [
         {
-            "id": "input_text", "executor": "desktop", "platform": "desktop", "contract_version": 2,
+            "id": "input_text", "executor": "desktop", "platform": system, "contract_version": 2,
             "supported_combinations": [{"target_mode": "current_focus", "write_modes": ["replace", "append"]}],
         },
         {
@@ -32,3 +35,5 @@ def runtime_input_capabilities() -> list[dict[str, Any]]:
             ],
         },
     ]
+
+    return [row for row in rows if row["executor"] != "desktop" or system in {"mac", "win"}]

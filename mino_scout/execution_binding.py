@@ -58,6 +58,12 @@ class BindingGuard:
             manifest = next((row for row in self.executors if row["id"] == order[0]), None)
             if not manifest or manifest.get("available") is not True:
                 return "bound_executor_unavailable"
+            # Bound plugin dispatch has one named read implementation. Device
+            # executors and requires_caps cannot impersonate this host channel.
+            if req.capability_id.startswith("plugin.") or order[0] == "host_plugin":
+                if (req.capability_id != "plugin.gmail.fetch_otp" or order != ["host_plugin"]
+                        or req.low_level != {}):
+                    return "binding_plugin_not_supported"
             from mino_scout.web_v5 import READS, WRITES, CLEANUP
             strict = req.device_hint.get("execution_mode") == "v5"
             provides = set(manifest.get("provides") or [])
@@ -69,6 +75,11 @@ class BindingGuard:
                 provided = req.capability_id in READS | WRITES | CLEANUP
             if not provided:
                 return "bound_event_unavailable"
+            if req.capability_id == "plugin.gmail.fetch_otp":
+                if (selected.get("id") != "program.v1:plugin.gmail.fetch_otp"
+                        or req.operation_ref not in {"prep:plugin.gmail.fetch_otp", "do:plugin.gmail.fetch_otp"}
+                        or not req.run_id):
+                    return "binding_plugin_contract_invalid"
             if req.capability_id == "input_text":
                 if type(req.input_contract_version) is not int or req.input_contract_version != 2:
                     return "input_contract_unsupported"

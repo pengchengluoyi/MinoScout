@@ -324,7 +324,8 @@ class NodeTransport:
         payload = P.Register(
             node_id=self.core.node_id,
             token=self.token,
-            platform=platform.system().lower(),
+            platform="",  # host.os is the only host system field
+            platform_contract_version=1,
             arch=platform.machine(),
             scout_version=report_scout_version(),
             account_isolation_version=1,
@@ -335,8 +336,10 @@ class NodeTransport:
             plugins=[],  # 首次注册不得携带未验证 owner 的旧插件配置。
             runtime_capabilities=runtime_caps,
             **epoch,
-            host=await asyncio.to_thread(get_desktop_runtime().host, self.core.node_id, next((d for d in devices or [] if d.platform == "desktop"), None)),
+            host=await asyncio.to_thread(get_desktop_runtime().host, self.core.node_id, next((d for d in devices or [] if d.platform in {"mac", "win"}), None)),
         )
+        from mino_scout.platform_contract import validate_platform_announcement
+        validate_platform_announcement(payload)
         reply = await self._request(P.MsgType.REGISTER, payload)
         if reply is None:
             raise RuntimeError("REGISTER 没等到 REGISTERED")
@@ -361,6 +364,8 @@ class NodeTransport:
                 f"协议版本不一致：Scout v{P.PROTOCOL_VERSION} vs Nexus v{reg.protocol_version}。"
                 "按协议 §7 不做降级协商"
             )
+        if reg.platform_contract_version != 1 or type(reg.platform_contract_version) is not int:
+            raise RuntimeError("Nexus 未确认平台合同 v1，请升级 Nexus")
         self.core.binding_guard.set_connection(reg.node_connection_generation)
         self._session_token = reg.session_token
         self.heartbeat_sec = reg.heartbeat_interval_sec or self.heartbeat_sec
@@ -496,13 +501,13 @@ class NodeTransport:
         host = await asyncio.to_thread(sample_host, mode=self.core.host_mode())
         hb = self.core.heartbeat()
         from mino_scout.desktop import get_desktop_runtime
-        host.update(await asyncio.to_thread(get_desktop_runtime().host, self.core.node_id, next((d for d in devices or [] if d.platform == "desktop"), None)))
+        host.update(await asyncio.to_thread(get_desktop_runtime().host, self.core.node_id, next((d for d in devices or [] if d.platform in {"mac", "win"}), None)))
         hb.host = host
         hb.device_delta = delta
         if devices is not None:
             hb.executors = await asyncio.to_thread(self.core.executor_manifest)
             hb.executor_snapshot_version = 1
-            desktop = next((d for d in devices if d.platform == "desktop"), None)
+            desktop = next((d for d in devices if d.platform in {"mac", "win"}), None)
             if desktop is not None:
                 from mino_scout.executors.desktop_executor import DesktopExecutor
                 # HEARTBEAT.executors is a full snapshot. Preserve every registered
@@ -517,6 +522,8 @@ class NodeTransport:
         hb.capability_revision = epoch["capability_revision"]
         hb.execution_binding_version = epoch["execution_binding_version"]
         hb.node_connection_generation = self.core.binding_guard.connection_generation
+        from mino_scout.platform_contract import validate_platform_announcement
+        validate_platform_announcement(hb)
         await self._send(P.MsgType.HEARTBEAT, hb)
         self._connection("heartbeat", connected=True, registered=True)
         try:

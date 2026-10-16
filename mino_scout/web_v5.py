@@ -229,6 +229,8 @@ class WebV5Runtime:
     def close(self, run, deadline):
         with self.condition:
             self.closed_runs.add(run)
+            # A queued run has no lane to kill, but its waiter must still wake.
+            self.condition.notify_all()
             lane = next((x for x in self.lanes if x["run"] == run), None)
         if lane is None:
             return True
@@ -300,12 +302,16 @@ class WebV5Runtime:
         if req.device_hint.get("headless") is not True:
             return {"status": "fail", "data": response(reason="headless_required")}
         boundary = False
+        ipc_sent = False
         lane = None
         try:
             i, lane = self._lease(req.run_id, deadline)
             if not lane["lock"].acquire(blocking=False):
                 raise ValueError("lane_request_inflight")
             try:
+                with self.condition:
+                    if req.run_id in self.closed_runs or lane["run"] != req.run_id or lane["quarantined"]:
+                        raise ValueError("run_write_stopped")
                 # Queue/lane waiting must not let an expired binding reach a worker.
                 reason = admit() if callable(admit) else ""
                 if reason:
@@ -329,10 +335,21 @@ class WebV5Runtime:
                 reason = admit() if callable(admit) else ""
                 if reason:
                     return {"status": "blocked", "data": response(reason=reason)}
-                lane["conn"].send(asdict(req))
+                with self.condition:
+                    # Linearize cancellation against IPC. Cancellation can arrive
+                    # while the process starts or the admission callback runs.
+                    if req.run_id in self.closed_runs or lane["run"] != req.run_id or lane["quarantined"]:
+                        raise ValueError("run_write_stopped")
+                    # A failed send may have delivered bytes; never classify it
+                    # as a known pre-write refusal or permit the run to reopen.
+                    ipc_sent = True
+                    lane["conn"].send(asdict(req))
                 while True:
                     if not lane["conn"].poll(max(0, deadline - time.monotonic())):
                         reason = "effect_unknown"
+                        with self.condition:
+                            self.closed_runs.add(req.run_id)
+                            self.condition.notify_all()
                         self._kill(lane, deadline)
                         return {"status": "fail", "data": response("yes" if boundary else "unknown",
                                 "action" if boundary else "resolve", reason, lane_id=i)}
@@ -340,10 +357,21 @@ class WebV5Runtime:
                     if result.get("boundary"):
                         boundary = True
                         continue
+                    with self.condition:
+                        if req.run_id in self.closed_runs:
+                            return {"status": "blocked", "data": response("yes" if boundary else "unknown",
+                                    "transport", "run_write_stopped", lane_id=i)}
                     result["data"]["lane_id"] = i
                     return result
+            except Exception:
+                if ipc_sent:
+                    with self.condition:
+                        self.closed_runs.add(req.run_id)
+                        self.condition.notify_all()
+                    self._kill(lane, deadline)
+                raise
             finally:
                 lane["lock"].release()
         except Exception as exc:
             reason = str(exc) if isinstance(exc, ValueError) else "effect_unknown"
-            return {"status": "fail", "data": response("yes" if boundary else "no" if lane is None else "unknown", "transport", reason)}
+            return {"status": "fail", "data": response("yes" if boundary else "unknown" if ipc_sent else "no", "transport", reason)}

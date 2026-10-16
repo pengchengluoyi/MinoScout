@@ -241,13 +241,17 @@ class DesktopRuntime:
             return {**state, "session_key": "console", "session_generation": self._generation,
                     "blocked_reason": state.get("probe_error") or _REASONS[state["state"]]}
 
-    def manifest(self, node_id: str) -> P.DeviceManifest:
+    def manifest(self, node_id: str) -> P.DeviceManifest | None:
+        from mino_scout.platform_contract import host_os_from_system, native_sn
+        target = host_os_from_system(platform.system())
+        if target not in {"mac", "win"}:
+            return None
         state = self.state()
         ready = state["state"] == "ready"
         return P.DeviceManifest(
-            sn=f"desktop:{node_id}:console", platform="desktop", model="PC 桌面",
+            sn=native_sn(target, node_id), platform=target, model="Mac 桌面" if target == "mac" else "Windows 桌面",
             channels={"desktop": "connected" if ready else "disconnected"},
-            os=state["os"], session_key="console", session_generation=state["session_generation"],
+            session_key="console", session_generation=state["session_generation"],
             desktop_state=state["state"], blocked_reason=state["blocked_reason"],
             capabilities=list(DESKTOP_CAPS) if ready else [],
             readiness={"permissions": state.get("permissions", {}), "arch": state["arch"],
@@ -256,7 +260,12 @@ class DesktopRuntime:
 
     def host(self, node_id: str, dev: P.DeviceManifest | None = None) -> dict[str, Any]:
         dev = dev or self.manifest(node_id)
-        return {"os": dev.os, "arch": platform.machine(), "hostname": platform.node(),
+        from mino_scout.platform_contract import host_os_from_system
+        system = host_os_from_system(platform.system())
+        if dev is None:
+            return {"os": system, "arch": platform.machine(), "hostname": platform.node(),
+                    "desktop": {"state": "unsupported", "blocked_reason": _REASONS["unsupported"]}}
+        return {"os": system, "arch": platform.machine(), "hostname": platform.node(),
                 "desktop": {"state": dev.desktop_state, "blocked_reason": dev.blocked_reason,
                             "session_key": dev.session_key, "session_generation": dev.session_generation,
                             "readiness": dev.readiness}}
@@ -538,6 +547,8 @@ class DesktopRuntime:
             self._targets[run_id] = {"package": package, "target": target}
             self._clear_focus(run_id)
             return {
+                "execution": {"execution_started": "no" if existing else "yes", "phase": "completed",
+                              "source": "desktop.cua.v1"},
                 "cua_action": {"effect": "confirmed", "route": "reuse_running_app" if existing else "launch_app",
                                "evidence": [{"kind": "window_identity", "detail_omitted": False}]},
                 "capture_id": (obs or {}).get("capture_id", ""), "session_generation": hint["session_generation"],
@@ -631,7 +642,10 @@ class DesktopRuntime:
             self._clear_focus(run_id)
         if getattr(result, "is_error", False):
             evidence["effect"] = "refused"
-        return {"cua_action": evidence, "capture_id": obs["capture_id"], "snapshot_id": obs["snapshot_id"],
+        # This receipt is emitted only after the actual driver call returned.
+        # Timeout/exception paths retain unknown; an aggregate PASS never invents it.
+        return {"execution": {"execution_started": "yes", "phase": "completed", "source": "desktop.cua.v1"},
+                "cua_action": evidence, "capture_id": obs["capture_id"], "snapshot_id": obs["snapshot_id"],
                 "session_generation": hint["session_generation"], "target": dict(bound), "capture_scope": "window"}
 
     def cancel(self, run_id: str):

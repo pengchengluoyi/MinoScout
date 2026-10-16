@@ -125,6 +125,7 @@ class Register:
     scout_process_generation: str = ""
     capability_revision: str = ""
     execution_binding_version: int = 0
+    platform_contract_version: int = 0
 
 
 @dataclass
@@ -137,6 +138,7 @@ class Registered:
     reason: str = ""
     warnings: list[str] = field(default_factory=list)
     node_id: str = ""
+    platform_contract_version: int = 0
     node_token: str = ""
     owner_user_id: str = ""
     node_connection_generation: str = ""
@@ -171,6 +173,7 @@ class Heartbeat:
     node_connection_generation: str = ""
     capability_revision: str = ""
     execution_binding_version: int = 0
+    platform_contract_version: int = 0
 
 
 @dataclass
@@ -267,7 +270,7 @@ def _encode(value: Any) -> Any:
             raw = getattr(value, f.name)
             if f.name == "data" and not raw:
                 continue
-            if f.name in ("device_id", "platform", "node_id", "node_token") and not raw:
+            if f.name in ("device_id", "platform", "node_id", "node_token") and not raw and not (isinstance(value, Register) and f.name == "platform"):
                 continue
             if f.name == "host" and not raw:
                 continue
