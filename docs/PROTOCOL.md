@@ -701,3 +701,22 @@ hierarchy observation v1 可选增加 viewport_wh（CSS 像素）及 login_scope
 Gmail 在原请求/收件地址/发码窗口/截止时间内允许最多两次只读重连，未恢复就失败；不重新发码、不重放父子绑定请求。瞬时 DNS、连接超时/断连/拒绝/网络不可达可恢复；认证、协议、TLS/证书及未知错误立即失败。错误码区分以上类别及读取超时。otp_diagnostics 仅携带 connection_attempts/reconnects/error_code/phase，不含原始异常、账号或验证码。取消及截止时间继续约束所有读取及退避。
 
 补充：login_scope 支持含凭据输入的最外层有界自定义容器（不依赖 form/ARIA）；scope_kind、incomplete_reasons 仅为结构诊断。多个范围、滚动/越界/遮挡/不透明内容仍拒绝。SVG defs/clipPath/mask/pattern/symbol 非绘制定义不计可见范围；非滚动装饰的内在溢出不等于表单裁切，实际绘制边界及可滚动内容仍核对。自定义范围必须经截图独立确认完整登录界面及无协议控件，不能只按 DOM 零计数跳过。
+
+
+## V6 B：开发准备 v1
+
+保持现有 wire 版本与 EXECUTE/RESULT 结构。新增程序系统能力 `node.ide_prepare`，
+REGISTER/HEARTBEAT runtime_capabilities 声明 id、executor=ide、contract_version=1。
+旧 Scout 无该声明时 Nexus 返回 unsupported，禁止按版本号猜支持。
+请求 run_id 为空、step_idx 为辅助负编号，不冒充用例 run；executor_order=[ide]，
+selected_impl 显式携带 runs_on=scout 和 params/result_contract.version=1。
+params 必含稳定 operation_id、action；动作 check/execute/restart/build/probe 接收已授权的 binding：
+connection_id/revision、project_path、source_dir、配置名、测试目标及执行许可。
+save_connection/list_connections 仅通过有项目维护及节点归属权限的 HTTP 入口，连接存 Scout JSON。
+RESULT.extra.development 返回 state、reason、检查结果或 receipt（source/output/truncated/timedOut/exitCode）。
+IDE HTTP 无回执记 unknown，不自动重发；有 timedOut=true 的回执继续就绪探测；非零 exitCode 失败。
+Scout 持久最小幂等回执，重复 operation_id 参数不符拒绝；Nexus SQLite 持久完整业务记录。
+node.ide_prepare 不进入 UI 动作 fallback。执行与重启互斥于节点设备操作，同机 IDE 跨 Scout 文件锁。
+macOS/Linux 停止须核对端口、cwd、用户、PyCharm 父链及 PID/create_time，仅 SIGTERM。
+MCP 终端仅接受程序生成的固定停止动作，不接受用户命令。首期 HTTP 流使用现有 httpx，
+无新增 runtime 依赖；SSE transport、认证 header 和 Windows 自动停止尚不支持。

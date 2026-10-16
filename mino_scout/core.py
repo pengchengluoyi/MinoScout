@@ -162,6 +162,28 @@ class ScoutCore:
     # ---------------- EXECUTE（唯一 dispatch） ----------------
 
     def execute(self, req: P.Execute) -> EventResult:
+        if req.capability_id == "node.ide_prepare":
+            from mino_scout.ide_prepare import dispatch
+            try:
+                return dispatch(self, req)
+            except Exception as exc:
+                return make_event_result(_event_from_execute(req), status=EventStatus.BLOCKED,
+                    executor_used="ide", started_at=now_iso(), elapsed_ms=0,
+                    summary="开发准备回执不可确认", error=type(exc).__name__)
+        with self._lock:
+            if getattr(self, "_development_busy", False) and req.capability_id != "cancel_run":
+                return make_event_result(_event_from_execute(req), status=EventStatus.BLOCKED,
+                    executor_used="core", started_at=now_iso(), elapsed_ms=0,
+                    summary="开发环境正在准备，稍后再运行测试",
+                    raw_response={"execution": {"execution_started": "no", "reason_code": "development_busy"}})
+            self._development_io = getattr(self, "_development_io", 0) + 1
+        try:
+            return self._execute_guarded(req)
+        finally:
+            with self._lock:
+                self._development_io -= 1
+
+    def _execute_guarded(self, req: P.Execute) -> EventResult:
         from mino_scout.secret_redaction import register_inputs, sanitize
         from mino_scout.web_v5 import CLEANUP, READS, WRITES
         register_inputs(req.params)

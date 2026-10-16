@@ -131,6 +131,8 @@ def resolve_status_versions(
         "version": version,
         "process_stale": process_stale if running else None,
     }
+    if running and isinstance(sidecar, dict):
+        out["running_build"] = dict(sidecar.get("process_build") or {})
     if install_skew:
         out["install_skew"] = True
         out["layer_app"] = layer_sem
@@ -154,3 +156,18 @@ def needs_process_reload(*, app_layer_key: str = "") -> bool:
     if disk and disk != imp:
         return True
     return False
+
+
+def _read_build_identity() -> dict[str, Any]:
+    import json
+    path = Path(__file__).with_name("BUILD.json")
+    if not path.is_file():
+        return {"build_id":"source-unpackaged", "source_commit":"", "dirty":True}
+    data = json.loads(path.read_text())
+    return {key:data[key] for key in ("build_id", "source_commit", "dirty")}
+
+# Capture at module import, never label an old process with newly installed code.
+_PROCESS_BUILD = _read_build_identity()
+
+def process_build_identity() -> dict[str, Any]:
+    return dict(_PROCESS_BUILD)

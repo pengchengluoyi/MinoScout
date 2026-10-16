@@ -29,6 +29,7 @@ import hashlib
 import json
 import os
 import platform
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -165,10 +166,6 @@ def _add_tree(zf: zipfile.ZipFile, src: Path, prefix: str) -> None:
 
 
 def _ensure_binary() -> Path:
-    dist = frozen_dir()
-    exe = frozen_exe(dist)
-    if exe.is_file():
-        return dist
     from build_binary import build  # noqa: E402
 
     return build(clean=False)
@@ -335,7 +332,7 @@ def pack(
 
     frozen = frozen_dir()
     use_binary = frozen_exe(frozen).is_file()
-    if require_binary and not use_binary:
+    if require_binary:
         frozen = _ensure_binary()
         use_binary = frozen_exe(frozen).is_file()
     if require_binary and not use_binary:
@@ -362,6 +359,13 @@ def pack(
             "app 层是纯源码、不进 PYZ（见 build_binary.py 的模块 docstring）。"
             "重跑 build_binary.py 生成。"
         )
+    commit = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
+    dirty = bool(subprocess.check_output(["git", "-C", str(ROOT), "status", "--porcelain"], text=True).strip())
+    build = {"build_id":ver + "-" + commit[:12] + ("-local" if dirty else ""), "source_commit":commit, "dirty":dirty}
+    (frozen / "app/mino_scout/BUILD.json").write_text(json.dumps(build))
+    buckets = L.split_frozen(frozen)
+    if require_binary and check_binary:
+        _self_check_binary(frozen)
     keys = layer_keys(frozen, ver, osn, arch)
 
     # 合并包：仅 runtime+app，快速首次安装。名字与旧版一致，体积显著变小。
@@ -384,13 +388,12 @@ def pack(
         "sha256": combined["sha256"], "bytes": combined["bytes"],
         "installer": "zip", "version": ver, "payload": "binary",
         "layers": layer_items,
+        **build, "validated": bool(require_binary and check_binary),
     }
     (out_dir / f"item-{osn}-{arch}.json").write_text(
         json.dumps(item, indent=2) + "\n", encoding="utf-8")
 
-    # zip 先落盘，再自检：Windows probe 失败时 Release 仍能挂上包。
-    if require_binary and check_binary:
-        _self_check_binary(frozen)
+    # Only successful probes may produce installable item metadata.
     return zip_path, item
 
 

@@ -110,7 +110,7 @@ jobs:
           MINO_SCOUT_SKIP_BROWSER: "1"
         run: python scripts/pack_release.py --out dist --binary
       - uses: actions/upload-artifact@v5
-        if: always() && !cancelled()
+        if: success()
         with:
           name: scout-${{ matrix.os }}
           path: dist/*
@@ -118,7 +118,7 @@ jobs:
 
   publish:
     needs: [meta, open-release, build]
-    if: always() && !cancelled() && needs.meta.result == 'success' && needs.open-release.result == 'success'
+    if: success()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -126,7 +126,6 @@ jobs:
         with:
           python-version: "3.12"
       - uses: actions/download-artifact@v6
-        continue-on-error: true
         with:
           path: dist
           merge-multiple: true

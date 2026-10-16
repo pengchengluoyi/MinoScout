@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import hashlib
+import re
 import os
 from pathlib import Path
 
@@ -88,7 +90,15 @@ def build_manifest(items: list[dict], *, version: str, prefix: str) -> dict:
         if layers:
             item["layers"] = layers
         out.append(item)
-    return {"version": version, "items": out}
+    commits = {str(row.get("source_commit") or "") for row in items}
+    builds = {str(row.get("build_id") or "") for row in items}
+    if len(commits) != 1 or len(builds) != 1 or not re.fullmatch(r"[0-9a-f]{40}", next(iter(commits))):
+        raise ValueError("missing/mixed source commit or build identity")
+    if any(row.get("dirty") or not row.get("validated") or row.get("payload") != "binary" for row in items):
+        raise ValueError("only successfully probed clean binary packages are publishable")
+    return {"manifest_schema_version":1, "component":"scout", "version":version,
+            "source_commit":next(iter(commits)), "build_id":next(iter(builds)),
+            "compatibility":{"installation":"scout-layers", "automatic_rollback":False}, "items":out}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -111,6 +121,13 @@ def main(argv: list[str] | None = None) -> int:
     if not items:
         raise SystemExit(f"no item-*.json under {dist}")
 
+    if "/releases/download/" not in prefix or "/latest" in prefix or not prefix.startswith("https://github.com/"):
+        raise SystemExit("fixed GitHub release tag required")
+    for row in items:
+        for item in [row, *(row.get("layers") or {}).values()]:
+            p = dist / str(item["filename"])
+            if p.resolve().parent != dist.resolve() or p.stat().st_size != item["bytes"] or hashlib.sha256(p.read_bytes()).hexdigest() != item["sha256"]:
+                raise SystemExit("package bytes/digest mismatch")
     manifest = build_manifest(items, version=version, prefix=prefix)
     dest = Path(args.out).expanduser() if args.out else dist / "manifest.json"
     dest.parent.mkdir(parents=True, exist_ok=True)

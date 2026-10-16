@@ -36,4 +36,9 @@ def runtime_input_capabilities() -> list[dict[str, Any]]:
         },
     ]
 
+    rows.append({"id": "node.ide_prepare", "executor": "ide", "platform": system,
+                 "contract_version": 1, "features": ["check", "execute", "build", "probe", "connection_config"]})
+    from mino_scout.app_version import process_build_identity
+    for row in rows:
+        row["build"] = process_build_identity()
     return [row for row in rows if row["executor"] != "desktop" or system in {"mac", "win"}]
