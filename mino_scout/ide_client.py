@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
+import time
 from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 
 class IDEError(Exception):
-    pass
+    def __init__(self, message, *, effect_unknown=False):
+        super().__init__(message)
+        self.effect_unknown = effect_unknown
 
 
 def local_url(value):
@@ -40,6 +43,7 @@ class Client:
         self.http = httpx.Client(trust_env=False, follow_redirects=False, timeout=40)
         self.headers = {**config.get("headers", {}), "Accept": "application/json, text/event-stream"}
         self.serial = 0
+        self.deadline = time.monotonic() + 60
         self.tools = {}
         self.server = {}
 
@@ -75,7 +79,10 @@ class Client:
         body = {"jsonrpc": "2.0", "method": method, "params": params}
         if not notification:
             body["id"] = self.serial
-        with self.http.stream("POST", self.url, headers=self.headers, json=body) as response:
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise IDEError("IDE 操作期限已到")
+        with self.http.stream("POST", self.url, headers=self.headers, json=body, timeout=min(40, remaining)) as response:
             if response.status_code in {401, 403}:
                 raise IDEError(f"IDE 拒绝访问（HTTP {response.status_code}），请检查 IDE 访问设置")
             if response.status_code >= 300:
@@ -89,6 +96,8 @@ class Client:
             if "text/event-stream" in response.headers.get("content-type", ""):
                 lines = []
                 for line in response.iter_lines():
+                    if time.monotonic() > self.deadline:
+                        raise IDEError("IDE 操作期限已到")
                     size += len(line)
                     if size > 1048576:
                         raise IDEError("IDE 响应超出 1 MiB 上限")
@@ -130,9 +139,15 @@ class Client:
         accepted = {k: v for k, v in args.items() if k in properties}
         if set(schema.get("required") or []) - accepted.keys():
             raise IDEError("当前 IDE 工具要求未支持的参数")
-        raw = self.rpc("tools/call", {"name": name, "arguments": accepted})
+        mutating = name in {"execute_run_configuration", "execute_terminal_command"}
+        try:
+            raw = self.rpc("tools/call", {"name": name, "arguments": accepted})
+        except Exception as exc:
+            if mutating:
+                raise IDEError("IDE 执行回执未确认；不会自动重试", effect_unknown=True) from exc
+            raise
         if raw.get("isError"):
-            raise IDEError("IDE 工具执行失败：" + str(raw.get("content", ""))[:1500])
+            raise IDEError("IDE 工具执行失败，请核对项目及运行配置", effect_unknown=mutating)
         result = raw.get("structuredContent")
         if result is None:
             text = "\n".join(c.get("text", "") for c in raw.get("content", []) if c.get("type") == "text")

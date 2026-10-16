@@ -106,27 +106,20 @@ def cmd_heavy_deps() -> int:
 
 
 def cmd_update(argv: list[str]) -> int:
-    from mino_scout.self_update import run_update
-
+    from mino_scout.fixed_update import submit
     ap = argparse.ArgumentParser(prog="mino-scout update")
-    ap.add_argument("--manifest-url", default="", help="覆盖 config manifest_url")
+    ap.add_argument("--build-id", required=True)
+    ap.add_argument("--release-tag", required=True)
+    ap.add_argument("--operation-id", required=True)
+    ap.add_argument("--rollback-of", default="")
     ns = ap.parse_args(argv)
     try:
-        out = run_update(manifest_url=ns.manifest_url)
+        out = submit(ns.operation_id, ns.build_id, release_tag=ns.release_tag, action="rollback" if ns.rollback_of else "update", rollback_of=ns.rollback_of)
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
     except Exception as exc:
-        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 1
-    from mino_scout.service import pid_alive, read_pid
-    from importlib import import_module
-
-    if out.get("ok") and not out.get("deferred") and pid_alive(read_pid()):
-        from mino_scout.stale_process import process_stale_vs_disk
-
-        if process_stale_vs_disk():
-            import_module("mino_scout.reexec_spawn").schedule_reexec()
-            out = {**out, "reexec": True, "reason": "app 层与进程不一致，已安排重启"}
-    print(json.dumps(out, ensure_ascii=False, indent=2))
-    return 0 if out.get("ok") else 1
 
 
 def cmd_configure(argv: list[str]) -> int:
@@ -160,6 +153,10 @@ def cmd_default() -> int:
 
 
 def cmd_run() -> int:
+    from mino_scout.fixed_update import startup_allowed
+    if not startup_allowed():
+        print("有未完成的更新维护操作，请使用 update-status 查询并从保留目录恢复", file=sys.stderr)
+        return 3
     from mino_scout.config import config_path, resolve_runtime
     from mino_scout.playwright_hub import apply_browsers_path, install_playwright_closed_quiet
     from mino_scout.stale_process import ensure_process_matches_app_layer
@@ -245,6 +242,16 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_stop()
     if sub == "update":
         return cmd_update(raw[1:])
+    if sub == "update-helper" and len(raw) == 2:
+        from mino_scout.fixed_update import helper
+        return helper(raw[1])
+    if sub == "update-recover" and len(raw) == 2:
+        from mino_scout.fixed_update import helper
+        return helper(raw[1], recover=True)
+    if sub == "update-status" and len(raw) == 2:
+        from mino_scout.fixed_update import status
+        print(json.dumps(status(raw[1]), ensure_ascii=False, indent=2))
+        return 0
     if sub == "heavy-deps":
         return cmd_heavy_deps()
     if sub in ("run", "start"):

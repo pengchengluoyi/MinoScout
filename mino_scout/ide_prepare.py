@@ -10,7 +10,7 @@ import sys
 import tempfile
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -105,7 +105,7 @@ def _stop(client, binding, old):
             "command": shlex.join(command + args),
             "timeout": 10000, "maxLinesCount": 30, "truncateMode": "END", "executeInShell": True})
         if not isinstance(result, dict) or result.get("command_exit_code", result.get("exitCode")) != 0:
-            raise IDEError("IDE 停止命令未确认成功；请人工检查，不重复发送")
+            raise IDEError("IDE 停止命令未确认成功；请人工检查，不重复发送", effect_unknown=True)
     else:
         from mino_scout.ide_stop import main as stop_main
         stop_main(args)
@@ -114,7 +114,7 @@ def _stop(client, binding, old):
         if (not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE) and not _listeners(port):
             return
         time.sleep(.2)
-    raise IDEError("旧进程或端口未释放；未使用 SIGKILL，也未启动新进程")
+    raise IDEError("旧进程或端口未释放；未使用 SIGKILL，也未启动新进程", effect_unknown=True)
 
 
 def probe(binding):
@@ -179,7 +179,30 @@ def perform(params):
     connection = _connection(binding["connection_id"], binding["connection_revision"])
     if action == "probe":
         return probe(binding)
-    with machine_lock(connection["url"]), Client(connection) as client:
+    if action == "logs":
+        source = Path(binding["source_dir"]).resolve(strict=True)
+        path = Path(binding.get("service_log_path", "")).resolve(strict=True)
+        if not path.is_relative_to(source) or not path.is_file():
+            raise IDEError("只允许读取本应用源码目录内已登记的服务日志")
+        with path.open("rb") as stream:
+            stream.seek(0, 2)
+            size = stream.tell()
+            stream.seek(max(0, size - 32768))
+            text = stream.read(32768).decode("utf-8", errors="replace")
+        from mino_scout.secret_redaction import register_inputs, sanitize
+        register_inputs(load_config())
+        text = sanitize(text)
+        text = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[REDACTED]", text)
+        text = re.sub(r"(?i)((?:token|password|secret|api[_-]?key)\s*[=:]\s*)[^\s,;]+", r"\1[REDACTED]", text)
+        return {"state": "ready", "receipt": {"source": "configured_service_log", "output": text,
+                "truncated": size > 32768, "byte_offset": max(0, size - 32768)}}
+    if action == "install":
+        if not binding.get("execution_allowed") or not binding.get("test_parameters_confirmed"):
+            raise IDEError("尚未授权应用安装或确认测试参数")
+        from mino_scout.ide_apk import install
+        return install(binding)
+    lock = nullcontext() if action == "check" else machine_lock(connection["url"])
+    with lock, Client(connection) as client:
         result = client.call("get_run_configurations", {"projectPath": binding["project_path"]})
         names = configuration_names(result)
         check = {"connected": True, "project_matched": True, "configurations": names,
@@ -187,7 +210,7 @@ def perform(params):
                  "checked_at": time.time(), "connection_revision": connection["revision"]}
         if action == "check":
             return {"state": "ready", **check, "target_ready": False}
-        if action not in {"execute", "restart", "build"}:
+        if action not in {"execute", "restart", "build", "install"}:
             raise IDEError("不支持的开发准备动作")
         name = binding.get("build_configuration") if action == "build" else binding.get("run_configuration")
         if not name or name not in names:
@@ -228,7 +251,7 @@ def dispatch(core, req):
         data = {"state": "failed", "reason": "缺少稳定 operation_id"}
     else:
         directory = config_path().parent / "ide_receipts"
-        directory.mkdir(mode=0o700, exist_ok=True)
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         path = directory / (opid + ".json")
         digest = hashlib.sha256(json.dumps(params, sort_keys=True).encode()).hexdigest()
         with _lock:
@@ -239,8 +262,18 @@ def dispatch(core, req):
                     data = {"state": "failed", "reason": "operation_id 参数冲突"}
                 return make_event_result(_event_from_execute(req), status=EventStatus.PASS, executor_used="ide",
                     started_at=now_iso(), elapsed_ms=0, summary=data.get("reason", data["state"]), raw_response={"development": data})
-            _save_receipt(path, {"digest": digest})
-        mutation = params.get("action") in {"execute", "restart", "build"}
+            try:
+                with path.open("x") as marker:
+                    os.chmod(path, 0o600)
+                    json.dump({"digest": digest}, marker)
+                    marker.flush()
+                    os.fsync(marker.fileno())
+            except FileExistsError:
+                data = {"state": "unknown", "reason": "同一操作已有跨进程请求，未重复执行"}
+                return make_event_result(_event_from_execute(req), status=EventStatus.PASS,
+                    executor_used="ide", started_at=now_iso(), elapsed_ms=0,
+                    summary=data["reason"], raw_response={"development": data})
+        mutation = params.get("action") in {"execute", "restart", "build", "install"}
         admitted = False
         try:
             if mutation:
@@ -253,7 +286,9 @@ def dispatch(core, req):
         except (httpx.TimeoutException, httpx.TransportError):
             data = {"state": "unknown" if mutation else "failed", "reason": "IDE 无回执，执行结果尚未确认；不会自动重试"}
         except Exception as exc:
-            data = {"state": "unknown" if admitted else "failed",
+            known_rejection = isinstance(exc, IDEError) and not exc.effect_unknown
+            state = ("awaiting_developer" if known_rejection else "unknown") if admitted else "failed"
+            data = {"state": state,
                     "reason": str(exc)[:2000] if isinstance(exc, IDEError) else type(exc).__name__}
         finally:
             if admitted:

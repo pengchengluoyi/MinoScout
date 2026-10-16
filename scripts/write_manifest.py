@@ -67,7 +67,7 @@ def _build_layers(raw: dict, prefix: str) -> dict:
     return out
 
 
-def build_manifest(items: list[dict], *, version: str, prefix: str) -> dict:
+def build_manifest(items: list[dict], *, version: str, prefix: str, rollback_build_ids: list[str] | None = None) -> dict:
     prefix = prefix.rstrip("/")
     out = []
     for row in items:
@@ -98,7 +98,7 @@ def build_manifest(items: list[dict], *, version: str, prefix: str) -> dict:
         raise ValueError("only successfully probed clean binary packages are publishable")
     return {"manifest_schema_version":1, "component":"scout", "version":version,
             "source_commit":next(iter(commits)), "build_id":next(iter(builds)),
-            "compatibility":{"installation":"scout-layers", "automatic_rollback":False}, "items":out}
+            "compatibility":{'runtime': {'bundled': True, 'python': '3.12'}, 'protocol': {'node': 2, 'mcp': '2025-03-26'}, 'api': {'admission': 'explicit-tested-build-pair', 'tested_build_pairs': []}, 'schema': {'required': False}, 'automatic_rollback': bool(rollback_build_ids), 'installation': 'scout-layers', 'scout_update_contract': 1, 'rollback_build_ids': list(rollback_build_ids or [])}, "items":out}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -107,7 +107,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--version", default="", help="manifest version (no v prefix)")
     ap.add_argument("--prefix", default="", help="download URL prefix, .../releases/download/v0.1.0")
     ap.add_argument("--out", default="", help="output path (default <dist>/manifest.json)")
+    ap.add_argument("--rollback-build-id", action="append", default=[],
+                    help="明确已实测兼容的旧 build，可重复；不填写则禁止自动回退")
     args = ap.parse_args(argv)
+    if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,127}", value) for value in args.rollback_build_id):
+        raise SystemExit("invalid rollback build identity")
 
     dist = Path(args.dist or os.environ.get("SCOUT_DIST") or ROOT / "dist").expanduser()
     version = str(args.version or os.environ.get("SCOUT_VERSION") or "").strip().lstrip("v")
@@ -128,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
             p = dist / str(item["filename"])
             if p.resolve().parent != dist.resolve() or p.stat().st_size != item["bytes"] or hashlib.sha256(p.read_bytes()).hexdigest() != item["sha256"]:
                 raise SystemExit("package bytes/digest mismatch")
-    manifest = build_manifest(items, version=version, prefix=prefix)
+    manifest = build_manifest(items, version=version, prefix=prefix, rollback_build_ids=args.rollback_build_id)
     dest = Path(args.out).expanduser() if args.out else dist / "manifest.json"
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

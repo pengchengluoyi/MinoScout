@@ -95,8 +95,8 @@ def imported_scout_version() -> str:
 
 
 def report_scout_version() -> str:
-    """上报 Nexus / UI 用的版本：以磁盘 app 层为准。"""
-    return read_app_semver()
+    """上报当前进程已加载的版本；磁盘版本只在本地安装状态中展示。"""
+    return imported_scout_version()
 
 
 def resolve_status_versions(

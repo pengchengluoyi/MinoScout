@@ -720,3 +720,46 @@ node.ide_prepare 不进入 UI 动作 fallback。执行与重启互斥于节点�
 macOS/Linux 停止须核对端口、cwd、用户、PyCharm 父链及 PID/create_time，仅 SIGTERM。
 MCP 终端仅接受程序生成的固定停止动作，不接受用户命令。首期 HTTP 流使用现有 httpx，
 无新增 runtime 依赖；SSE transport、认证 header 和 Windows 自动停止尚不支持。
+
+V6 B APK 增补：action=install 只接受绑定中的 apk_path/android_serial/apk_package/apk_version_code。
+Nexus 创建和派发时复核设备属于同一活 Scout；Scout 要求源目录内的本地 APK，固定副本后以
+Android SDK aapt2 验证包名/versionCode。安装使用 -r -t，不降级、不卸载、不清数据；成功后
+回读设备包版本。构建由独立 build 操作显式触发，未改代码无需重复构建。没有设备/SDK不宣称完成。
+
+V6 B 日志增补：action=logs 只读取绑定中的 service_log_path，真实路径必须位于 source_dir 内。
+仅返回文件末尾最多 32768 字节，receipt.source=configured_service_log，包含 output、
+truncated、byte_offset；输出经过秘密脱敏。不提供任意路径读取或持续日志订阅。
+
+
+
+## V6 D1：固定 Scout 更新合同 v1
+
+不变更 wire 版本或 EXECUTE/RESULT dataclass。runtime_capabilities 新增
+node.update / executor=core / contract_version=1 / platform_scope=all / platforms=[]。
+缺声明的节点明确 unsupported，不能转旧的 latest 更新命令。
+
+EXECUTE 使用空 run_id、step_idx=-1、sn=""、executor_order=[core]、low_level={}，
+selected_impl 明确 runs_on=scout 及 params/result_contract.version=1。
+params.action=update|rollback|status；update/rollback 带 operation_id、release_tag、build_id，
+rollback 另带 rollback_of。tag 定位已配置 GitHub 仓库发布，build_id 核对包身份；二者不混用。
+不接受远程任意 URL。RESULT.extra.update 返回同一 operation_id 和执行端持久状态。
+
+Nexus scout_updates 表持久保存 operation/参数/等待截止/门禁和最后确认回执。
+等待时不设置 draining；新批次在资源准入同一 BEGIN IMMEDIATE 中检查门禁。
+不支持排队的入口返回409 blocked_by_update、operation_id 与请求 task_id；没有创建任务。
+已准入批次继续，RouterProxy 每次发送核对冻结 device_targets/allowed_node_ids。
+准备操作同门禁，已运行和未确认 IDE 操作阻止安装；未派发排队项不算活动项。
+默认等待1800秒；取消/过期只释放本操作，派发后不按等待期限强杀。
+派发记录先落库；重启及重注册后查询原操作，结果未知不重复安装。
+
+Scout 在同一锁内核对设备/IDE 活动及隔离 lane，再封闭本地新操作。
+独立助手使用保留 runtime/app，等待原 PID+create_time 退出，持有运行锁后安装。
+固定 schema1 清单的 component/build/source_commit、平台、包大小、sha256、层指纹及
+app requires_runtime/requires_browser 必须通过；只接受声明已验证 rollback_build_ids 的组合。
+暂存树替换后保留 previous-bin，配置/凭据不参与替换。未知或中断保留 needs_operator。
+运行确认使用进程启动时捕获的 BUILD，通过已连接 Scout 的 status 回执完成；磁盘版本不算成功。
+新版启动失败先协作停止，确认退出后回退保留旧层；失败不得强杀或删除维护记录。
+CLI update-recover <operation_id> 仅恢复原旧层，不重下或重放安装；助手锁防并发恢复。
+update-status <operation_id> 只读，不能自行宣布在线核验通过。
+
+源码交付不代表各平台安装验收通过。真实 clean release、兼容性演练及目标平台运行证据另记。

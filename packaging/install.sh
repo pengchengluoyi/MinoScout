@@ -25,7 +25,11 @@ esac
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
   PREFIX="${MINO_SCOUT_HOME:-$HOME/Library/Application Support/MinoScout}"
-  LOG_DIR="$HOME/Library/Logs/MinoScout"
+  if [[ -n "${MINO_SCOUT_HOME:-}" ]]; then
+    LOG_DIR="$PREFIX/logs"
+  else
+    LOG_DIR="$HOME/Library/Logs/MinoScout"
+  fi
 else
   PREFIX="${MINO_SCOUT_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/minoscout}"
   LOG_DIR="$PREFIX/logs"
@@ -300,7 +304,9 @@ stop_running() {
   fi
 }
 
-if [[ -z "${MINO_SCOUT_UPDATING:-}" ]]; then
+if [[ -n "${MINO_SCOUT_SKIP_SERVICE:-}" ]]; then
+  echo "MINO_SCOUT_SKIP_SERVICE — skipping all service stop/start operations"
+elif [[ -z "${MINO_SCOUT_UPDATING:-}" ]]; then
   stop_running
 else
   echo "MINO_SCOUT_UPDATING=1 — 跳过 stop（进程内热更，装完由 Scout reexec）"
@@ -359,7 +365,9 @@ EOF
 
 # CI 与本地自测只想验证"层有没有正确落地"，不该在跑测试的机器上留一个常驻服务。
 # 进程内热更也不重写 launchd / kickstart —— 由 schedule_reexec 拉起新二进制。
-if [[ -n "${MINO_SCOUT_UPDATING:-}" ]]; then
+if [[ -n "${MINO_SCOUT_SKIP_SERVICE:-}" ]]; then
+  echo "MINO_SCOUT_SKIP_SERVICE — not registering, restarting or linking a daemon"
+elif [[ -n "${MINO_SCOUT_UPDATING:-}" ]]; then
   install_cli_link
   echo "In-place update finished (service registration skipped)."
   if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -375,8 +383,6 @@ if [[ -n "${MINO_SCOUT_UPDATING:-}" ]]; then
       ) &
     fi
   fi
-elif [[ -n "${MINO_SCOUT_SKIP_SERVICE:-}" ]]; then
-  echo "MINO_SCOUT_SKIP_SERVICE set - not registering a daemon."
 elif [[ "$(uname -s)" == "Darwin" ]]; then
   if [[ "$(id -u)" -eq 0 ]]; then
     PLIST="/Library/LaunchDaemons/com.mino.scout.plist"

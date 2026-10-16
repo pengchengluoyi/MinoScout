@@ -133,3 +133,15 @@ Windows 根据系统选择 `install.ps1`。当 Scout 仍在运行时，先下载
 0.1.75 的 Windows 进程可能仍有选择 install.sh 的旧逻辑；首次升级建议从 Workbench 为该电脑重新复制安装命令，在原登录用户的 PowerShell 执行，复用现有安装目录和身份。不要删除配置来升级。
 
 本版本提升 runtime ABI 到 5，发布需包含对应 runtime，不能只手工替换 app。Windows CI 额外验证原生子进程协作停止以及安装器和延后更新助手的 PowerShell 语法。真实 GUI 输入、锁屏恢复与权限弹窗需要分别在 Mac / Windows 实机验收。
+
+
+## V6 D1 固定版本维护
+
+`mino-scout update --operation-id <id> --release-tag <tag> --build-id <build>` 只在节点已停止时受理；在线节点经 Nexus 门禁。
+回退增加 `--rollback-of <原成功操作>`；状态 `update-status <id>`，中断人工恢复 `update-recover <id>`。
+恢复命令从 `updates/<id>/helper-bin/mino-scout` 运行，避免 bin 在切换中缺失。
+CLI 恢复也须旧进程退出；不能通过删除锁文件清除维护状态。
+保留配置和完整旧 bin，未添加自动清理；需预留当前 bin 两份及下载/暂存空间。
+正式包须有 A 阶段 BUILD.json 和 schema1 manifest。manifest 生成器的 `--rollback-build-id`
+只能列已经实测兼容的旧 build，默认空列表禁止自动更新，不能凭新字段自动宣称兼容。
+首次 D1 基线仍用已有安装入口；不让不支持合同的旧 Scout 猜测执行新更新操作。

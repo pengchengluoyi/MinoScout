@@ -138,6 +138,10 @@ class ScoutCore:
         # (run_id, step_idx) -> (完成时刻, EventResult)
         self._done: dict[tuple[str, int], tuple[float, EventResult]] = {}
         self._active_runs: set[str] = set()
+        from mino_scout.fixed_update import loaded_build
+        self._loaded_build = loaded_build()
+        self._update_busy = False
+        self._update_io = 0
         self._run_seen: dict[str, float] = {}
         self._asleep = False
         self._pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="scout-exec")
@@ -162,6 +166,68 @@ class ScoutCore:
     # ---------------- EXECUTE（唯一 dispatch） ----------------
 
     def execute(self, req: P.Execute) -> EventResult:
+        if req.capability_id in {"node.update", "update"}:
+            return self._fixed_update(req)
+        with self._lock:
+            if self._update_busy:
+                return make_event_result(_event_from_execute(req), status=EventStatus.BLOCKED,
+                    executor_used="core", started_at=now_iso(), elapsed_ms=0,
+                    summary="更新安装已开始，节点不再接受设备或 IDE 操作",
+                    raw_response={"execution": {"execution_started": "no", "reason_code": "blocked_by_update"}})
+            self._update_io += 1
+        try:
+            return self._execute_with_development(req)
+        finally:
+            with self._lock:
+                self._update_io -= 1
+
+    def _fixed_update(self, req):
+        from mino_scout import fixed_update as updates
+        params = req.params or {}
+        opid = str(params.get("operation_id") or "")
+        try:
+            if params.get("action") == "status":
+                data = updates.status(opid, self._loaded_build)
+            else:
+                # Nexus has already excluded all admitted batches. This lock closes
+                # the final local race with device/IDE requests after that snapshot.
+                with self._lock:
+                    old = updates.read(opid)
+                    if old:
+                        wanted = {"build_id": params.get("build_id", ""), "release_tag": params.get("release_tag", ""), "action": params.get("action", "update"),
+                                  "rollback_of": params.get("rollback_of", "")}
+                        if old["params"] != wanted:
+                            raise ValueError("operation_id 参数冲突")
+                        data = updates.status(opid, self._loaded_build)
+                    elif self._update_io or getattr(self, "_development_busy", False) or any(self._requests.active(r) for r in self._active_runs):
+                        data = {"operation_id": opid, "state": "busy"}
+                    else:
+                        capacity = self._web_v5.capacity()
+                        if capacity.get("lanes_free", 0) != capacity.get("lanes_total", 0) or capacity.get("lanes_quarantined"):
+                            data = {"operation_id": opid, "state": "busy"}
+                        else:
+                            self._update_busy = True
+                            try:
+                                data = updates.submit(opid, str(params.get("build_id", "")),
+                                    release_tag=str(params.get("release_tag", "")), action=params.get("action", "update"), rollback_of=params.get("rollback_of", ""), parent_pid=os.getpid())
+                            except Exception:
+                                self._update_busy = False
+                                raise
+            extra = {"update": data}
+            if self._update_busy and data.get("state") == "installing":
+                extra["_scout_shutdown"] = True
+            return make_event_result(_event_from_execute(req), status=EventStatus.PASS, executor_used="core",
+                started_at=now_iso(), elapsed_ms=0, summary=data["state"], raw_response=extra)
+        except Exception as exc:
+            try:
+                uncertain = bool(updates.read(opid)) or params.get("action") == "status"
+            except Exception:
+                uncertain = True
+            return make_event_result(_event_from_execute(req), status=EventStatus.FAIL, executor_used="core",
+                started_at=now_iso(), elapsed_ms=0, summary="固定版本更新未受理",
+                raw_response={"update": {"operation_id": opid, "state": "needs_operator" if uncertain else "failed", "reason": str(exc)[:500]}})
+
+    def _execute_with_development(self, req: P.Execute) -> EventResult:
         if req.capability_id == "node.ide_prepare":
             from mino_scout.ide_prepare import dispatch
             try:
@@ -492,44 +558,7 @@ class ScoutCore:
         event = _event_from_execute(req)
         started = now_iso()
         if cmd == "update":
-            from mino_scout import update_progress as UP
-            from mino_scout.app_version import needs_process_reload, report_scout_version
-            from mino_scout.self_update import run_update
-
-            UP.clear()
-            UP.emit("plan", label="开始更新", percent=0)
-            try:
-                out = run_update()
-            except Exception as exc:
-                msg = f"更新失败: {exc}"
-                UP.emit("done", label=msg, percent=100, error=msg, done=True)
-                return make_event_result(
-                    event, status=EventStatus.FAIL, executor_used="core",
-                    started_at=started, elapsed_ms=0, summary=msg, error=msg,
-                    raw_response={"command": cmd},
-                )
-            mode = str(out.get("mode") or "")
-            layers = out.get("layers") or []
-            from mino_scout.self_update import installed_layers
-            from mino_scout.config import config_dir
-
-            inst = installed_layers(config_dir()) or {}
-            app_key = str(inst.get("app") or "").strip()
-            need_reload = needs_process_reload(app_layer_key=app_key)
-            summary = "更新包已校验，正在退出 Scout 后安装" if out.get("deferred") else ("已是最新" if mode == "up-to-date" else f"已更新 ({mode})")
-            if layers and not out.get("deferred"):
-                summary = f"已更新层: {', '.join(str(x) for x in layers)}"
-            if need_reload and mode == "up-to-date":
-                summary = f"安装指纹 v{app_key or report_scout_version()}，正在重启以加载新版本"
-            extra: dict[str, Any] = {"command": cmd, "update": out}
-            if mode != "up-to-date" or need_reload:
-                extra["_scout_reexec"] = not bool(out.get("deferred"))
-                extra["_scout_shutdown"] = True
-            return make_event_result(
-                event, status=EventStatus.PASS, executor_used="core",
-                started_at=started, elapsed_ms=0, summary=summary,
-                raw_response=extra,
-            )
+            return self._fixed_update(req)
         if cmd == "sleep":
             ok, summary = self.enter_sleep()
             return make_event_result(
@@ -957,7 +986,7 @@ class ScoutCore:
             **epoch,
             platform_contract_version=1,
             uptime_sec=int(time.time() - self._started),
-            busy=bool(active),
+            busy=bool(active) or getattr(self, "_development_busy", False),
             active_runs=active,
             device_workload=workload,
             scout_version=report_scout_version(),
