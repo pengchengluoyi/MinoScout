@@ -50,6 +50,7 @@ jobs:
           path: dist
       - name: Validate packages and create manifest
         env:
+          SCOUT_VERSION: ${{ steps.version.outputs.tag }}
           SCOUT_RELEASE_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}
           SCOUT_ROLLBACK_EVIDENCE_JSON: '[]'
         run: python scripts/write_manifest.py --dist dist --out dist/manifest.json
