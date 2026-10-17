@@ -35,7 +35,7 @@ ADB Keyboard 默认从 GitHub 拉取并缓存在 Scout 配置目录的 `cache/AD
 
 ```bash
 uv sync                       # 或 pip install -e .
-mino-scout --nexus ws://mino.local:10104/node --token <pair-token>
+mino-scout --nexus ws://mino.local:50104/node --token <pair-token>
 ```
 
 也可以不传参数：Studio 会把 `{ nexus_url, token }` 写到本机配置，Scout 自己读，并在首次运行时写入 `scout_id`。
@@ -120,3 +120,14 @@ Scout 是独立守护进程，关掉 Studio 不停。控制：`mino-scout status
 ## 硬约束
 
 不含 ORM、不含 LLM 调用、不读能力目录 YAML、不 import Nexus。靠代码评审守住，不再有静态脚本和 CI 校验。
+
+## 测试与正式环境
+
+| 组件 | 测试 | 正式 |
+|---|---|---|
+| Nexus | 50101 | 50104 |
+| Workbench | 60101 | 60104 |
+| Scout | 主动连接测试 Nexus 的 50101 | 主动连接正式 Nexus 的 50104 |
+
+Scout 不分配独立业务监听端口。测试与正式使用独立的数据目录、凭据和节点身份。已安装实例的配置不会因更新默认值而自动迁移。
+测试运行时通过 `--nexus ws://<测试Nexus主机>:50101/node` 指定目标，并通过 `MINO_SCOUT_HOME` 使用独立配置目录；正式目标为 `ws://<正式Nexus主机>:50104/node`。

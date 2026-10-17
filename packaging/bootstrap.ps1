@@ -1,7 +1,7 @@
 ﻿# Mino Scout 远程安装（Windows）。Workbench 复制的 PowerShell 命令。
 param(
   [Parameter(Mandatory = $true)][string]$Token,
-  [string]$NexusUrl = "http://mino.local:10104",
+  [string]$NexusUrl = "http://mino.local:50104",
   [string]$StudioId = "",
   [string]$ReleaseVersion = "",
   [string]$ManifestUrl = ""

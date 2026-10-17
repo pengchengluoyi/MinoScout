@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Any
 
 LAN_HOST = "mino.local"
-DEFAULT_NEXUS_HTTP = f"http://{LAN_HOST}:10104"
-DEFAULT_NEXUS_WS = f"ws://{LAN_HOST}:10104/node"
+DEFAULT_NEXUS_HTTP = f"http://{LAN_HOST}:50104"
+DEFAULT_NEXUS_WS = f"ws://{LAN_HOST}:50104/node"
 SCOUT_ID_LEN = 16
 
 

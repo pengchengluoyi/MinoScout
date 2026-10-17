@@ -6,7 +6,7 @@ set -euo pipefail
 
 MINO_GITHUB_REPO="${MINO_SCOUT_GITHUB_REPO:-pengchengluoyi/MinoScout}"
 TOKEN=""
-NEXUS_URL="http://mino.local:10104"
+NEXUS_URL="http://mino.local:50104"
 STUDIO_ID=""
 RELEASE_VERSION=""
 MANIFEST_URL=""

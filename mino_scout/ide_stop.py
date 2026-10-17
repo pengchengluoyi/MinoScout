@@ -28,7 +28,7 @@ def main(argv=None):
     ap.add_argument("--ide-port", type=int, required=True)
     ap.add_argument("--source", required=True)
     args = ap.parse_args(argv)
-    if os.name != "posix" or args.port in {10104, 5273, args.ide_port}:
+    if os.name != "posix" or args.port in {10104, 5273, 50101, 50104, 60101, 60104, args.ide_port}:
         raise ValueError("unsupported platform or protected port")
     proc = psutil.Process(args.pid)
     if proc.create_time() != args.created or proc.uids().real != os.getuid():

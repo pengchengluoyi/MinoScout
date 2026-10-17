@@ -73,7 +73,7 @@ def _old_process(binding, endpoint):
         raise IDEError("自动停止目前仅支持 macOS/Linux；请在 IDE 中 Rerun")
     target = urlsplit(local_url(binding["target_url"]))
     control = urlsplit(str(load_config().get("nexus_url", "")))
-    if target.port in {10104, 5273, urlsplit(endpoint).port, control.port}:
+    if target.port in {10104, 5273, 50101, 50104, 60101, 60104, urlsplit(endpoint).port, control.port}:
         raise IDEError("测试地址与正式/控制端口冲突，拒绝停止")
     pids = _listeners(target.port)
     if not pids:
