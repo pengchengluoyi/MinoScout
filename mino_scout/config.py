@@ -15,6 +15,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+def development() -> bool:
+    return not getattr(sys, "frozen", False)
+
+
 LAN_HOST = "mino.local"
 DEFAULT_NEXUS_HTTP = f"http://{LAN_HOST}:50104"
 DEFAULT_NEXUS_WS = f"ws://{LAN_HOST}:50104/node"
@@ -22,6 +26,8 @@ SCOUT_ID_LEN = 16
 
 
 def config_dir() -> Path:
+    if development():
+        return Path.home() / ".mino-dev" / "scout"
     override = str(os.environ.get("MINO_SCOUT_HOME") or "").strip()
     if override:
         return Path(override).expanduser().resolve()
@@ -55,6 +61,8 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
 
 
 def set_nexus_url(url: str, path: Path | None = None) -> Path:
+    if development():
+        resolve_runtime(nexus=url, config={})
     cfg = load_config(path)
     cfg["nexus_url"] = str(url or "").strip()
     return save_config(cfg, path)
@@ -115,6 +123,8 @@ def _machine_id() -> str:
 def generate_scout_id() -> str:
     """16 lowercase hex from hostname + machine-id. No hyphens / underscores / dots."""
     material = f"{platform.node()}|{_machine_id()}"
+    if development():
+        material += "|development|" + str(config_dir())
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:SCOUT_ID_LEN]
 
 
@@ -177,7 +187,12 @@ def resolve_runtime(*, nexus: str = "", token: str = "", config: dict[str, Any] 
     else:
         ws = nexus_ws_url(str(cfg.get("pending_nexus_url") or cfg.get("nexus_url") or ""))
     if not ws:
-        ws = DEFAULT_NEXUS_WS
+        ws = "ws://127.0.0.1:50101/node" if development() else DEFAULT_NEXUS_WS
+    if development():
+        from urllib.parse import urlsplit
+        target = urlsplit(ws)
+        if target.scheme not in {"ws", "wss"} or target.hostname not in {"127.0.0.1", "localhost", "::1"} or target.port != 50101:
+            raise ValueError("开发 Scout 只能连接本机 Nexus :50101；请检查开发配置")
     tok = flag_token or str(cfg.get("pending_install_token") or cfg.get("token") or "").strip()
     return ws, tok
 

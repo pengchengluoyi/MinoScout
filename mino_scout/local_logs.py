@@ -5,11 +5,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from mino_scout.config import config_dir
+from mino_scout.config import config_dir, development
 
 
 def log_paths() -> dict[str, str]:
-    if sys.platform == "darwin":
+    if sys.platform == "darwin" and not development():
         base = Path.home() / "Library" / "Logs" / "MinoScout"
         return {
             "stdout": str(base / "scout.log"),

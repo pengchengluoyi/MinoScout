@@ -131,3 +131,5 @@ Scout 是独立守护进程，关掉 Studio 不停。控制：`mino-scout status
 
 Scout 不分配独立业务监听端口。测试与正式使用独立的数据目录、凭据和节点身份。已安装实例的配置不会因更新默认值而自动迁移。
 测试运行时通过 `--nexus ws://<测试Nexus主机>:50101/node` 指定目标，并通过 `MINO_SCOUT_HOME` 使用独立配置目录；正式目标为 `ws://<正式Nexus主机>:50104/node`。
+
+开发与正式部署隔离及启动方式见 [环境说明](docs/ENVIRONMENTS.md)。

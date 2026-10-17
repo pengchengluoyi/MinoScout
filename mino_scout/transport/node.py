@@ -105,7 +105,8 @@ class NodeTransport:
         heartbeat_sec: int = 15,
     ):
         self.core = core
-        self.nexus_url = nexus_url
+        from mino_scout.config import resolve_runtime
+        self.nexus_url = resolve_runtime(nexus=nexus_url, token=token)[0]
         self.token = token
         self.heartbeat_sec = heartbeat_sec
         self._ws: Any = None
@@ -354,7 +355,8 @@ class NodeTransport:
                 cfg.pop("pending_nexus_url", None)
                 save_config(cfg)
                 self.token = str(cfg.get("token") or "")
-                self.nexus_url = nexus_ws_url(str(cfg.get("nexus_url") or "")) or self.nexus_url
+                from mino_scout.config import resolve_runtime
+                self.nexus_url = resolve_runtime(nexus=str(cfg.get("nexus_url") or self.nexus_url), token=self.token)[0]
                 if not self.token:
                     self.request_shutdown()
             # 不要立刻重试 —— 退避由 run_forever 负责（协议 §4.2）

@@ -161,6 +161,11 @@ def cmd_run() -> int:
     from mino_scout.playwright_hub import apply_browsers_path, install_playwright_closed_quiet
     from mino_scout.stale_process import ensure_process_matches_app_layer
 
+    nexus, token = resolve_runtime()
+    if not token:
+        print(f"需要开发或正式环境对应的 token：{config_path()}", file=sys.stderr)
+        return 2
+
     if ensure_process_matches_app_layer(log_tag=TAG):
         return 0
 
@@ -168,10 +173,6 @@ def cmd_run() -> int:
     install_playwright_closed_quiet()
 
     core = build_core()
-    nexus, token = resolve_runtime()
-    if not token:
-        print(f"需要 token：{config_path()} 或 Studio 安装流程写入", file=sys.stderr)
-        return 2
 
     from mino_scout.service import daemon_run_lock
     from mino_scout.transport.node import NodeTransport
@@ -228,6 +229,13 @@ def main(argv: list[str] | None = None) -> int:
     configure_proxy_bypass()
 
     raw = list(argv) if argv is not None else sys.argv[1:]
+    from mino_scout.config import development
+    if development():
+        if not raw:
+            raw = ["run"]
+        if raw[0] in {"start", "update", "update-helper", "update-recover", "heavy-deps"}:
+            print("源码开发使用 run 前台启动和源码更新，不操作正式后台服务", file=sys.stderr)
+            return 2
     if not raw:
         return cmd_default()
     if raw[0] in ("-h", "--help"):

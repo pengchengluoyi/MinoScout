@@ -140,6 +140,9 @@ def fixed_url(build_id):
 
 
 def submit(opid, build_id, *, release_tag, action="update", rollback_of="", parent_pid=0):
+    from mino_scout.config import development
+    if development():
+        raise ValueError("源码 Scout 不执行安装包更新，请更新源码并重启")
     from mino_scout.service import read_pid, pid_alive
     if action not in {"update", "rollback"}:
         raise ValueError("未知更新动作")
