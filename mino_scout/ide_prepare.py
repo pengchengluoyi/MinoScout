@@ -1,6 +1,7 @@
 """PyCharm development operations. Nexus owns business state; receipts prevent replay."""
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import os
@@ -21,13 +22,57 @@ from mino_scout.config import config_path, load_config, save_config
 from mino_scout.ide_client import Client, IDEError, configuration_names, connection_spec, local_url
 
 _lock = threading.RLock()
+_progress = contextvars.ContextVar("ide_progress", default=None)
+
+
+def stage(name):
+    callback = _progress.get()
+    if callback:
+        callback(name)
+
+
+def redact_output(text):
+    from mino_scout.secret_redaction import register_inputs, sanitize
+    register_inputs(load_config())
+    text = sanitize(text)
+    text = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[REDACTED]", text)
+    pattern = r"(?i)([\"']?(?:token|password|secret|api[_-]?key)[\"']?\s*[=:]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+    return re.sub(pattern, r"\1[REDACTED]", text)
+
+
+def public_connection(row):
+    return {k: v for k, v in row.items() if k != "header_env"} | {
+        "authentication": "environment" if row.get("header_env") else "none",
+        "auth_env_names": list(row.get("header_env", {}).values())}
+
 
 
 @contextmanager
 def machine_lock(endpoint):
     # Same user / same IDE across formal and test Scouts. No network listener.
+    if os.name == "nt":
+        import msvcrt
+        origin = urlsplit(endpoint)
+        key = hashlib.sha256(f"{origin.hostname}:{origin.port}".encode()).hexdigest()[:24]
+        path = Path(tempfile.gettempdir()) / f"mino-ide-{key}.lock"
+        if path.is_symlink():
+            raise IDEError("IDE 锁不能为符号链接")
+        with path.open("a+b") as stream:
+            if os.fstat(stream.fileno()).st_nlink != 1:
+                raise IDEError("IDE 锁不能为硬链接")
+            stream.seek(0)
+            try:
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError:
+                raise IDEError("另一 Scout 正在准备同一 IDE")
+            try:
+                yield
+            finally:
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+        return
     if os.name != "posix":
-        raise IDEError("此平台的跨进程开发互斥尚未验收，请在 IDE 人工执行")
+        raise IDEError("此平台不支持开发互斥")
     import fcntl
     origin = urlsplit(endpoint)
     key = hashlib.sha256(f"{origin.hostname}:{origin.port}".encode()).hexdigest()[:24]
@@ -48,7 +93,10 @@ def machine_lock(endpoint):
 def _save_receipt(path, data):
     from mino_scout.secret_redaction import sanitize
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(sanitize(data), ensure_ascii=False))
+    with tmp.open("w") as stream:
+        json.dump(sanitize(data), stream, ensure_ascii=False)
+        stream.flush()
+        os.fsync(stream.fileno())
     os.chmod(tmp, 0o600)
     tmp.replace(path)
 
@@ -69,8 +117,8 @@ def _listeners(port):
 
 
 def _old_process(binding, endpoint):
-    if sys.platform not in {"darwin", "linux"}:
-        raise IDEError("自动停止目前仅支持 macOS/Linux；请在 IDE 中 Rerun")
+    if sys.platform not in {"darwin", "linux", "win32"}:
+        raise IDEError("此平台尚不支持自动停止；请在 IDE 中 Rerun")
     target = urlsplit(local_url(binding["target_url"]))
     control = urlsplit(str(load_config().get("nexus_url", "")))
     if target.port in {10104, 5273, urlsplit(endpoint).port, control.port}:
@@ -83,7 +131,8 @@ def _old_process(binding, endpoint):
     proc = psutil.Process(pids.pop())
     if proc.pid == os.getpid() or proc.pid in {p.pid for p in psutil.Process().parents()}:
         raise IDEError("禁止停止 Scout 自身或其父进程")
-    if proc.uids().real != os.getuid() or Path(proc.cwd()).resolve() != Path(binding["source_dir"]).resolve():
+    from mino_scout.ide_stop import same_user
+    if not same_user(proc) or Path(proc.cwd()).resolve() != Path(binding["source_dir"]).resolve():
         raise IDEError("端口占用进程的用户或源码目录不匹配")
     ide_pids = _listeners(urlsplit(endpoint).port)
     parents = proc.parents()
@@ -100,7 +149,7 @@ def _stop(client, binding, old):
     args = ["--pid", str(proc.pid), "--created", repr(created), "--port", str(port),
             "--ide-port", str(urlsplit(client.url).port), "--source", binding["source_dir"]]
     command = [sys.executable, "internal-ide-stop"] if getattr(sys, "frozen", False) else [sys.executable, str(Path(__file__).with_name("ide_stop.py"))]
-    if "execute_terminal_command" in client.tools:
+    if "execute_terminal_command" in client.tools and os.name != "nt":
         result = client.call("execute_terminal_command", {"projectPath": binding["project_path"],
             "command": shlex.join(command + args),
             "timeout": 10000, "maxLinesCount": 30, "truncateMode": "END", "executeInShell": True})
@@ -142,8 +191,8 @@ def probe(binding):
                         for key in binding.get("build_field", "build_id").split("."):
                             value = value.get(key) if isinstance(value, dict) else None
                         if str(value) == expected:
-                            return {"state": "ready", "target_ready": True, "build_verified": True, "build": expected}
-                        return {"state": "failed", "target_ready": False, "reason": "实际 build 与预期不匹配"}
+                            return {"state": "ready", "target_ready": True, "build_verified": True, "build": expected, "actual_build": str(value), "reason": "服务就绪，实际 build 已与预期核对；尚未运行用例"}
+                        return {"state": "failed", "target_ready": True, "build_verified": False, "expected_build": expected, "actual_build": str(value)[:200], "reason": "服务可访问，但实际 build 与预期不匹配"}
                     last = f"目标 HTTP {response.status_code}"
             except (httpx.HTTPError, ValueError):
                 last = "目标暂不可访问或版本响应格式无效"
@@ -151,8 +200,24 @@ def probe(binding):
         return {"state": "awaiting_developer", "target_ready": False, "reason": last}
 
 
+def read_receipt(params):
+    target = str(params.get("target_operation_id", ""))
+    if not re.fullmatch(r"[a-zA-Z0-9_-]{8,100}", target):
+        raise IDEError("原操作 ID 无效")
+    path = config_path().parent / "ide_receipts" / (target + ".json")
+    if not path.is_file():
+        return {"state": "unknown", "reason": "节点没有原操作回执；不会重新执行"}
+    record = json.loads(path.read_text())
+    if record.get("digest") != params.get("target_digest"):
+        raise IDEError("原操作参数摘要不匹配")
+    result = record.get("result") or {"state": "unknown", "reason": "原操作没有最终回执；不会重新执行"}
+    return {**result, "receipt_verified": True, "receipt_operation_id": target}
+
+
 def perform(params):
     action = params["action"]
+    if action == "receipt":
+        return read_receipt(params)
     cid = str(params.get("connection_id", ""))
     if action == "save_connection":
         if not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", cid):
@@ -172,14 +237,16 @@ def perform(params):
             row = {**spec, "connection_id": cid, "revision": old.get("revision", 0) + 1}
             cfg["ide_connections"] = [r for r in rows if r["connection_id"] != cid] + [row]
             save_config(cfg)
-            return {"state": "ready", "connection": row, "reason": "已保存到节点，尚未检查连接"}
+            return {"state": "ready", "connection": public_connection(row), "reason": "已保存到节点，尚未检查连接"}
     if action == "list_connections":
-        return {"state": "ready", "connections": load_config().get("ide_connections", [])}
+        return {"state": "ready", "connections": [public_connection(r) for r in load_config().get("ide_connections", [])]}
     binding = params["binding"]
     connection = _connection(binding["connection_id"], binding["connection_revision"])
     if action == "probe":
+        stage("probing")
         return probe(binding)
     if action == "logs":
+        stage("reading_logs")
         source = Path(binding["source_dir"]).resolve(strict=True)
         path = Path(binding.get("service_log_path", "")).resolve(strict=True)
         if not path.is_relative_to(source) or not path.is_file():
@@ -189,25 +256,28 @@ def perform(params):
             size = stream.tell()
             stream.seek(max(0, size - 32768))
             text = stream.read(32768).decode("utf-8", errors="replace")
-        from mino_scout.secret_redaction import register_inputs, sanitize
-        register_inputs(load_config())
-        text = sanitize(text)
-        text = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[REDACTED]", text)
-        text = re.sub(r"(?i)((?:token|password|secret|api[_-]?key)\s*[=:]\s*)[^\s,;]+", r"\1[REDACTED]", text)
+        text = redact_output(text)
         return {"state": "ready", "receipt": {"source": "configured_service_log", "output": text,
                 "truncated": size > 32768, "byte_offset": max(0, size - 32768)}}
     if action == "install":
         if not binding.get("execution_allowed") or not binding.get("test_parameters_confirmed"):
             raise IDEError("尚未授权应用安装或确认测试参数")
         from mino_scout.ide_apk import install
-        return install(binding)
+        stage("validating_apk")
+        return install(binding, on_stage=stage)
     lock = nullcontext() if action == "check" else machine_lock(connection["url"])
+    stage("connecting")
     with lock, Client(connection) as client:
         result = client.call("get_run_configurations", {"projectPath": binding["project_path"]})
         names = configuration_names(result)
         check = {"connected": True, "project_matched": True, "configurations": names,
                  "server": client.server, "tools": sorted(client.tools), "brave": "unknown",
-                 "checked_at": time.time(), "connection_revision": connection["revision"]}
+                 "checked_at": time.time(), "connection_revision": connection["revision"],
+                 "support": {"read": True, "execute": "execute_run_configuration" in client.tools,
+                             "restart": sys.platform in {"darwin", "linux"} and "execute_run_configuration" in client.tools,
+                             "restart_mode": "window_close_only" if os.name == "nt" else "sigterm",
+                             "logs": bool(binding.get("service_log_path"))},
+                 "details_verified": False}
         if action == "check":
             return {"state": "ready", **check, "target_ready": False}
         if action not in {"execute", "restart", "build", "install"}:
@@ -218,17 +288,17 @@ def perform(params):
         if not binding.get("execution_allowed") or not binding.get("test_parameters_confirmed"):
             raise IDEError("尚未授权应用执行或确认测试参数")
         if action == "restart":
-            _stop(client, binding, _old_process(binding, connection["url"]))
+            stage("locating_process")
+            old = _old_process(binding, connection["url"])
+            stage("stopping" if old else "no_old_process")
+            _stop(client, binding, old)
+        stage("building" if action == "build" else "starting")
         result = client.call("execute_run_configuration", {"configurationName": name,
             "projectPath": binding["project_path"], "timeout": 5000, "maxLinesCount": 200, "truncateMode": "END"})
         if not isinstance(result, dict):
             raise IDEError("IDE 执行回执格式不支持")
         output = str(result.get("output", ""))
-        from mino_scout.secret_redaction import register_inputs, sanitize
-        register_inputs(load_config())
-        output = sanitize(output)
-        output = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[REDACTED]", output)
-        output = re.sub(r"(?i)((?:token|password|secret|api[_-]?key)\s*[=:]\s*)[^\s,;]+", r"\1[REDACTED]", output)
+        output = redact_output(output)
         receipt = {"source": "pycharm.execute_run_configuration", "output": output[-20000:],
                    "truncated": len(output) > 20000 or len(output.splitlines()) >= 200,
                    "timedOut": result.get("timedOut"), "exitCode": result.get("exitCode")}
@@ -237,6 +307,7 @@ def perform(params):
         if action == "build":
             return {"state": "ready" if result.get("exitCode") == 0 else "unknown",
                     "reason": "构建回执；尚未安装或执行测试", "receipt": receipt}
+        stage("probing")
         return {**probe(binding), "receipt": receipt}
 
 
@@ -275,6 +346,11 @@ def dispatch(core, req):
                     summary=data["reason"], raw_response={"development": data})
         mutation = params.get("action") in {"execute", "restart", "build", "install"}
         admitted = False
+        stages = []
+        def record_stage(name):
+            stages.append({"name": name, "at": time.time()})
+            _save_receipt(path, {"digest": digest, "result": {"state": "running", "stage": name, "stages": list(stages)}})
+        progress_token = _progress.set(record_stage)
         try:
             if mutation:
                 with core._lock:
@@ -286,15 +362,17 @@ def dispatch(core, req):
         except (httpx.TimeoutException, httpx.TransportError):
             data = {"state": "unknown" if mutation else "failed", "reason": "IDE 无回执，执行结果尚未确认；不会自动重试"}
         except Exception as exc:
-            known_rejection = isinstance(exc, IDEError) and not exc.effect_unknown
+            effect_started = any(s["name"] in {"stopping", "starting", "building", "installing"} for s in stages)
+            known_rejection = isinstance(exc, IDEError) and not exc.effect_unknown and not effect_started
             state = ("awaiting_developer" if known_rejection else "unknown") if admitted else "failed"
             data = {"state": state,
                     "reason": str(exc)[:2000] if isinstance(exc, IDEError) else type(exc).__name__}
         finally:
+            _progress.reset(progress_token)
             if admitted:
                 with core._lock:
                     core._development_busy = False
-        data = sanitize(data)
+        data = sanitize({**data, "stages": stages} if stages else data)
         with _lock:
             _save_receipt(path, {"digest": digest, "result": data})
     return make_event_result(_event_from_execute(req), status=EventStatus.PASS, executor_used="ide",

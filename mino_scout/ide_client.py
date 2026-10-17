@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import time
 from urllib.parse import urlsplit, urlunsplit
 import httpx
@@ -24,24 +26,50 @@ def local_url(value):
 
 
 def connection_spec(raw):
-    if not isinstance(raw, dict) or set(raw) - {"url", "transport", "type", "headers"}:
-        raise IDEError("仅接受 URL、HTTP 流传输和非秘密 headers；不执行 command/args")
+    if not isinstance(raw, dict) or set(raw) - {"url", "transport", "type", "headers", "header_env"}:
+        raise IDEError("连接只接受 URL、传输和 header 环境变量引用；不执行 command/args")
     transport = raw.get("transport", raw.get("type", "streamable-http"))
-    if transport not in {"http", "streamable-http"}:
-        raise IDEError("首期仅支持 HTTP 流，不支持 SSE/Stdio")
+    if transport not in {"http", "streamable-http", "sse"}:
+        raise IDEError("只支持 HTTP 流或显式 SSE；不支持 Stdio")
     headers = raw.get("headers") or {}
-    if not isinstance(headers, dict) or any(k.lower() not in {"x-idea-project"} for k in headers):
-        raise IDEError("当前版本暂不支持认证配置或自定义 header；请使用无鉴权 HTTP 流连接")
+    env = raw.get("header_env") or {}
+    if not isinstance(headers, dict) or not isinstance(env, dict):
+        raise IDEError("header 配置必须为对象")
+    if any(k.lower() != "x-idea-project" for k in headers):
+        raise IDEError("不接收明文认证 header；请配置 header_env 的 MINO_IDE_ 环境变量引用")
     if any(not isinstance(v, str) or len(v) > 2048 or "\n" in v or "\r" in v for v in headers.values()):
         raise IDEError("header 无效")
-    return {"url": local_url(raw.get("url", "")), "transport": "streamable-http", "headers": headers}
+    if any(k.lower() not in {"authorization", "x-api-key"} or not isinstance(v, str)
+           or not re.fullmatch(r"MINO_IDE_[A-Z0-9_]{1,100}", v) for k, v in env.items()):
+        raise IDEError("只允许 Authorization/X-API-Key 引用 MINO_IDE_ 开头的本机环境变量名")
+    if len({k.lower() for k in env}) != len(env):
+        raise IDEError("认证 header 重复")
+    return {"url": local_url(raw.get("url", "")), "transport": "sse" if transport == "sse" else "streamable-http", "headers": headers, "header_env": env}
 
+
+def resolved_headers(config):
+    headers = dict(config.get("headers", {}))
+    for name, reference in config.get("header_env", {}).items():
+        value = os.environ.get(reference, "")
+        if not value or len(value) > 8192 or "\r" in value or "\n" in value:
+            raise IDEError("Scout 本机 IDE 认证环境变量缺失或无效；请在节点配置后重启 Scout")
+        headers[name] = value
+    from mino_scout.secret_redaction import remember
+    for name, value in headers.items():
+        if name.lower() in {"authorization", "x-api-key"}:
+            remember(value)
+            if name.lower() == "authorization" and " " in value:
+                remember(value.split(" ", 1)[1])
+    return headers
 
 class Client:
     def __init__(self, config):
-        self.url = local_url(config["url"])
+        config = connection_spec({k: v for k, v in config.items() if k not in {"connection_id", "revision"}})
+        self.transport = config["transport"]
+        self.sse = None
+        self.url = config["url"]
+        self.headers = {**resolved_headers(config), "Accept": "application/json, text/event-stream"}
         self.http = httpx.Client(trust_env=False, follow_redirects=False, timeout=40)
-        self.headers = {**config.get("headers", {}), "Accept": "application/json, text/event-stream"}
         self.serial = 0
         self.deadline = time.monotonic() + 60
         self.tools = {}
@@ -49,6 +77,9 @@ class Client:
 
     def __enter__(self):
         try:
+            if self.transport == "sse":
+                from mino_scout.ide_sse import SSETransport
+                self.sse = SSETransport(self)
             init = self.rpc("initialize", {"protocolVersion": "2025-03-26", "capabilities": {},
                 "clientInfo": {"name": "mino-scout", "version": "1"}})
             if init.get("protocolVersion") not in {"2025-03-26", "2025-06-18"}:
@@ -68,10 +99,14 @@ class Client:
                 raise IDEError("IDE 工具列表未完整读取")
             return self
         except BaseException:
+            if self.sse:
+                self.sse.close()
             self.http.close()
             raise
 
     def __exit__(self, *args):
+        if self.sse:
+            self.sse.close()
         self.http.close()
 
     def rpc(self, method, params, notification=False):
@@ -79,6 +114,8 @@ class Client:
         body = {"jsonrpc": "2.0", "method": method, "params": params}
         if not notification:
             body["id"] = self.serial
+        if self.sse:
+            return self.sse.rpc(body, notification)
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise IDEError("IDE 操作期限已到")
@@ -111,6 +148,8 @@ class Client:
                 raise IDEError("IDE 流结束但没有本次回执")
             chunks = []
             for chunk in response.iter_bytes():
+                if time.monotonic() > self.deadline:
+                    raise IDEError("IDE 操作期限已到")
                 size += len(chunk)
                 if size > 1048576:
                     raise IDEError("IDE 响应超出 1 MiB 上限")

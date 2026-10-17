@@ -11,7 +11,7 @@ from mino_scout.config import config_path
 from mino_scout.ide_client import IDEError
 
 
-def install(binding):
+def install(binding, on_stage=None):
     source = Path(binding["source_dir"]).resolve(strict=True)
     apk = Path(binding["apk_path"]).resolve(strict=True)
     if not apk.is_relative_to(source) or apk.suffix.lower() != ".apk" or not apk.is_file():
@@ -51,7 +51,11 @@ def install(binding):
             raise IDEError("需要降级，已阻止；不会卸载或清数据")
         with fixed.open("rb") as stream:
             digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        if on_stage:
+            on_stage("installing")
         rc, output, error = _adb(serial, "install", "-r", "-t", str(fixed), timeout=60)
+        if rc in {-1, -3} or (rc != 0 and "Failure [" not in output + error):
+            return {"state": "unknown", "reason": "APK 安装连接中断或超时，实际结果未确认；不会重新安装", "apk_sha256": digest}
         if rc != 0 or "Success" not in output:
             return {"state": "failed", "reason": "APK 安装失败；签名冲突/降级需人工处理，未卸载或清数据", "apk_sha256": digest}
         rc, installed, _ = _adb(serial, "shell", "dumpsys", "package", package, timeout=10)

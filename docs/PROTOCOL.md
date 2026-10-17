@@ -719,7 +719,7 @@ Scout 持久最小幂等回执，重复 operation_id 参数不符拒绝；Nexus 
 node.ide_prepare 不进入 UI 动作 fallback。执行与重启互斥于节点设备操作，同机 IDE 跨 Scout 文件锁。
 macOS/Linux 停止须核对端口、cwd、用户、PyCharm 父链及 PID/create_time，仅 SIGTERM。
 MCP 终端仅接受程序生成的固定停止动作，不接受用户命令。首期 HTTP 流使用现有 httpx，
-无新增 runtime 依赖；SSE transport、认证 header 和 Windows 自动停止尚不支持。
+无新增第三方依赖；SSE、认证环境变量引用与 Windows 协作关闭范围见后续增补。
 
 V6 B APK 增补：action=install 只接受绑定中的 apk_path/android_serial/apk_package/apk_version_code。
 Nexus 创建和派发时复核设备属于同一活 Scout；Scout 要求源目录内的本地 APK，固定副本后以
@@ -763,3 +763,31 @@ CLI update-recover <operation_id> 仅恢复原旧层，不重下或重放安装�
 update-status <operation_id> 只读，不能自行宣布在线核验通过。
 
 源码交付不代表各平台安装验收通过。真实 clean release、兼容性演练及目标平台运行证据另记。
+
+
+## V6 B：结果恢复与连接扩展（2026-10-17）
+
+保持现有 wire 与开发准备 contract_version=1。Scout features 增加 receipt；Nexus 先检查声明。
+action=receipt 携带新 operation_id、target_operation_id 与原参数的 SHA256 target_digest；
+只读取节点持久回执，不重放原 EXECUTE。持久回执包含实际 stage/stages，最终落盘前 fsync。
+POST development/operations/{id}/recover 与 MCP development.recover 复核账号、应用与节点归属；
+可恢复已确认的最终结果并释放节点占用，保留 previous_state/时间/source；无回执仍保持未知。
+节点断线和 Nexus 重启不重发已派发操作；过期排队项失败、在途项转 unknown。新业务任务的
+资源准入与开发占用在同一 SQLite 事务检查；其他节点及只读操作不被慢 IDE 调用串行阻塞。
+
+connection.transport 显式选择 streamable-http 或 sse，不自动回退、重连或重发。
+SSE 服务提供的 POST 端点必须同源，事件与 HTTP 响应均有上限/截止时间。
+headers 仍仅接受非秘密 x-idea-project；认证使用 header_env 对象：
+{"Authorization":"MINO_IDE_AUTHORIZATION"} 或 {"X-API-Key":"MINO_IDE_API_KEY"}。
+值只能是 MINO_IDE_ 开头的本机环境变量名称。Scout 本机解析、缺失则拒绝；密钥值不经过
+Workbench/Nexus，也不写连接 JSON 或回执。Authorization 环境变量包含完整 header 值。
+旧的明文 token/header 导入仍明确拒绝。返回连接摘要仅包含 authentication 和 auth_env_names。
+
+Windows 提供跨进程互斥与经过 PID/创建时间/用户/cwd/IDE 父链核验后的 WM_CLOSE；
+只适用于具备可协作关闭窗口的目标。无窗口控制台服务需 PyCharm Rerun；不调用
+TerminateProcess、taskkill 或强制结束。macOS/Linux 沿用 SIGTERM。
+
+日志是 source_dir 内已登记文件的单次末尾快照，最多 32 KiB，秘密脱敏、标记截断。
+Workbench 可显式开启 3 秒刷新，最多 10 分钟，隐藏页面暂停，错误或配置变更停止。
+并非服务器日志流或无限续读。构建版本、服务可访问和用例通过独立展示。
+安装超时/连接中断保留 unknown，不误报确定失败后重复安装。
