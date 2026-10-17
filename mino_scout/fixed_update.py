@@ -143,33 +143,77 @@ def _confirm_build(data, running):
     return True
 
 
-def _confirm_registered_child(opid, child):
-    """Local CLI updates do not require a Nexus-owned operation row.
-
-    The sidecar must belong to this live child and contain a fresh registration,
-    not just a disk version, a previous process's receipt or an open socket.
-    """
-    from mino_scout.runtime_sidecar import read_runtime_sidecar
-    if child.poll() is not None:
+def registration_matches(side, *, pid, created, now):
+    """A receipt must describe this process and a fresh registered connection."""
+    if not isinstance(side, dict) or side.get("pid") != pid:
+        return False
+    connection = side.get("connection") or {}
+    if not isinstance(connection, dict):
         return False
     try:
-        created = psutil.Process(child.pid).create_time()
-        side = read_runtime_sidecar(expect_pid=child.pid)
-        connection = side.get("connection") or {}
-        now = time.time()
-        if (connection.get("registered") is not True
-                or connection.get("connected") is not True
-                or not created <= float(connection.get("last_registered_at", 0)) <= now
-                or not max(created, now - 90) <= float(side.get("updated_at", 0)) <= now):
+        return (connection.get("registered") is True
+                and connection.get("connected") is True
+                and created <= float(connection.get("last_registered_at", 0)) <= now
+                and max(created, now - 90) <= float(side.get("updated_at", 0)) <= now)
+    except (ValueError, TypeError, OverflowError):
+        return False
+
+
+def _confirm_registered_process(opid, pid, created):
+    from mino_scout.runtime_sidecar import read_runtime_sidecar
+    try:
+        proc = psutil.Process(pid)
+        if proc.create_time() != created or not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
+            return False
+        side = read_runtime_sidecar(expect_pid=pid)
+        if not registration_matches(side, pid=pid, created=created, now=time.time()):
             return False
         with lock():
             data = read(opid)
-            if _matches_child(data, child.pid, created) and child.poll() is None:
+            if (_matches_child(data, pid, created) and proc.is_running()
+                    and proc.status() != psutil.STATUS_ZOMBIE):
                 return _confirm_build(data, side.get("process_build") or {})
     except (OSError, ValueError, TypeError, psutil.Error):
-        # Includes a transient nonblocking install lock collision; poll again.
         return False
     return False
+
+
+def _confirm_registered_child(opid, child):
+    """Confirm only the helper's live child, never a disk build or old receipt."""
+    if child.poll() is not None:
+        return False
+    try:
+        return _confirm_registered_process(opid, child.pid, psutil.Process(child.pid).create_time())
+    except psutil.Error:
+        return False
+
+
+def _resume_live_verification(data):
+    """Observe a surviving child before trying to acquire its run lock.
+
+    None means no matching live child remains. A live but unverified child
+    keeps the original verification state; explicit recovery may query again.
+    Never replace bin, launch a duplicate child or terminate an unknown process.
+    """
+    if data.get("state") not in {"verifying", "rollback_verifying"}:
+        return None
+    pid, created = data.get("child_pid"), data.get("child_created")
+    if not pid or not created:
+        return None
+    try:
+        proc = psutil.Process(pid)
+        if proc.create_time() != created or not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
+            return None
+    except psutil.NoSuchProcess:
+        return None
+    if _confirm_registered_process(data["operation_id"], pid, created):
+        return 0
+    with lock():
+        current = read(data["operation_id"])
+        if current.get("state") in FINAL:
+            return 0
+        write(current, reason="原操作子进程仍存活，尚未取得匹配的注册回执；保留核验状态，请查询或恢复同一操作")
+    return 1
 
 
 def fixed_url(build_id):
@@ -485,8 +529,15 @@ def _helper(opid, *, recover=False):
     if data.get("helper_started") and not recover:
         return 1  # explicit recovery only; never replay a partially installed op
     with lock():
+        data = read(opid)
+        if data["state"] in FINAL:
+            return 0
         write(data, helper_started=True)
     try:
+        if recover:
+            resumed = _resume_live_verification(data)
+            if resumed is not None:
+                return resumed
         _wait_parent(data)
         from mino_scout.service import _RunLockHold
         run_lock = _RunLockHold()
