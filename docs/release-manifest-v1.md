@@ -21,6 +21,6 @@
 
 公共 write_manifest.py 拒绝混合提交、脏工作树、未自检源码包、重复平台（Nexus/Workbench）、文件越界或大小/摘要不符。CI 在原生构建成功后才上传 item 元数据并生成 manifest。候选分支与手动 CI 仅生成验证产物；固定版本 tag 在全部构建成功后创建 Release。Scout 不再提前创建空 Release。
 
-本地交付另给 `hi3d-local-manifest.json`，distribution=local-verification、publishable=false、无远端 URL，只引用当前目录实际文件；它不是公开更新源。GitHub 发布必须使用干净的已提交源码，并重新由 CI 构建；不得把本地 dirty 改成 false 冒充发布验收。
+本地交付另给 `mino-local-manifest.json`，distribution=local-verification、publishable=false、无远端 URL，只引用当前目录实际文件；它不是公开更新源。GitHub 发布必须使用干净的已提交源码，并重新由 CI 构建；不得把本地 dirty 改成 false 冒充发布验收。
 
 应用运行身份：Nexus `/sys/server_info` 返回固定进程 build 与持久 instance_id；Scout 注册/心跳能力声明及 runtime sidecar 携带进程加载时的 build，status 的 running_build 不从磁盘新包推测；Workbench `/health` 和运行配置返回打包 build。

@@ -31,7 +31,7 @@ BUILD = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,127}\Z")
 
 def root():
     path = config_dir() / "updates"
-    path.mkdir(mode=0o700, exist_ok=True)
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
     if path.is_symlink() or path.resolve().parent != config_dir().resolve():
         raise RuntimeError("更新目录边界不符")
     return path
@@ -104,7 +104,8 @@ def loaded_build():
 
 
 def receipt(data):
-    return {k: data[k] for k in ("operation_id", "state", "build_id", "reason",
+    return {k: data[k] for k in ("operation_id", "state", "build_id", "reason", "phase",
+        "preparation_error", "startup_error", "recovery_error",
         "running_build_id", "running_version_verified", "previous_build_id", "updated_at") if k in data}
 
 
@@ -112,20 +113,63 @@ def status(opid, running=None):
     data = read(opid)
     if not data:
         return {"operation_id": opid, "state": "not_found"}
-    # Called by the connected Scout, using metadata captured at core construction.
-    # A helper/CLI reading the receipt cannot certify a running build.
-    if running and data["state"] in {"verifying", "rollback_verifying"}:
-        expected = data["build_id"] if data["state"] == "verifying" else data["previous_build_id"]
-        if running.get("build_id") == expected:
-            with lock():
-                data = read(opid)
-                if data["state"] in {"verifying", "rollback_verifying"}:
-                    write(data, state="succeeded" if data["state"] == "verifying" else "rolled_back",
-                        running_build_id=expected, running_version_verified=True)
+    # Only the helper's actual child can certify its loaded build. CLI reads
+    # remain read-only; the helper also observes the registered process sidecar.
+    if running:
+        with lock():
+            data = read(opid)
+            if _matches_child(data, os.getpid(), psutil.Process().create_time()):
+                _confirm_build(data, running)
     result = receipt(data)
     if data["state"] not in FINAL:
         result["recovery_command"] = "update-recover " + opid
     return result
+
+
+def _matches_child(data, pid, created):
+    return (data.get("child_pid") == pid and data.get("child_created") == created
+            and data.get("state") in {"verifying", "rollback_verifying"})
+
+
+def _confirm_build(data, running):
+    rollback = data["state"] == "rollback_verifying"
+    expected = data["previous_build_id"] if rollback else data["build_id"]
+    commit = data.get("previous_source_commit" if rollback else "source_commit")
+    if (running.get("build_id") != expected or running.get("dirty") is not False
+            or (commit and running.get("source_commit") != commit)):
+        return False
+    write(data, state="rolled_back" if rollback else "succeeded",
+          running_build_id=expected, running_version_verified=True)
+    return True
+
+
+def _confirm_registered_child(opid, child):
+    """Local CLI updates do not require a Nexus-owned operation row.
+
+    The sidecar must belong to this live child and contain a fresh registration,
+    not just a disk version, a previous process's receipt or an open socket.
+    """
+    from mino_scout.runtime_sidecar import read_runtime_sidecar
+    if child.poll() is not None:
+        return False
+    try:
+        created = psutil.Process(child.pid).create_time()
+        side = read_runtime_sidecar(expect_pid=child.pid)
+        connection = side.get("connection") or {}
+        now = time.time()
+        if (connection.get("registered") is not True
+                or connection.get("connected") is not True
+                or not created <= float(connection.get("last_registered_at", 0)) <= now
+                or not max(created, now - 90) <= float(side.get("updated_at", 0)) <= now):
+            return False
+        with lock():
+            data = read(opid)
+            if _matches_child(data, child.pid, created) and child.poll() is None:
+                return _confirm_build(data, side.get("process_build") or {})
+    except (OSError, ValueError, TypeError, psutil.Error):
+        # Includes a transient nonblocking install lock collision; poll again.
+        return False
+    return False
 
 
 def fixed_url(build_id):
@@ -144,6 +188,8 @@ def submit(opid, build_id, *, release_tag, action="update", rollback_of="", pare
     if development():
         raise ValueError("源码 Scout 不执行安装包更新，请更新源码并重启")
     from mino_scout.service import read_pid, pid_alive
+    if not BUILD.fullmatch(build_id) or build_id.lower() == "latest":
+        raise ValueError("必须指定有效的固定 build_id")
     if action not in {"update", "rollback"}:
         raise ValueError("未知更新动作")
     params = {"build_id": build_id, "release_tag": release_tag, "action": action, "rollback_of": rollback_of}
@@ -167,6 +213,9 @@ def submit(opid, build_id, *, release_tag, action="update", rollback_of="", pare
         previous = loaded_build().get("build_id", "")
         if not previous or loaded_build().get("dirty"):
             raise RuntimeError("当前安装缺少 BUILD.json；先安装支持 D1 合同的正式基线")
+        installed_build = json.loads((current / "app/mino_scout/BUILD.json").read_text())
+        if any(installed_build.get(key) != loaded_build().get(key) for key in ("build_id", "source_commit", "dirty")):
+            raise RuntimeError("磁盘安装与当前进程身份不一致，请先恢复一致后更新")
         url = fixed_url(release_tag)
         if action == "rollback":
             source = read(rollback_of)
@@ -177,7 +226,8 @@ def submit(opid, build_id, *, release_tag, action="update", rollback_of="", pare
         directory = op_path(opid)
         directory.mkdir(mode=0o700)
         data = {"operation_id": opid, "params": params, "build_id": build_id,
-            "previous_build_id": previous, "manifest_url": url, "state": "installing",
+            "previous_build_id": previous, "previous_source_commit": loaded_build().get("source_commit"),
+            "manifest_url": url, "state": "installing",
             "created_at": time.time(), "parent_pid": parent_pid,
             "parent_created": psutil.Process(parent_pid).create_time() if parent_pid else 0}
         write(data)
@@ -232,7 +282,11 @@ def prepare(data):
     current = config_dir() / "bin"
     candidate = directory / "next-bin"
     if data["params"]["action"] == "rollback":
-        shutil.copytree(op_path(data["params"]["rollback_of"]) / "previous-bin", candidate, symlinks=True)
+        source = op_path(data["params"]["rollback_of"]) / "previous-bin"
+        original = read(data["params"]["rollback_of"])
+        build = _checked_install(source, data["build_id"], original.get("previous_source_commit"))
+        shutil.copytree(source, candidate, symlinks=True)
+        write(data, source_commit=build["source_commit"])
         return candidate
     manifest = fetch_json(data["manifest_url"])
     if (manifest.get("manifest_schema_version") != 1 or manifest.get("component") != "scout"
@@ -240,6 +294,9 @@ def prepare(data):
             or not re.fullmatch(r"[0-9a-f]{40}", str(manifest.get("source_commit", "")))):
         raise ValueError("发布清单的 schema/component/build/source_commit 不符合固定版本合同")
     compat = manifest.get("compatibility") or {}
+    from mino_scout.protocol import PROTOCOL_VERSION
+    if (compat.get("protocol") or {}).get("node") != PROTOCOL_VERSION:
+        raise ValueError("节点协议变化须通过维护窗口安装固定兼容版本")
     if (compat.get("scout_update_contract") != 1 or compat.get("automatic_rollback") is not True
             or data["previous_build_id"] not in compat.get("rollback_build_ids", [])):
         raise ValueError("此版本未声明当前旧版的已验证回退兼容性，需人工维护")
@@ -298,9 +355,7 @@ def prepare(data):
     if app_contract.get("requires_browser") and layers.get("browser") != app_contract["requires_browser"]:
         raise ValueError("app/browser 指纹不兼容；需先准备匹配浏览器层")
     (candidate / "layers.txt").write_text("".join(f"{k} {v}\n" for k, v in layers.items()))
-    build = json.loads((candidate / "app/mino_scout/BUILD.json").read_text())
-    if build.get("build_id") != data["build_id"] or build.get("source_commit") != manifest["source_commit"]:
-        raise ValueError("包内 BUILD 与清单不匹配")
+    _checked_install(candidate, data["build_id"], manifest["source_commit"])
     return candidate
 
 
@@ -331,22 +386,71 @@ def _wait_parent(data):
         pass
 
 
+def _checked_install(directory, expected, commit=None):
+    # Validate before moving any existing installation, including recovery.
+    if directory.is_symlink() or not directory.is_dir():
+        raise RuntimeError("安装目录缺失或为符号链接")
+    build = json.loads((directory / "app/mino_scout/BUILD.json").read_text())
+    if (build.get("build_id") != expected or build.get("dirty") is not False
+            or not re.fullmatch(r"[0-9a-f]{40}", str(build.get("source_commit", "")))
+            or (commit and build.get("source_commit") != commit)):
+        raise RuntimeError("安装 build/source_commit/clean 身份核验失败")
+    exe = directory / ("mino-scout.exe" if os.name == "nt" else "mino-scout")
+    if not exe.is_file():
+        raise RuntimeError("安装缺少 Scout 可执行文件")
+    return build
+
+
+def _restore_previous(data):
+    """Caller owns run/install locks; retain replaced files for diagnosis."""
+    current = config_dir() / "bin"
+    previous = op_path(data["operation_id"]) / "previous-bin"
+    source = previous if previous.exists() or previous.is_symlink() else current
+    _checked_install(source, data["previous_build_id"], data.get("previous_source_commit"))
+    if source == previous:
+        if current.exists() or current.is_symlink():
+            os.replace(current, op_path(data["operation_id"]) / ("recovery-bin-" + uuid.uuid4().hex))
+        os.replace(previous, current)
+
+
+def _startup_failure(opid, reason, rollback):
+    with lock():
+        data = read(opid)
+        field = "recovery_error" if rollback else "startup_error"
+        write(data, **{field: reason[:500]})
+
+
 def _start_and_verify(data, rollback=False):
     exe = config_dir() / "bin" / ("mino-scout.exe" if os.name == "nt" else "mino-scout")
     with lock():
-        write(data, state="rollback_verifying" if rollback else "verifying")
+        data = read(data["operation_id"])
+        write(data, state="rollback_verifying" if rollback else "verifying",
+              child_pid=None, child_created=None)
     kwargs = {"cwd": str(config_dir()), "env": {**os.environ, "MINO_SCOUT_HOME": str(config_dir())},
               "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     if os.name == "nt":
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
     else:
         kwargs["start_new_session"] = True
-    child = subprocess.Popen([str(exe), "run"], **kwargs)
+    try:
+        child = subprocess.Popen([str(exe), "run"], **kwargs)
+    except OSError as exc:
+        # No process exists, so the caller can safely restore the retained bin.
+        _startup_failure(data["operation_id"], "启动失败：" + type(exc).__name__ + ": " + str(exc), rollback)
+        return False
+    try:
+        created = psutil.Process(child.pid).create_time()
+    except psutil.NoSuchProcess:
+        child.wait(timeout=5)
+        _startup_failure(data["operation_id"], "启动后立即退出：" + str(child.returncode), rollback)
+        return False
     with lock():
         data = read(data["operation_id"])
-        write(data, child_pid=child.pid, child_created=psutil.Process(child.pid).create_time())
+        write(data, child_pid=child.pid, child_created=created)
     end = time.monotonic() + 120
     while time.monotonic() < end:
+        if _confirm_registered_child(data["operation_id"], child):
+            return True
         current = read(data["operation_id"])
         if current["state"] in {"succeeded", "rolled_back"}:
             return True
@@ -355,13 +459,19 @@ def _start_and_verify(data, rollback=False):
         time.sleep(1)
     from mino_scout.process_control import request_local_stop
     if child.poll() is None:
-        request_local_stop(child.pid)
+        try:
+            request_local_stop(child.pid)
+        except psutil.NoSuchProcess:
+            pass
         child.wait(timeout=30)  # no force kill; failure retains maintenance state
+    _startup_failure(data["operation_id"], "未完成运行版本核验；子进程退出码：" + str(child.returncode), rollback)
     return False
 
 
 def helper(opid, *, recover=False):
-    op_path(opid)
+    directory = op_path(opid)
+    if getattr(sys, "frozen", False) and Path(sys.executable).resolve().parent != (directory / "helper-bin").resolve():
+        raise RuntimeError("请使用原操作 helper-bin 中的独立助手执行恢复")
     with lock(f"{opid}/helper.lock"):
         return _helper(opid, recover=recover)
 
@@ -387,22 +497,33 @@ def _helper(opid, *, recover=False):
             current = config_dir() / "bin"
             previous = op_path(opid) / "previous-bin"
             if recover:
-                # Recovery never downloads/reinstalls. Restore the retained original
-                # after an interrupted rename, or restart it if switch never began.
-                if previous.is_dir():
-                    if current.exists():
-                        os.replace(current, op_path(opid) / ("recovery-bin-" + uuid.uuid4().hex))
-                    os.replace(previous, current)
-                installed = json.loads((current / "app/mino_scout/BUILD.json").read_text())
-                if installed.get("build_id") != data["previous_build_id"]:
-                    raise RuntimeError("无法确认恢复后的旧版身份")
-            else:
-                candidate = prepare(data)
                 with lock():
-                    write(data, state="installing", phase="switching")
-                    os.replace(current, previous)
-                    os.replace(candidate, current)
-                    write(data, state="restarting", phase="switched")
+                    _restore_previous(data)
+            else:
+                try:
+                    candidate = prepare(data)
+                except Exception as exc:
+                    # prepare only writes operation-owned staging, never bin.
+                    # Re-open the existing installation after releasing run_lock.
+                    with lock():
+                        write(data, phase="prepare_failed", preparation_error=type(exc).__name__ + ": " + str(exc)[:500],
+                              reason=type(exc).__name__ + ": " + str(exc)[:500])
+                    _checked_install(current, data["previous_build_id"], data.get("previous_source_commit"))
+                    recover = True
+                if not recover:
+                    with lock():
+                        if previous.exists() or previous.is_symlink():
+                            raise RuntimeError("旧层保留目录已存在，拒绝覆盖")
+                        write(data, state="installing", phase="switching")
+                        os.replace(current, previous)
+                        try:
+                            os.replace(candidate, current)
+                        except OSError as exc:
+                            write(data, phase="switch_failed", reason=type(exc).__name__ + ": " + str(exc)[:500])
+                            _restore_previous(data)
+                            recover = True
+                        else:
+                            write(data, state="restarting", phase="switched")
         finally:
             run_lock.release()
         if _start_and_verify(data, rollback=recover):
@@ -410,13 +531,14 @@ def _helper(opid, *, recover=False):
         if recover:
             raise RuntimeError("旧版未能重新连接，保留人工维护状态")
         with lock():
+            data = read(opid)
             write(data, state="installing", phase="rolling_back")
         acquired, _ = run_lock.try_acquire(stale_wait_sec=1)
         if not acquired:
             raise RuntimeError("新版未确认退出，不能回退")
         try:
-            os.replace(config_dir() / "bin", op_path(opid) / "failed-bin")
-            os.replace(op_path(opid) / "previous-bin", config_dir() / "bin")
+            with lock():
+                _restore_previous(data)
         finally:
             run_lock.release()
         if _start_and_verify(data, rollback=True):
@@ -424,6 +546,9 @@ def _helper(opid, *, recover=False):
         raise RuntimeError("兼容旧版未能重新连接")
     except Exception as exc:
         with lock():
+            # A child/verification attempt may have added diagnostics since our
+            # original snapshot; never overwrite them with stale helper data.
+            data = read(opid)
             write(data, state="needs_operator", reason=type(exc).__name__ + ": " + str(exc)[:500])
         return 1
 

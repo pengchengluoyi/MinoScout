@@ -7,6 +7,12 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      rollback_evidence_json:
+        description: '已实测的新旧 build、全部发布平台的更新/回退/配置保留及证据 URL（JSON 数组）'
+        required: false
+        default: '[]'
+        type: string
 
 permissions:
   contents: write
@@ -117,6 +123,7 @@ jobs:
         env:
           SCOUT_VERSION: ${{ needs.meta.outputs.version }}
           SCOUT_RELEASE_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ needs.meta.outputs.tag }}
+          SCOUT_ROLLBACK_EVIDENCE_JSON: ${{ inputs.rollback_evidence_json || '[]' }}
         run: python scripts/write_manifest.py --dist dist --out dist/manifest.json
       - name: Attach packages to the Release
         uses: softprops/action-gh-release@v3

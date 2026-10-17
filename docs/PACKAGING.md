@@ -145,3 +145,20 @@ CLI 恢复也须旧进程退出；不能通过删除锁文件清除维护状态�
 正式包须有 A 阶段 BUILD.json 和 schema1 manifest。manifest 生成器的 `--rollback-build-id`
 只能列已经实测兼容的旧 build，默认空列表禁止自动更新，不能凭新字段自动宣称兼容。
 首次 D1 基线仍用已有安装入口；不让不支持合同的旧 Scout 猜测执行新更新操作。
+
+
+### D1 P0 收口（2026-10-17）
+
+- 下载、清单、哈希或兼容检查在切换前失败时，助手验证原 bin 身份并重新启动旧版；只有旧版重新注册且运行 build 核验通过才记 `rolled_back`。保留原失败原因和暂存目录；启动或身份核验失败继续 `needs_operator`。这条路径仍有停机窗口，并非无停机预下载。
+- 助手检查自身启动的子进程 PID/创建时间、注册时间、连接状态及进程加载的 build/source_commit。CLI 操作无需 Nexus 同名操作记录即可完成；`update-status` 本身仍只读。旧 sidecar、仅磁盘版本、未注册或不匹配 build 均不能确认成功。
+- 发布 workflow_dispatch 增加 `rollback_evidence_json`，经环境变量传入 manifest 生成器，避免把输入拼入 shell。tag 自动发布默认无兼容声明。可选择已实测提交/tag 手动运行工作流，绑定该提交产物的 build_id；发布操作由发布负责人执行。
+- 输入为 JSON 数组，每项包含 `build_id`（本次目标）、`previous_build_id`、`platforms`。每个平台项包含 `os`、`arch`、`update_passed: true`、`rollback_passed: true`、`config_preserved: true` 和 `evidence_url`（可审计的 HTTPS 实测报告）。必须覆盖本次全部发布平台，禁止重复平台、重复旧版、同版回退和目标不匹配。
+- manifest 保留 `rollback_evidence` 并从有效记录生成 `rollback_build_ids`。原 `--rollback-build-id` 参数只能与证据列表一致，不能凭参数直接放行。空证据仍为 `automatic_rollback=false`。证据字段校验不代替真实演练；本次不预填任何兼容 build，也未发布正式包。
+
+
+### D1 恢复路径补充（2026-10-17）
+
+新版可执行文件不存在、无执行权限或启动后立即退出时，助手记录 startup_error 并进入保留旧层回退；只有确认子进程退出才允许替换安装。若进程无法停止，继续保留 needs_operator。
+人工恢复和自动回退均先核验保留安装的 build/source_commit/clean 及可执行文件，再移动当前目录；旧包损坏不会先移走当前安装。第二次目录切换失败时立即恢复已保留旧层，再启动核验。
+预检候选（含显式回退来源）同样检查 clean 身份。查询回执增加 phase、preparation_error、startup_error、recovery_error；助手刷新账本后再写状态，避免回退时丢失前一步诊断。
+公开 manifest 生成器要求 dirty=false、validated=true、非空固定 build_id、合法且不重复的 OS/arch；兼容证据地址需有效 HTTPS 主机且不含用户名密码或空白。

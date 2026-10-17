@@ -1,0 +1,73 @@
+name: Publish verified native artifacts
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful main native build run ID
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/github-script@v8
+        id: source
+        env:
+          SOURCE_RUN: ${{ inputs.run_id }}
+        with:
+          script: |
+            if (!/^\d+$/.test(process.env.SOURCE_RUN)) throw new Error('Invalid run ID');
+            const {data: run} = await github.rest.actions.getWorkflowRun({...context.repo, run_id: process.env.SOURCE_RUN});
+            if (run.conclusion !== 'success' || run.status !== 'completed' || run.event !== 'push' || run.head_branch !== 'main' || run.path !== '.github/workflows/release.yml' || run.head_repository.full_name !== `${context.repo.owner}/${context.repo.repo}`) throw new Error('Only successful main native builds can be promoted');
+            core.setOutput('sha', run.head_sha);
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Read verified source version
+        id: version
+        run: |
+          python - <<'PYCODE'
+          import json, os, re
+          from pathlib import Path
+          version = Path('mino_scout/VERSION').read_text().strip()
+          assert re.fullmatch(r'\d+\.\d+\.\d+', version)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out: out.write('tag=v'+version+'\n')
+          PYCODE
+      - uses: actions/download-artifact@v6
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.run_id }}
+          pattern: scout-*
+          merge-multiple: true
+          path: dist
+      - name: Validate packages and create manifest
+        env:
+          SCOUT_RELEASE_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}
+          SCOUT_ROLLBACK_EVIDENCE_JSON: '[]'
+        run: python scripts/write_manifest.py --dist dist --out dist/manifest.json
+      - name: Require both supported native platforms
+        run: |
+          python - <<'PYCODE'
+          import json, pathlib
+          manifest = json.loads(pathlib.Path('dist/manifest.json').read_text())
+          assert {(row['os'],row['arch']) for row in manifest['items']} == {('darwin','arm64'),('win32','x64')}
+          PYCODE
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ steps.source.outputs.sha }}
+          files: |
+            dist/*.zip
+            dist/manifest.json
+            packaging/bootstrap.sh
+            packaging/bootstrap.ps1
+          fail_on_unmatched_files: true
+          generate_release_notes: true
