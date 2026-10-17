@@ -3,7 +3,7 @@ name: Release Scout
 # Candidate dispatch builds artifacts only; tags publish after every native build passes.
 on:
   push:
-    branches: ['v6-a-baseline-*']
+    branches: ['main']
     tags:
       - "v*"
   workflow_dispatch:
