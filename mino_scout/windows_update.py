@@ -70,7 +70,7 @@ try {
   }
   Save-Status 'failed' 'Installation failed; previous payloads restored where possible. See update helper log.'
   $bin = Join-Path $job.home 'bin\mino-scout.exe'
-  if (Test-Path -LiteralPath $bin) { Start-Process -FilePath $bin -ArgumentList 'run' -WorkingDirectory $job.home }
+  if (Test-Path -LiteralPath $bin) { Start-Process -FilePath $bin -ArgumentList 'run' -WorkingDirectory $job.home -WindowStyle Hidden }
   Write-Error $_
   exit 1
 }
@@ -165,7 +165,7 @@ def _stage_update(steps: list[dict], *, version: str) -> dict:
     try:
         subprocess.Popen(['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(helper), '-JobPath', str(job_path)],
                          stdout=log, stderr=log, stdin=subprocess.DEVNULL, close_fds=True,
-                         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS)
+                         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW)
     except OSError:
         _write_status(home, {'state': 'failed', 'version': version, 'updated_at': time.time(),
                             'backup': job['backup'], 'error': '无法启动 Windows 更新助手；安装文件未修改'})

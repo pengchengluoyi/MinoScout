@@ -196,7 +196,7 @@ class _Credential(ctypes.Structure):
 
 
 def _advapi32():
-    lib = ctypes.WinDLL("advapi32")
+    lib = ctypes.WinDLL("advapi32", use_last_error=True)
     lib.CredWriteW.argtypes = [ctypes.POINTER(_Credential), wintypes.DWORD]
     lib.CredWriteW.restype = wintypes.BOOL
     lib.CredReadW.argtypes = [
@@ -206,6 +206,7 @@ def _advapi32():
     lib.CredDeleteW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD]
     lib.CredDeleteW.restype = wintypes.BOOL
     lib.CredFree.argtypes = [ctypes.c_void_p]
+    lib.CredFree.restype = None
     return lib
 
 

@@ -262,6 +262,10 @@ if ($env:MINO_SCOUT_UPDATING) {
 } elseif ($env:MINO_SCOUT_SKIP_SERVICE) {
   Write-Host "MINO_SCOUT_SKIP_SERVICE set - not registering a scheduled task."
 } else {
+  $launcher = Join-Path $Prefix "run-scout.ps1"
+  $homeLiteral = $Prefix.Replace("'", "''")
+  $binLiteral = $Bin.Replace("'", "''")
+  "`$env:MINO_SCOUT_HOME = '$homeLiteral'`r`nStart-Process -FilePath '$binLiteral' -ArgumentList 'run' -WorkingDirectory '$homeLiteral' -WindowStyle Hidden -Wait" | Set-Content -LiteralPath $launcher -Encoding UTF8
   $registered = $false
   try {
     $legacy = Get-ScheduledTask -TaskName 'Mino Scout' -ErrorAction SilentlyContinue
@@ -271,11 +275,7 @@ if ($env:MINO_SCOUT_UPDATING) {
       Disable-ScheduledTask -TaskName 'Mino Scout' | Out-Null
     }
     $identity = $InstallingIdentity
-    $launcher = Join-Path $Prefix "run-scout.ps1"
-    $homeLiteral = $Prefix.Replace("'", "''")
-    $binLiteral = $Bin.Replace("'", "''")
-    "`$env:MINO_SCOUT_HOME = '$homeLiteral'`r`n& '$binLiteral' run" | Set-Content -LiteralPath $launcher -Encoding UTF8
-    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`"" -WorkingDirectory $Prefix
+    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$launcher`"" -WorkingDirectory $Prefix
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity.Name
     $principal = New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0 -MultipleInstances IgnoreNew
@@ -291,11 +291,11 @@ if ($env:MINO_SCOUT_UPDATING) {
     $startup = [Environment]::GetFolderPath("Startup")
     $cmdPath = Join-Path $startup ("MinoScout-" + $taskSuffix.Substring(0, 12) + ".cmd")
     $startupHome = $Prefix.Replace('%', '%%')
-    $startupBin = $Bin.Replace('%', '%%')
-    $startupContent = "@echo off`r`nchcp 65001 >nul`r`nset `"MINO_SCOUT_HOME=$startupHome`"`r`nstart `"`" `"$startupBin`" run"
+    $startupLauncher = $launcher.Replace('%', '%%')
+    $startupContent = "@echo off`r`nchcp 65001 >nul`r`nset `"MINO_SCOUT_HOME=$startupHome`"`r`nstart `"`" /b powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$startupLauncher`""
     [IO.File]::WriteAllText($cmdPath, $startupContent, (New-Object Text.UTF8Encoding($false)))
     $env:MINO_SCOUT_HOME = $Prefix
-    Start-Process -FilePath $Bin -ArgumentList "run" -WorkingDirectory $Prefix
+    Start-Process -FilePath $Bin -ArgumentList "run" -WorkingDirectory $Prefix -WindowStyle Hidden
     Write-Host "Wrote $cmdPath"
   }
 }

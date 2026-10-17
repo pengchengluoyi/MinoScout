@@ -92,11 +92,73 @@ jobs:
         run: python -m pip install ".[desktop]"
       - name: Validate PC SDK native library
         run: python -c "import cua_driver; from importlib.metadata import version; assert version('cua-driver') == '0.34.1'; print('PC SDK native library loaded')"
+      - name: Verify real Windows credential storage
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          python - <<'PYCODE'
+          import uuid
+          from mino_scout.plugins.secret_store import _win_get, _win_put, _win_delete
+          account = 'ci-native-' + uuid.uuid4().hex
+          value = uuid.uuid4().hex
+          try:
+              assert _win_get(account) == ''
+              _win_put(account, value)
+              assert _win_get(account) == value
+              _win_delete(account)
+              assert _win_get(account) == ''
+              _win_delete(account)
+          finally:
+              _win_delete(account)
+          print('Windows credential missing/write/read/delete passed')
+          PYCODE
       - name: Freeze, probe, pack zips
         env:
           SCOUT_VERSION: ${{ needs.meta.outputs.version }}
           MINO_SCOUT_SKIP_BROWSER: "1"
         run: python scripts/pack_release.py --out dist --binary
+      - name: Verify installed Windows Scout has no visible console
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          python - <<'PYCODE'
+          import ctypes, json, os, pathlib, subprocess, time, uuid, zipfile
+          temp = pathlib.Path(os.environ['RUNNER_TEMP'])/'scout-native-check'
+          temp.mkdir()
+          item = json.loads(pathlib.Path('dist/item-win32-x64.json').read_text())
+          with zipfile.ZipFile(pathlib.Path('dist')/item['filename']) as archive:
+              archive.extractall(temp/'package')
+          installer = next((temp/'package').glob('*/install.ps1'))
+          home = temp/'home'
+          home.mkdir()
+          (home/'config.json').write_text(json.dumps({'nexus_url':'http://127.0.0.1:50104','token':uuid.uuid4().hex}))
+          env = dict(os.environ, MINO_SCOUT_HOME=str(home))
+          exe = home/'bin/mino-scout.exe'
+          try:
+              subprocess.run(['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-File',str(installer)],env=env,check=True)
+              deadline = time.monotonic()+60
+              while not (home/'scout.pid').exists() and time.monotonic()<deadline:
+                  time.sleep(.5)
+              pid = int((home/'scout.pid').read_text().strip())
+              import psutil
+              time.sleep(2)
+              assert pathlib.Path(psutil.Process(pid).exe()).resolve() == exe.resolve()
+              kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+              user = ctypes.WinDLL('user32', use_last_error=True)
+              kernel.GetConsoleWindow.restype = ctypes.c_void_p
+              user.IsWindowVisible.argtypes = [ctypes.c_void_p]
+              kernel.FreeConsole()
+              if kernel.AttachConsole(pid):
+                  window = kernel.GetConsoleWindow()
+                  assert not (window and user.IsWindowVisible(window)), 'Scout console is visible'
+                  kernel.FreeConsole()
+              else:
+                  assert ctypes.get_last_error() == 6, 'Unable to inspect Scout console'
+              print('Installed Scout running with no visible console; Nexus connection not exercised')
+          finally:
+              if exe.exists():
+                  subprocess.run([str(exe),'stop'],env=env,check=True)
+          PYCODE
       - uses: actions/upload-artifact@v5
         if: success()
         with:

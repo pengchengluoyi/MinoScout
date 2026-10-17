@@ -23,17 +23,16 @@ def schedule_reexec(*, delay_sec: float = 1.5) -> dict[str, object]:
     delay = max(0.4, float(delay_sec))
     if os.name == "nt":
         literal = lambda value: "'" + str(value).replace("'", "''") + "'"
-        args = ", ".join(literal(arg) for arg in argv[1:])
         script = f"""$ErrorActionPreference = 'Stop'
 $old = Get-Process -Id {os.getpid()} -ErrorAction SilentlyContinue
 if ($old -and -not $old.WaitForExit(120000)) {{ throw 'Scout did not exit; restart cancelled' }}
 Start-Sleep -Milliseconds {int(delay * 1000)}
 Set-Location -LiteralPath {literal(config_dir())}
-& {literal(argv[0])} @({args})
+Start-Process -FilePath {literal(argv[0])} -ArgumentList {literal(subprocess.list2cmdline(argv[1:]))} -WindowStyle Hidden -Wait
 """
         encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
         subprocess.Popen(["powershell.exe", "-NoProfile", "-EncodedCommand", encoded], env=env,
-                         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS, close_fds=True)
+                         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW, close_fds=True)
     else:
         script = f"sleep {delay}; cd {shlex.quote(str(config_dir()))}; exec {shlex.join(argv)}"
         subprocess.Popen(["/bin/sh", "-c", script], env=env, start_new_session=True, close_fds=True)
