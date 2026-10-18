@@ -62,11 +62,8 @@ def _items(payload, key):
 def read_api(node_id, params):
     from mino_scout.plugins.state import plain_value, secret_value
 
-    base = origin(plain_value("cli", "case_api", "base_url"))
+    base = origin(params.get("service_url"))
     operation = params.get("operation", "read")
-    if operation == "read" or params.get("service_url"):
-        if not isinstance(params.get("service_url"), str) or origin(params["service_url"]) != base:
-            raise ValueError("source_api_service_mismatch")
     email = plain_value("cli", "case_api", "email")
     password = secret_value(node_id, "cli", "case_api", "password")
     if not email or not password:

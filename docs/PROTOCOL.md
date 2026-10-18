@@ -808,9 +808,10 @@ Workbench 可显式开启 3 秒刷新，最多 10 分钟，隐藏页面暂停，
 `kind=case_api` 额外要求节点声明 `features` 中的 `case_api`，参数为
 `node_id/service_url/remote_project_id/scope=project|session/session_id`，可选 `app_id/default_platform`。
 `operation=read` 是默认同步；`operation=projects|sessions` 仅返回筛选后的 `options=[{id,label}]`
-与不含凭据的 `service_url`。项目发现后保存服务地址引用；读取时必须与节点配置一致，
-节点切换服务器后拒绝读取，须重新发现并确认重绑定。
-Scout 使用本机 `cli:case_api` 插件中的服务根地址、邮箱和既有凭据存储中的密码登录
+与不含凭据的 `service_url`。服务根地址由管理员在 Workbench「管理 → 集成配置」保存于
+Nexus 的 SQLite，Nexus 在所有操作（包括项目发现）中下发 `service_url`。
+请求带有旧地址时，Nexus 在派发前拒绝，须重新发现项目；历史绑定仍须确认重绑定。
+Scout 使用经过已认证连接下发的 `service_url`、本机 `cli:case_api` 插件中的邮箱和既有凭据存储中的密码登录
 `POST /api/auth/login`，token 只在本次调用内存中使用。项目列表调用 `/api/projects`；
 会话列表与用例读取附带 `X-Project-Id`；读取 `/api/cases` 或 `/api/sessions/{id}/cases`。
 不跟随 HTTP 重定向；单响应上限 8 MiB、10000 条，每次网络等待最多 20 秒，整体读取
