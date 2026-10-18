@@ -2,6 +2,7 @@
 
     mino-scout                                 服务在跑 → 公开 status；否则尝试拉起服务
     mino-scout run                             常驻（launchd / systemd 用）
+    mino-scout development-devices --add SERIAL  选择开发安卓设备
     mino-scout probe                           只探测 manifest，不连 Nexus
     mino-scout status | stop | update | start
     mino-scout configure nexus-url <origin>    只改 Nexus 地址（token 由 Nexus REGISTER 下发）
@@ -242,6 +243,60 @@ def main(argv: list[str] | None = None) -> int:
         return _legacy_argparse_entry(raw)
 
     sub = raw[0]
+    if sub == "configure-development":
+        from mino_scout.config import development, load_config, resolve_runtime, save_config
+        if not development():
+            print("开发接入仅限源码 Scout，禁止修改正式安装", file=sys.stderr)
+            return 2
+        ap = argparse.ArgumentParser(prog="mino-scout configure-development")
+        ap.add_argument("--nexus-url", required=True)
+        ap.add_argument("--install-token", required=True)
+        ns = ap.parse_args(raw[1:])
+        try:
+            resolve_runtime(nexus=ns.nexus_url, config={})
+            if not ns.install_token.strip():
+                raise ValueError("开发接入凭证不能为空")
+            cfg = load_config()
+            if cfg.get("token") or cfg.get("pending_install_token"):
+                raise ValueError("开发目录已有接入凭证；请通过原账号处理绑定，拒绝覆盖")
+            cfg.update(pending_nexus_url=ns.nexus_url, pending_install_token=ns.install_token)
+            save_config(cfg)
+            print("开发接入配置已写入独立目录；运行 python -m mino_scout.cli run 启动开发节点")
+            return 0
+        except Exception as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+    if sub == "development-devices":
+        from mino_scout.config import development, load_config, save_config
+        if not development():
+            print("开发设备配置仅限源码 Scout", file=sys.stderr)
+            return 2
+        ap = argparse.ArgumentParser(prog="mino-scout development-devices")
+        ap.add_argument("--add", action="append", default=[], metavar="SERIAL",
+                        help="将安卓设备加入开发配置，可重复指定；省略则只查看")
+        ns = ap.parse_args(raw[1:])
+        try:
+            cfg = load_config()
+            selected = cfg.get("development_android_serials", [])
+            if not isinstance(selected, list) or any(
+                not isinstance(s, str) or not s or any(c.isspace() or ord(c) < 32 for c in s)
+                for s in selected + ns.add
+            ):
+                raise ValueError("开发设备序列号必须为非空且不含空白的字符串")
+            updated = list(dict.fromkeys(selected + ns.add))
+            if ns.add and updated != selected:
+                cfg["development_android_serials"] = updated
+                save_config(cfg)
+            print(json.dumps({"environment": "development", "android_serials": updated},
+                             ensure_ascii=False, indent=2))
+            return 0
+        except (ValueError, OSError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+    if sub == "identity":
+        from mino_scout.config import runtime_identity
+        print(json.dumps(runtime_identity(), ensure_ascii=False, indent=2))
+        return 0
     if sub == "configure":
         return cmd_configure(raw[1:])
     if sub == "status":

@@ -17,6 +17,9 @@ def install(binding, on_stage=None):
     if not apk.is_relative_to(source) or apk.suffix.lower() != ".apk" or not apk.is_file():
         raise IDEError("APK 必须位于本应用已授权源码目录内")
     serial = binding.get("android_serial", "")
+    from mino_scout.config import android_device_allowed
+    if not android_device_allowed(serial):
+        raise IDEError("开发 Scout 未获分配此 Android 设备，未安装 APK")
     package = binding.get("apk_package", "")
     version = binding.get("apk_version_code", "")
     if not serial or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+", package) or not version.isdigit():

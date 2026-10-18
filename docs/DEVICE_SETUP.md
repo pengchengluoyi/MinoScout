@@ -135,3 +135,26 @@ macOS 会话探测读取系统返回的 `kCGSSessionUserIDKey`、`kCGSSessionOnC
 ## 0.1.77 旧插件隔离与节点在线
 
 本版本修正已接受 REGISTER 后因本地旧插件配置待认领而断线的问题：保留节点身份和旧插件文件，节点继续连接并上报心跳；旧插件保持停用，不上传历史插件清单或消息，插件操作返回 blocked。管理员需通过明确的插件归属维护流程处理旧配置，重装或删除配置不是解法。
+
+
+## 正式与开发 Scout 身份（2026-10-18）
+
+源码运行固定使用 `~/.mino-dev/scout`、独立派生 Scout ID，仅连接本机 Nexus `:50101`；开发 Workbench 为 `:60101`。正式安装保留自身安装与配置目录，默认连接 `mino.local:50104`。不要复制正式 config/token/profile 到开发目录。
+
+`python -m mino_scout.cli identity` 只读显示当前入口的 environment、runtime_kind、config_dir、nexus_origin、scout_id、process_build 与 executable。源码/冻结包不单独决定正式/测试：冻结包连接本机 50101 也显示 development；非标准目标显示 custom，不能猜为正式。
+
+`status.configured_identity` 描述本次查询入口，`status.running_identity` 来自正在运行进程自己写入的 sidecar。旧进程尚无该字段时显示空，不能用查询进程冒充其身份。身份不包含 token、URL 用户信息或 query。
+
+开发节点经开发 Workbench 的正常登录/接入流程绑定。开发设备由开发配置选择；不查询正式任务状态，也不以正式环境释放作为开发调试前置条件。
+
+
+### PyCharm 开发解释器与设备隔离（2026-10-18）
+
+开发 Scout 使用 MinoScout/.venv，按本仓 pyproject 安装依赖；不要用缺少执行侧依赖的 Nexus SDK 直接导入 Scout。
+MinoNexus 的共享运行配置 `Scout Development` 经 `MinoScout/scripts/run_development.py` 启动独立解释器。启动器只使用标准库，并 exec 到 Scout/.venv；不需要修改 IDE 的全局 SDK。身份结果保留 executable 原始虚拟环境路径并显示 python_prefix/python_base_prefix，避免符号链接解析后把不同 venv 显示成同一环境。
+
+开发接入命令也使用 Scout/.venv，不再使用 Nexus 的 sys.executable。开发 Nexus 需重启加载更新；正常登录开发 Workbench 后，通过添加节点取得该命令，不复制正式 token。
+
+开发配置 `development_android_serials` 默认空列表，不自动登记 USB 手机。ADB 执行器、IDE APK 安装、启动与心跳输入法维护均检查该分配；未分配时拒绝动作。使用 `.venv/bin/python -m mino_scout.cli development-devices --add <serial>` 添加设备，可重复指定 `--add`；不传参数只查看。命令保留已有接入信息和已选设备，重复添加不重复写入。不依赖正式环境任务状态。运行节点重新上报设备后，测试 Nexus 可选择该设备；此列表不是跨 Nexus 硬件租约。
+
+PyCharm 启动器已完成真实接入：开发 Scout 独立解释器运行，测试 Nexus 注册和心跳成功，插件就绪。执行器直连设备诊断与 Nexus session 业务验收分别记录，不将截图成功当作用例或 APK 安装验收。

@@ -308,6 +308,12 @@ class AdbExecutor:
         # 得来）。Scout 不查库，serial 由 Nexus 在 EXECUTE.device_hint 里注入。
         serial = str(ctx.device.adb_serial or "")
         try:
+            from mino_scout.config import android_device_allowed
+            if serial and not android_device_allowed(serial):
+                return make_event_result(event, status=EventStatus.BLOCKED, executor_used=self.id,
+                    started_at=started_at, elapsed_ms=0,
+                    summary="开发 Scout 未获分配此 Android 设备，未执行动作",
+                    raw_response={"execution": {"execution_started": "no", "reason_code": "development_device_unassigned"}})
             if ctx.device.is_web:
                 return make_event_result(
                     event, status=EventStatus.DECLINED, executor_used=self.id,

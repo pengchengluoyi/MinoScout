@@ -331,6 +331,10 @@ def collect_status() -> dict[str, Any]:
         "scout_id": resolve_scout_id(),
         **ver_bundle,
     }
+    from mino_scout.config import runtime_identity
+    out["configured_identity"] = runtime_identity()
+    # A status command describes itself separately from the live daemon.
+    out["running_identity"] = side.get("runtime_identity") if running else None
     from mino_scout.runtime_sidecar import connection_status, read_update_status
     out["connection"] = connection_status(side, running=running)
     update = read_update_status()

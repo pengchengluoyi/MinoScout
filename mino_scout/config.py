@@ -206,3 +206,45 @@ def configure_proxy_bypass() -> None:
             if host not in cur:
                 cur.append(host)
         os.environ[key] = ",".join(cur)
+
+
+def runtime_identity() -> dict[str, Any]:
+    """Public deployment identity; never returns tokens or URL credentials.
+
+    Packaging and environment are separate: a frozen process may connect to the
+    development Nexus. Unknown destinations stay custom instead of being labelled
+    production solely because the executable is frozen.
+    """
+    from urllib.parse import urlsplit
+    from mino_scout.app_version import process_build_identity
+    ws, _ = resolve_runtime()
+    target = urlsplit(ws)
+    host = target.hostname or ""
+    port = target.port
+    local = host in {"127.0.0.1", "localhost", "::1"}
+    environment = "development" if local and port == 50101 else (
+        "production" if (local or host == LAN_HOST) and port == 50104 else "custom")
+    authority = f"[{host}]" if ":" in host else host
+    if port is not None:
+        authority += f":{port}"
+    return {
+        "environment": environment,
+        "runtime_kind": "source" if development() else "frozen",
+        "config_dir": str(config_dir()),
+        "nexus_origin": f"{target.scheme}://{authority}",
+        "scout_id": resolve_scout_id(persist=False),
+        "process_build": process_build_identity(),
+        "executable": str(Path(sys.executable).absolute()),
+        "python_prefix": sys.prefix,
+        "python_base_prefix": sys.base_prefix,
+        "source_root": str(Path(__file__).resolve().parent),
+    }
+
+
+def android_device_allowed(serial: str) -> bool:
+    """Select source-development phones independently of other environments."""
+    if not development():
+        return True
+    selected = load_config().get("development_android_serials", [])
+    return (isinstance(selected, list) and all(isinstance(s, str) and s.strip() == s and s for s in selected)
+            and bool(serial) and serial in selected)

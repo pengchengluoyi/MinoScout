@@ -24,8 +24,9 @@ def write_runtime_sidecar(*, pid: int | None = None) -> None:
     from mino_scout.app_version import imported_scout_version, read_app_semver, report_scout_version
     from mino_scout.stale_process import read_disk_app_semver
     from mino_scout.app_version import process_build_identity
+    from mino_scout.config import runtime_identity
     with _lock:
-        body = {"pid": int(pid or os.getpid()), "reported_version": report_scout_version(),
+        body = {"runtime_identity": runtime_identity(),"pid": int(pid or os.getpid()), "reported_version": report_scout_version(),
                 "imported_version": imported_scout_version(),
                 "process_build": process_build_identity(),
                 "disk_app_semver": read_disk_app_semver() or read_app_semver(),
