@@ -179,7 +179,8 @@ def probe(binding):
                 with http.stream("GET", url) as response:
                     if response.status_code == 200:
                         expected = binding.get("expected_build", "")
-                        if not expected:
+                        expected_instance = binding.get("expected_instance_id", "")
+                        if not expected and not expected_instance:
                             return {"state": "ready", "target_ready": True, "build_verified": False,
                                     "reason": "服务可访问；未证明本轮代码已生效，也不代表测试通过"}
                         content = b""
@@ -187,12 +188,31 @@ def probe(binding):
                             content += part
                             if len(content) > 65536:
                                 raise IDEError("版本探测响应过大")
-                        value = json.loads(content)
+                        document = json.loads(content)
+                        identity = document.get("data", document) if isinstance(document, dict) else {}
+                        actual_instance = identity.get("instance_id", "") if isinstance(identity, dict) else ""
+                        evidence = {"expected_instance_id": expected_instance, "actual_instance_id": str(actual_instance)[:100],
+                                    "instance_verified": bool(expected_instance and actual_instance == expected_instance)}
+                        if expected_instance and actual_instance != expected_instance:
+                            return {"state": "failed", "target_ready": True, "build_verified": False, **evidence,
+                                    "reason_code": "instance_mismatch", "reason": "目标服务实例与预期不符"}
+                        if isinstance(identity, dict) and identity.get("source_unchanged") is False:
+                            return {"state": "failed", "target_ready": True, "build_verified": False, **evidence,
+                                    "reason_code": "source_changed", "reason": "目标进程启动后源码已变化，请重启后重新核对"}
+                        if not expected:
+                            return {"state": "ready", "target_ready": True, "build_verified": False, **evidence,
+                                    "reason": "实例已核对；尚未指定预期 build，也未运行用例"}
+                        value = document
                         for key in binding.get("build_field", "build_id").split("."):
                             value = value.get(key) if isinstance(value, dict) else None
-                        if str(value) == expected:
-                            return {"state": "ready", "target_ready": True, "build_verified": True, "build": expected, "actual_build": str(value), "reason": "服务就绪，实际 build 已与预期核对；尚未运行用例"}
-                        return {"state": "failed", "target_ready": True, "build_verified": False, "expected_build": expected, "actual_build": str(value)[:200], "reason": "服务可访问，但实际 build 与预期不匹配"}
+                        if value is None and binding.get("build_field", "build_id") == "build_id" and isinstance(identity, dict):
+                            value = identity.get("build_id")
+                        if value not in (None, "", "source-unpackaged") and str(value) == expected:
+                            return {"state": "ready", "target_ready": True, "build_verified": True, **evidence, "build": expected, "actual_build": str(value), "reason": "服务就绪，实际 build 已与预期核对；尚未运行用例"}
+                        return {"state": "failed", "target_ready": True, "build_verified": False, **evidence, "expected_build": expected, "actual_build": str(value)[:200], "reason_code": "build_mismatch", "reason": "服务可访问，但实际 build 与预期不匹配"}
+                    if response.status_code in {401, 403}:
+                        return {"state": "failed", "target_ready": False, "build_verified": False,
+                                "reason_code": "target_auth_failed", "reason": "目标服务拒绝访问，请在测试 Workbench 使用测试账号登录"}
                     last = f"目标 HTTP {response.status_code}"
             except (httpx.HTTPError, ValueError):
                 last = "目标暂不可访问或版本响应格式无效"
@@ -212,6 +232,32 @@ def read_receipt(params):
         raise IDEError("原操作参数摘要不匹配")
     result = record.get("result") or {"state": "unknown", "reason": "原操作没有最终回执；不会重新执行"}
     return {**result, "receipt_verified": True, "receipt_operation_id": target}
+
+
+def sample_project(path):
+    root = Path(path).expanduser().resolve(strict=True)
+    if not root.is_dir():
+        raise IDEError("样例项目必须是已有目录")
+    scout_root = Path(__file__).resolve().parent.parent
+    if root == scout_root or root in scout_root.parents or root.is_relative_to(scout_root):
+        raise IDEError("开发 Scout 不允许把自身代码目录作为样例项目")
+    if any((root / marker).exists() for marker in ("mino_nexus", "mino_scout", "packaging/workbench_server.py")):
+        raise IDEError("MINO 控制链源码目录不能登记为测试 Scout 的样例项目")
+    return root
+
+
+def require_sample_project(binding):
+    from mino_scout.config import development
+    if not development():
+        return
+    project = sample_project(binding["project_path"])
+    source = Path(binding["source_dir"]).expanduser().resolve(strict=True)
+    allowed = load_config().get("development_ide_projects", [])
+    if not isinstance(allowed, list) or project not in [sample_project(path) for path in allowed]:
+        raise IDEError("开发 Scout 仅能操作专用样例项目；请先用 development-ide-projects --add 登记")
+    if not source.is_relative_to(project) or not source.is_dir():
+        raise IDEError("测试源码目录必须位于已登记的样例项目内")
+    sample_project(source)
 
 
 def perform(params):
@@ -241,6 +287,7 @@ def perform(params):
     if action == "list_connections":
         return {"state": "ready", "connections": [public_connection(r) for r in load_config().get("ide_connections", [])]}
     binding = params["binding"]
+    require_sample_project(binding)
     connection = _connection(binding["connection_id"], binding["connection_revision"])
     if action == "probe":
         stage("probing")

@@ -158,16 +158,9 @@ def needs_process_reload(*, app_layer_key: str = "") -> bool:
     return False
 
 
-def _read_build_identity() -> dict[str, Any]:
-    import json
-    path = Path(__file__).with_name("BUILD.json")
-    if not path.is_file():
-        return {"build_id":"source-unpackaged", "source_commit":"", "dirty":True}
-    data = json.loads(path.read_text())
-    return {key:data[key] for key in ("build_id", "source_commit", "dirty")}
+from mino_scout.source_build import ProcessBuild
 
-# Capture at module import, never label an old process with newly installed code.
-_PROCESS_BUILD = _read_build_identity()
+_PROCESS_BUILD = ProcessBuild(Path(__file__).parent)
 
 def process_build_identity() -> dict[str, Any]:
-    return dict(_PROCESS_BUILD)
+    return _PROCESS_BUILD.identity()

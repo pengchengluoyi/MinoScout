@@ -290,6 +290,30 @@ def main(argv: list[str] | None = None) -> int:
         except (ValueError, OSError) as exc:
             print(str(exc), file=sys.stderr)
             return 2
+    if sub == "development-ide-projects":
+        from mino_scout.config import development, load_config, save_config
+        from mino_scout.ide_prepare import sample_project
+        from mino_scout.ide_client import IDEError
+        if not development():
+            print("样例项目登记仅限源码 Scout", file=sys.stderr)
+            return 2
+        ap = argparse.ArgumentParser(prog="mino-scout development-ide-projects")
+        ap.add_argument("--add", action="append", default=[], metavar="PROJECT_PATH")
+        ns = ap.parse_args(raw[1:])
+        try:
+            cfg = load_config()
+            selected = cfg.get("development_ide_projects", [])
+            if not isinstance(selected, list) or any(not isinstance(path, str) for path in selected):
+                raise ValueError("现有样例项目配置格式无效；拒绝覆盖")
+            projects = list(dict.fromkeys(str(sample_project(path)) for path in selected + ns.add))
+            if ns.add:
+                cfg["development_ide_projects"] = projects
+                save_config(cfg)
+            print(json.dumps({"environment": "development", "ide_projects": projects}, ensure_ascii=False, indent=2))
+            return 0
+        except (ValueError, OSError, IDEError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
     if sub == "identity":
         from mino_scout.config import runtime_identity
         print(json.dumps(runtime_identity(), ensure_ascii=False, indent=2))

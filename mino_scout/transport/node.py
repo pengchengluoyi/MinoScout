@@ -22,7 +22,7 @@ from mino_scout import protocol as P
 from mino_scout.core import (
     ScoutCore,
 )
-from mino_scout.app_version import report_scout_version
+from mino_scout.app_version import report_scout_version, process_build_identity
 from mino_scout.log import SLog, current_node_id
 from mino_scout.schemas import EventStatus
 
@@ -653,6 +653,12 @@ class NodeTransport:
 
     async def _reply_result(self, req_env: P.Envelope, result: P.Result) -> None:
         try:
+            result.extra = {**(result.extra or {}), "execution_identity": {
+                "schema_version": 1, "node_id": self.core.node_id,
+                "scout_process_generation": self.core.binding_guard.process_generation,
+                "node_connection_generation": self.core.binding_guard.connection_generation,
+                "build": process_build_identity(),
+            }}
             await self._send(P.MsgType.RESULT, result, reply_to=req_env.msg_id)
         except Exception as exc:
             SLog.e(TAG, f"回 RESULT 失败（等待方按执行模式处理结果缺失）: {exc}")

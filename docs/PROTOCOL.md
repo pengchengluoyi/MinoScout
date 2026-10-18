@@ -362,6 +362,12 @@ Nexus 侧收到 `fail` 时**不得**让本 turn 失败：按 `docs/NAVIGATION_AT
 
 Scout **任何情况下不得让异常逃出** —— 内部异常一律转成 `status: "fail"` + `error`。Nexus 收到 S→N 的框架 `EXECUTE` 后必须回 `RESULT`，不能让 Scout 干等。
 
+Scout→Nexus 的 `RESULT.extra.execution_identity` 是可选的执行证据 v1，由传输层覆盖填写：
+`{schema_version:1,node_id,scout_process_generation,node_connection_generation,build:{build_id,source_commit,dirty,identity_kind,source_unchanged,source_digest?}}`。
+代际必须与本次派发所属的已认证连接一致，不从磁盘新版本或当前重连节点补造历史身份。发布包沿用进程启动时的 BUILD.json；源码进程使用启动时包内源码摘要产生 `dev-<摘要前24位>`，并检查源码是否已变化。`source_unchanged=false` 时该回执不能证明所测 build，需要重启并重新执行。该摘要只标识源码快照，不代表发布包的文件摘要。
+
+Nexus 在 `session/provenance` 固化实例/build，并将实际结果中的 `scout.execution_identity`、派发时 `scout.nexus_identity` 写入普通与 V5 会话。旧节点无字段时明确证据不足；REGISTER、版本字符串或准备操作成功不能代替实际执行回执。本扩展只增加既有 extra 字段，不提升 wire 版本，不宣称正式 Web 闭环或 MCP 全工具回归通过。
+
 #### 4.5.1 五态与 Router 处置
 
 取值与上游 `server/services/ai/regression/schemas.py::EventStatus` 逐字一致（**小写**，且是 `pass` 而不是 `OK`），避免搬迁时到处翻译名字。
