@@ -62,6 +62,17 @@ def _im_fields() -> list[dict[str, Any]]:
 CATALOG: list[dict[str, Any]] = [
     {
         "class": "cli",
+        "id": "case_api",
+        "label": "用例服务 API",
+        "needs_install": False,
+        "fields": [
+            _f("base_url", "服务地址", "http://SERVER_IP:8001"),
+            _f("email", "登录邮箱", ""),
+            _f("password", "登录密码", "", secret=True),
+        ],
+    },
+    {
+        "class": "cli",
         "id": "feishu",
         "needs_install": True,
         "fields": [
@@ -305,6 +316,9 @@ def apply_config(
     unknown = [k for k in incoming if k not in allowed]
     if unknown:
         raise ValueError(f"不能写这些字段: {', '.join(unknown)}")
+    if kind == "cli" and plugin_id == "case_api" and incoming.get("base_url"):
+        from mino_scout.case_source_api import origin
+        origin(str(incoming["base_url"]).strip())
     for key in clear or []:
         if key not in allowed:
             raise ValueError(f"不能清除字段 {key}")
@@ -321,7 +335,9 @@ def apply_config(
             continue
         if key not in incoming:
             continue
-        text = str(incoming.get(key) or "").strip()
+        text = str(incoming.get(key) or "")
+        if not (kind == "cli" and plugin_id == "case_api" and key == "password"):
+            text = text.strip()
         if _field_type(row, key) == "bool":
             current[key] = "1" if text.lower() in ("1", "true", "yes", "on") else "0"
             continue

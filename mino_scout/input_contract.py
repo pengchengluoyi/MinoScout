@@ -36,8 +36,8 @@ def runtime_input_capabilities() -> list[dict[str, Any]]:
         },
     ]
 
-    rows.append({"id": "node.update", "executor": "core", "platform_scope": "all", "platforms": [],
-                 "contract_version": 1, "features": ["fixed_build", "status", "rollback"]})
+    rows.append({"id": "node.source_read", "executor": "core", "platform_scope": "all", "platforms": [],
+        "contract_version": 1, "features": ["csv", "xlsx", "sheets", "case_api", "complete_snapshot"]})
     rows.append({"id": "node.ide_prepare", "executor": "ide", "platform": system,
                  "contract_version": 1, "features": ["check", "execute", "restart", "build", "install", "logs", "probe", "connection_config", "receipt"]})
     from mino_scout.app_version import process_build_identity

@@ -791,3 +791,38 @@ TerminateProcess、taskkill 或强制结束。macOS/Linux 沿用 SIGTERM。
 Workbench 可显式开启 3 秒刷新，最多 10 分钟，隐藏页面暂停，错误或配置变更停止。
 并非服务器日志流或无限续读。构建版本、服务可访问和用例通过独立展示。
 安装超时/连接中断保留 unknown，不误报确定失败后重复安装。
+
+### 2026-10-18：来源读取与维护范围调整
+
+`runtime_capabilities` 可声明 `node.source_read`、`contract_version=1` 和
+`features=[csv,xlsx,sheets,case_api,complete_snapshot]`。Nexus 只向来源所属用户的在线 Scout
+派发 `EXECUTE(capability_id=node.source_read)`，复用连接代次、Scout 进程代次与能力 revision；
+超过两次协商心跳周期的快照不准入。Scout 在读取前复核这些身份。
+
+参数包含 `source_id/read_id/generation/contract_version/kind` 和显式文件路径或 Sheets
+工作表、范围、列映射。文件必须位于 Scout 本机 `configure source-root` 授权根中；
+仅支持已保存 CSV/XLSX，不执行宏，公式缺缓存时拒绝整份快照。Sheets 使用真实 Sheets
+范围 API 并保守复读，不以文档读取替代。结果携带相同来源身份、`complete/table`，以及
+可用时的内容摘要与一致性说明。Nexus 整体校验编号、完整性与 generation 后才落库。
+
+`kind=case_api` 额外要求节点声明 `features` 中的 `case_api`，参数为
+`node_id/service_url/remote_project_id/scope=project|session/session_id`，可选 `app_id/default_platform`。
+`operation=read` 是默认同步；`operation=projects|sessions` 仅返回筛选后的 `options=[{id,label}]`
+与不含凭据的 `service_url`。项目发现后保存服务地址引用；读取时必须与节点配置一致，
+节点切换服务器后拒绝读取，须重新发现并确认重绑定。
+Scout 使用本机 `cli:case_api` 插件中的服务根地址、邮箱和既有凭据存储中的密码登录
+`POST /api/auth/login`，token 只在本次调用内存中使用。项目列表调用 `/api/projects`；
+会话列表与用例读取附带 `X-Project-Id`；读取 `/api/cases` 或 `/api/sessions/{id}/cases`。
+不跟随 HTTP 重定向；单响应上限 8 MiB、10000 条，每次网络等待最多 20 秒，整体读取
+90 秒截止（在途等待可能再占最多 20 秒）。用例保守复读，按 id 忽略排序比较，变化时拒绝。
+只接收完整列表（裸数组，或 `cases|projects|sessions|items|data` 单个数组信封）；若含
+`total/total_count/count` 须与条数一致，存在后续页标记则拒绝；不猜测分页接口。
+
+同步成功返回 `complete/records/consistency` 和相同来源身份。Nexus 再校验全部条目，
+以不可变 `id` 作为绑定编号，固定映射 `name/preconditions/steps/expected_result/module`。
+`case_number/priority/remarks/session_id/session_title/test_result/created_at` 保存在来源位置，
+其中远端结果不写本地 verdict。仅元信息或排序变化不建解析任务。项目、会话、节点等
+配置变化沿用显式重绑定与 generation 栅栏。读取失败不应用部分结果，不移除既有用例。
+
+升级与回退功能已按用户决定移除。新 Scout 不再声明 `node.update`，旧调用明确拒绝，
+不再提供更新/回退/自动恢复的派单入口；历史维护记录继续保留。

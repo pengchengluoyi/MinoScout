@@ -4,7 +4,7 @@
     mino-scout run                             常驻（launchd / systemd 用）
     mino-scout development-devices --add SERIAL  选择开发安卓设备
     mino-scout probe                           只探测 manifest，不连 Nexus
-    mino-scout status | stop | update | start
+    mino-scout status | stop | start
     mino-scout configure nexus-url <origin>    只改 Nexus 地址（token 由 Nexus REGISTER 下发）
 
 `probe` 子命令是部署新节点时的第一步（docs/DEVICE_SETUP.md §7）。
@@ -106,24 +106,21 @@ def cmd_heavy_deps() -> int:
     return 0 if out.get("ok") else 1
 
 
-def cmd_update(argv: list[str]) -> int:
-    from mino_scout.fixed_update import submit
-    ap = argparse.ArgumentParser(prog="mino-scout update")
-    ap.add_argument("--build-id", required=True)
-    ap.add_argument("--release-tag", required=True)
-    ap.add_argument("--operation-id", required=True)
-    ap.add_argument("--rollback-of", default="")
-    ns = ap.parse_args(argv)
-    try:
-        out = submit(ns.operation_id, ns.build_id, release_tag=ns.release_tag, action="rollback" if ns.rollback_of else "update", rollback_of=ns.rollback_of)
-        print(json.dumps(out, ensure_ascii=False, indent=2))
-        return 0
-    except Exception as exc:
-        print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
-        return 1
 
 
 def cmd_configure(argv: list[str]) -> int:
+    if len(argv) == 2 and argv[0] == "source-root":
+        from pathlib import Path
+        from mino_scout.config import load_config, save_config
+        root = Path(argv[1]).expanduser().resolve(strict=True)
+        if not root.is_dir():
+            print("来源根路径必须是目录", file=sys.stderr)
+            return 2
+        configuration = load_config()
+        configuration["case_source_roots"] = sorted(set(configuration.get("case_source_roots", [])) | {str(root)})
+        save_config(configuration)
+        print(json.dumps({"ok": True, "source_root": str(root)}, ensure_ascii=False))
+        return 0
     if not argv or argv[0] != "nexus-url":
         print("用法: mino-scout configure nexus-url <http://host:port>", file=sys.stderr)
         return 2
@@ -303,14 +300,6 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_status()
     if sub == "stop":
         return cmd_stop()
-    if sub == "update":
-        return cmd_update(raw[1:])
-    if sub == "update-helper" and len(raw) == 2:
-        from mino_scout.fixed_update import helper
-        return helper(raw[1])
-    if sub == "update-recover" and len(raw) == 2:
-        from mino_scout.fixed_update import helper
-        return helper(raw[1], recover=True)
     if sub == "update-status" and len(raw) == 2:
         from mino_scout.fixed_update import status
         print(json.dumps(status(raw[1]), ensure_ascii=False, indent=2))
@@ -330,7 +319,7 @@ def main(argv: list[str] | None = None) -> int:
     if sub == "probe":
         return cmd_probe(build_core())
 
-    print(f"未知命令: {sub}（可用: run start probe status stop update heavy-deps configure）", file=sys.stderr)
+    print(f"未知命令: {sub}（可用: run start probe status stop heavy-deps configure）", file=sys.stderr)
     return 2
 
 

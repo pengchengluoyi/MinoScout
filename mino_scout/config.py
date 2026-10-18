@@ -27,6 +27,9 @@ SCOUT_ID_LEN = 16
 
 def config_dir() -> Path:
     if development():
+        explicit = str(os.environ.get("MINO_SCOUT_DEV_HOME") or "").strip()
+        if explicit:
+            return Path(explicit).expanduser().resolve()
         return Path.home() / ".mino-dev" / "scout"
     override = str(os.environ.get("MINO_SCOUT_HOME") or "").strip()
     if override:

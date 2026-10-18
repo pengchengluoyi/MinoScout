@@ -1,8 +1,8 @@
-"""插件密钥放进操作系统保险库。写不进去就失败，不落明文文件。
+"""插件密钥优先使用系统保险库；Linux 不可用时使用私有权限文件。
 
 macOS 走 Security 框架，密钥不出现在进程参数里。
 Windows 走当前用户的凭据管理器。
-Linux 走 Secret Service（secret-tool 的标准输入）。没有这项服务就失败。
+Linux 优先走 Secret Service；不可用时使用 0700 目录内的 0600 明文文件。
 """
 from __future__ import annotations
 
@@ -251,45 +251,61 @@ def _win_delete(account: str) -> None:
     raise SecretStoreError(f"凭据管理器删除失败 ({ctypes.get_last_error()})")
 
 
-def _linux_tool() -> str:
-    path = shutil.which("secret-tool")
-    if not path:
-        raise SecretStoreError("没有 Secret Service（找不到 secret-tool），没有把密钥写成明文")
-    return path
+def _linux_call(action: str, account: str, secret: str | None = None):
+    tool = shutil.which("secret-tool")
+    if not tool:
+        return None
+    args = [tool, action]
+    if action == "store":
+        args.append("--label=MinoScout")
+    try:
+        return subprocess.run(
+            [*args, "service", SERVICE, "account", account],
+            input=secret.encode("utf-8") if secret is not None else None,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
 
 
 def _linux_put(account: str, secret: str) -> None:
-    proc = subprocess.run(
-        [_linux_tool(), "store", "--label=MinoScout", "service", SERVICE, "account", account],
-        input=secret.encode("utf-8"),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if proc.returncode != 0:
-        err = proc.stderr.decode("utf-8", "replace").strip()
-        raise SecretStoreError(err or "Secret Service 写入失败")
+    from mino_scout.plugins.file_secrets import locked_account
+    try:
+        with locked_account(account) as entry:
+            present, _ = entry.read()
+            # Once a file is authoritative, do not silently revert to an old keyring value.
+            if not present:
+                result = _linux_call("store", account, secret)
+                if result is not None and result.returncode == 0:
+                    return
+            entry.write(secret)
+    except (OSError, ValueError) as exc:
+        raise SecretStoreError("Linux 凭据文件保存失败，请检查目录权限或文件格式") from exc
 
 
 def _linux_get(account: str) -> str:
-    proc = subprocess.run(
-        [_linux_tool(), "lookup", "service", SERVICE, "account", account],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if proc.returncode != 0:
-        return ""
-    raw = proc.stdout
-    if raw.endswith(b"\n"):
-        raw = raw[:-1]
-    return raw.decode("utf-8")
+    from mino_scout.plugins.file_secrets import locked_account
+    try:
+        with locked_account(account) as entry:
+            present, value = entry.read()
+            if present:
+                return value or ""
+            result = _linux_call("lookup", account)
+            if result is None or result.returncode != 0:
+                return ""
+            raw = result.stdout
+            return (raw[:-1] if raw.endswith(b"\n") else raw).decode("utf-8")
+    except (OSError, ValueError) as exc:
+        raise SecretStoreError("Linux 凭据文件读取失败，请检查目录权限或文件格式") from exc
 
 
 def _linux_delete(account: str) -> None:
-    subprocess.run(
-        [_linux_tool(), "clear", "service", SERVICE, "account", account],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    from mino_scout.plugins.file_secrets import locked_account
+    try:
+        with locked_account(account) as entry:
+            # Record deletion before contacting an unavailable/locked keyring. This
+            # prevents a stale secret from reappearing when Secret Service returns.
+            entry.write(None)
+            _linux_call("clear", account)
+    except (OSError, ValueError) as exc:
+        raise SecretStoreError("Linux 凭据删除失败，请检查目录权限或文件格式") from exc

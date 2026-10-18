@@ -122,7 +122,7 @@ def status(opid, running=None):
                 _confirm_build(data, running)
     result = receipt(data)
     if data["state"] not in FINAL:
-        result["recovery_command"] = "update-recover " + opid
+        result["maintenance_required"] = True
     return result
 
 
@@ -228,71 +228,7 @@ def fixed_url(build_id):
 
 
 def submit(opid, build_id, *, release_tag, action="update", rollback_of="", parent_pid=0):
-    from mino_scout.config import development
-    if development():
-        raise ValueError("源码 Scout 不执行安装包更新，请更新源码并重启")
-    from mino_scout.service import read_pid, pid_alive
-    if not BUILD.fullmatch(build_id) or build_id.lower() == "latest":
-        raise ValueError("必须指定有效的固定 build_id")
-    if action not in {"update", "rollback"}:
-        raise ValueError("未知更新动作")
-    params = {"build_id": build_id, "release_tag": release_tag, "action": action, "rollback_of": rollback_of}
-    with lock():
-        old = read(opid)
-        if old:
-            if old["params"] != params:
-                raise ValueError("operation_id 参数冲突")
-            return receipt(old)
-        other = active()
-        if other:
-            raise RuntimeError("已有未完成更新：" + other["operation_id"])
-        current = config_dir() / "bin"
-        exe = current / ("mino-scout.exe" if os.name == "nt" else "mino-scout")
-        if not exe.is_file() or current.is_symlink():
-            raise RuntimeError("需要完整正式分层安装；源码进程不能自更新")
-        if parent_pid and (not getattr(sys, "frozen", False) or Path(sys.executable).resolve() != exe.resolve()):
-            raise RuntimeError("当前进程不是该正式安装版，拒绝更新其他实例")
-        if not parent_pid and pid_alive(read_pid()):
-            raise RuntimeError("节点正在运行，请通过 Nexus 门禁更新，或空闲后先停止再使用 CLI")
-        previous = loaded_build().get("build_id", "")
-        if not previous or loaded_build().get("dirty"):
-            raise RuntimeError("当前安装缺少 BUILD.json；先安装支持 D1 合同的正式基线")
-        installed_build = json.loads((current / "app/mino_scout/BUILD.json").read_text())
-        if any(installed_build.get(key) != loaded_build().get(key) for key in ("build_id", "source_commit", "dirty")):
-            raise RuntimeError("磁盘安装与当前进程身份不一致，请先恢复一致后更新")
-        url = fixed_url(release_tag)
-        if action == "rollback":
-            source = read(rollback_of)
-            if not source or source.get("state") != "succeeded" or source.get("previous_build_id") != build_id:
-                raise RuntimeError("只能回退到已成功更新所保留的兼容旧版本")
-            if previous != source.get("build_id") or not (op_path(rollback_of) / "previous-bin").is_dir():
-                raise RuntimeError("当前版本或保留旧层与回退来源不匹配")
-        directory = op_path(opid)
-        directory.mkdir(mode=0o700)
-        data = {"operation_id": opid, "params": params, "build_id": build_id,
-            "previous_build_id": previous, "previous_source_commit": loaded_build().get("source_commit"),
-            "manifest_url": url, "state": "installing",
-            "created_at": time.time(), "parent_pid": parent_pid,
-            "parent_created": psutil.Process(parent_pid).create_time() if parent_pid else 0}
-        write(data)
-        try:
-            # The helper runtime/app must outlive replacement of bin. Browser payload
-            # is unnecessary for the helper; configuration is never copied.
-            helper = directory / "helper-bin"
-            shutil.copytree(current, helper, symlinks=True, ignore=shutil.ignore_patterns("ms-playwright"))
-            args = [str(helper / exe.name), "update-helper", opid]
-            kwargs = {"env": {**os.environ, "MINO_SCOUT_HOME": str(config_dir())},
-                      "cwd": str(directory), "stdin": subprocess.DEVNULL,
-                      "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "close_fds": True}
-            if os.name == "nt":
-                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
-            else:
-                kwargs["start_new_session"] = True
-            subprocess.Popen(args, **kwargs)
-        except Exception as exc:
-            write(data, state="failed", reason="独立助手启动失败：" + type(exc).__name__)
-            raise
-        return receipt(data)
+    raise RuntimeError("upgrade_and_rollback_removed")
 
 
 def unpack(archive, destination):
@@ -513,95 +449,11 @@ def _start_and_verify(data, rollback=False):
 
 
 def helper(opid, *, recover=False):
-    directory = op_path(opid)
-    if getattr(sys, "frozen", False) and Path(sys.executable).resolve().parent != (directory / "helper-bin").resolve():
-        raise RuntimeError("请使用原操作 helper-bin 中的独立助手执行恢复")
-    with lock(f"{opid}/helper.lock"):
-        return _helper(opid, recover=recover)
+    raise RuntimeError("upgrade_and_rollback_removed")
 
 
 def _helper(opid, *, recover=False):
-    data = read(opid)
-    if not data:
-        return 1
-    if data["state"] in FINAL:
-        return 0
-    if data.get("helper_started") and not recover:
-        return 1  # explicit recovery only; never replay a partially installed op
-    with lock():
-        data = read(opid)
-        if data["state"] in FINAL:
-            return 0
-        write(data, helper_started=True)
-    try:
-        if recover:
-            resumed = _resume_live_verification(data)
-            if resumed is not None:
-                return resumed
-        _wait_parent(data)
-        from mino_scout.service import _RunLockHold
-        run_lock = _RunLockHold()
-        acquired, _ = run_lock.try_acquire(stale_wait_sec=1)
-        if not acquired:
-            raise RuntimeError("旧 Scout 未退出或另一个进程正在运行")
-        try:
-            current = config_dir() / "bin"
-            previous = op_path(opid) / "previous-bin"
-            if recover:
-                with lock():
-                    _restore_previous(data)
-            else:
-                try:
-                    candidate = prepare(data)
-                except Exception as exc:
-                    # prepare only writes operation-owned staging, never bin.
-                    # Re-open the existing installation after releasing run_lock.
-                    with lock():
-                        write(data, phase="prepare_failed", preparation_error=type(exc).__name__ + ": " + str(exc)[:500],
-                              reason=type(exc).__name__ + ": " + str(exc)[:500])
-                    _checked_install(current, data["previous_build_id"], data.get("previous_source_commit"))
-                    recover = True
-                if not recover:
-                    with lock():
-                        if previous.exists() or previous.is_symlink():
-                            raise RuntimeError("旧层保留目录已存在，拒绝覆盖")
-                        write(data, state="installing", phase="switching")
-                        os.replace(current, previous)
-                        try:
-                            os.replace(candidate, current)
-                        except OSError as exc:
-                            write(data, phase="switch_failed", reason=type(exc).__name__ + ": " + str(exc)[:500])
-                            _restore_previous(data)
-                            recover = True
-                        else:
-                            write(data, state="restarting", phase="switched")
-        finally:
-            run_lock.release()
-        if _start_and_verify(data, rollback=recover):
-            return 0
-        if recover:
-            raise RuntimeError("旧版未能重新连接，保留人工维护状态")
-        with lock():
-            data = read(opid)
-            write(data, state="installing", phase="rolling_back")
-        acquired, _ = run_lock.try_acquire(stale_wait_sec=1)
-        if not acquired:
-            raise RuntimeError("新版未确认退出，不能回退")
-        try:
-            with lock():
-                _restore_previous(data)
-        finally:
-            run_lock.release()
-        if _start_and_verify(data, rollback=True):
-            return 0
-        raise RuntimeError("兼容旧版未能重新连接")
-    except Exception as exc:
-        with lock():
-            # A child/verification attempt may have added diagnostics since our
-            # original snapshot; never overwrite them with stale helper data.
-            data = read(opid)
-            write(data, state="needs_operator", reason=type(exc).__name__ + ": " + str(exc)[:500])
-        return 1
+    raise RuntimeError("upgrade_and_rollback_removed")
 
 
 def startup_allowed():
