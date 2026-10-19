@@ -120,8 +120,11 @@ def _old_process(binding, endpoint):
     if sys.platform not in {"darwin", "linux", "win32"}:
         raise IDEError("此平台尚不支持自动停止；请在 IDE 中 Rerun")
     target = urlsplit(local_url(binding["target_url"]))
-    control = urlsplit(str(load_config().get("nexus_url", "")))
-    if target.port in {10104, 5273, 50101, 50104, 60101, 60104, urlsplit(endpoint).port, control.port}:
+    from mino_scout.config import development, resolve_runtime
+    from mino_scout.ide_stop import protected_ports
+    control = urlsplit(resolve_runtime()[0])
+    control_port = control.port or (443 if control.scheme == "wss" else 80)
+    if target.port in protected_ports(urlsplit(endpoint).port, control_port, source_runtime=development()):
         raise IDEError("测试地址与正式/控制端口冲突，拒绝停止")
     pids = _listeners(target.port)
     if not pids:
@@ -145,9 +148,13 @@ def _stop(client, binding, old):
     if old is None:
         return
     proc, created, port = old
+    from mino_scout.config import resolve_runtime
+    control = urlsplit(resolve_runtime()[0])
+    control_port = control.port or (443 if control.scheme == "wss" else 80)
     # Fixed generated command: no user-provided command, PID+creation time rechecked in IDE.
     args = ["--pid", str(proc.pid), "--created", repr(created), "--port", str(port),
-            "--ide-port", str(urlsplit(client.url).port), "--source", binding["source_dir"]]
+            "--ide-port", str(urlsplit(client.url).port), "--control-port", str(control_port),
+            "--source", binding["source_dir"]]
     command = [sys.executable, "internal-ide-stop"] if getattr(sys, "frozen", False) else [sys.executable, str(Path(__file__).with_name("ide_stop.py"))]
     if "execute_terminal_command" in client.tools and os.name != "nt":
         result = client.call("execute_terminal_command", {"projectPath": binding["project_path"],

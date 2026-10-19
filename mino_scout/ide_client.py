@@ -175,6 +175,17 @@ class Client:
         properties = schema.get("properties") or {}
         if "projectPath" not in properties:
             raise IDEError("IDE 工具不能明确路由 projectPath，拒绝依赖窗口焦点")
+        project = args.get("projectPath")
+        if not isinstance(project, str) or not project.strip():
+            raise IDEError("IDE 操作必须指定非空 projectPath")
+        # Routing/intent fields must never disappear during schema adaptation.
+        # A permissive or changed IDE schema must fail before any side effect.
+        intent_field = {"execute_run_configuration": "configurationName",
+                        "execute_terminal_command": "command"}.get(name)
+        if intent_field:
+            value = args.get(intent_field)
+            if intent_field not in properties or not isinstance(value, str) or not value.strip():
+                raise IDEError("IDE 工具不能明确接收执行目标，拒绝派发")
         accepted = {k: v for k, v in args.items() if k in properties}
         if set(schema.get("required") or []) - accepted.keys():
             raise IDEError("当前 IDE 工具要求未支持的参数")

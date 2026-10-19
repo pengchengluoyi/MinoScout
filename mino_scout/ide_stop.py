@@ -8,6 +8,13 @@ import sys
 import psutil
 
 
+def protected_ports(ide_port, control_port, *, source_runtime):
+    ports = {10104, 5273, 50104, 60104, ide_port, control_port}
+    if source_runtime:
+        ports.update({50101, 60101})
+    return ports
+
+
 def listeners(port):
     if sys.platform == "darwin":
         # psutil.net_connections is root-only on macOS; lsof can enumerate our user's listeners.
@@ -56,9 +63,11 @@ def main(argv=None):
     ap.add_argument("--created", type=float, required=True)
     ap.add_argument("--port", type=int, required=True)
     ap.add_argument("--ide-port", type=int, required=True)
+    ap.add_argument("--control-port", type=int, required=True)
     ap.add_argument("--source", required=True)
     args = ap.parse_args(argv)
-    if os.name not in {"posix", "nt"} or args.port in {10104, 5273, 50101, 50104, 60101, 60104, args.ide_port}:
+    protected = protected_ports(args.ide_port, args.control_port, source_runtime=not getattr(sys, "frozen", False))
+    if os.name not in {"posix", "nt"} or args.port in protected:
         raise ValueError("unsupported platform or protected port")
     proc = psutil.Process(args.pid)
     if proc.create_time() != args.created or not same_user(proc):

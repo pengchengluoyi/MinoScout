@@ -175,10 +175,8 @@ def _h_clear_app_cache(serial: str, p: Dict[str, Any]) -> Dict[str, Any]:
     pkg = str(p.get("package") or "").strip()
     if not pkg:
         return _err("package 缺失")
-    # adb 全特权：pm clear 清应用数据（比 ClawNode 拟人化清缓存更彻底）
-    rc, out, err = _adb_shell(serial, "pm", "clear", pkg)
-    ok = rc == 0 and "success" in out.lower()
-    return _ok(f"pm clear {pkg}", out) if ok else _err("clear_app_cache failed", err or out)
+    from mino_scout.executors.app_cache import clear_app_cache
+    return clear_app_cache(pkg, lambda *args: _adb_shell(serial, *args))
 
 
 def _h_run_shell(serial: str, p: Dict[str, Any]) -> Dict[str, Any]:

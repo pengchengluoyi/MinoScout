@@ -290,7 +290,7 @@ class AdbExecutor:
         return True, ""
 
     def supports(self, capability_id: str, low_level: Optional[dict[str, Any]] = None) -> bool:
-        return capability_id in _SUPPORTED_CAPS or _runnable_low_level(low_level)
+        return capability_id in {"clear_app_cache", "system_pkg_clear"} or capability_id in _SUPPORTED_CAPS or _runnable_low_level(low_level)
 
     def execute(self, event: PlanEvent, ctx: ExecutorContext) -> EventResult:
         started_at = _now_iso()
@@ -326,6 +326,17 @@ class AdbExecutor:
                     "adb serial 缺失：EXECUTE.device_hint 未带 adb_serial（Nexus 侧应注入）",
                 )
 
+            if cap in {"clear_app_cache", "system_pkg_clear"}:
+                from mino_scout.executors.app_cache import clear_app_cache
+                package = str((event.params or {}).get("package")
+                              or ctx.device.extra.get("target_package", "") or "").strip()
+                raw = clear_app_cache(package, lambda *args: self._adb_shell(serial, *args))
+                ok = raw["status"] == "success"
+                return make_event_result(
+                    event, status=EventStatus.PASS if ok else EventStatus.BLOCKED,
+                    executor_used=self.id, started_at=started_at,
+                    elapsed_ms=int((time.time() - t0) * 1000),
+                    summary=raw["message"], error="" if ok else raw["stderr"], raw_response=raw)
             if cap == "launch_app":
                 return self._launch_app(event, ctx, serial, started_at, t0)
             if cap == "close_app":
