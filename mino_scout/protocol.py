@@ -119,6 +119,9 @@ class Register:
     devices: list[DeviceManifest] = field(default_factory=list)
     # None：旧 Scout 没报。空列表也会编码出去，用来和「没这个字段」区分。
     plugins: Optional[list[dict[str, Any]]] = None
+    plugins_ready: Optional[bool] = None
+    plugin_warning: str = ""
+    runtime_environment: str = ""
     # None：旧节点没报运行能力。不能用版本号猜测是否支持当前焦点输入。
     runtime_capabilities: Optional[list[dict[str, Any]]] = None
     host: dict[str, Any] = field(default_factory=dict)
@@ -166,6 +169,9 @@ class Heartbeat:
     scout_version: str = ""
     host: dict[str, Any] = field(default_factory=dict)
     plugins: Optional[list[dict[str, Any]]] = None
+    plugins_ready: Optional[bool] = None
+    plugin_warning: str = ""
+    runtime_environment: str = ""
     runtime_capabilities: Optional[list[dict[str, Any]]] = None
     executors: Optional[list[ExecutorManifest]] = None
     executor_snapshot_version: int = 0  # 0: legacy delta; 1: complete executors snapshot

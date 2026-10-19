@@ -833,3 +833,10 @@ Scout 使用经过已认证连接下发的 `service_url`、本机 `cli:case_api`
 
 升级与回退功能已按用户决定移除。新 Scout 不再声明 `node.update`，旧调用明确拒绝，
 不再提供更新/回退/自动恢复的派单入口；历史维护记录继续保留。
+
+
+## Scout 环境与插件就绪状态（2026-10-19）
+
+REGISTER / HEARTBEAT 可携带 `plugins_ready: bool | null`、`plugin_warning: string`、`runtime_environment: development | production | 空串`。旧节点缺字段表示未知，不能推断为未安装或未配置。归属校验失败仍可保持在线，但必须发 `plugins_ready=false`、空插件列表和不含密钥的阻断原因；Nexus 原样向有权查看该节点的 Workbench 暴露就绪状态。成功心跳清除旧警告。环境标签只用于展示，不替代鉴权。
+
+开发与正式 Scout 为独立进程，配置、PID、锁、插件目录和凭据命名空间互不共用。开发启动不得调用正式系统服务；禁止跨环境回退或自动继承旧凭据。

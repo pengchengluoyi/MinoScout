@@ -13,6 +13,9 @@ from mino_scout.config import config_dir
 
 
 def run_argv() -> list[str]:
+    from mino_scout.config import development
+    if development():
+        return [sys.executable, "-m", "mino_scout.cli", "run"]
     if getattr(sys, "frozen", False):
         return [sys.executable, "run"]
     installed = config_dir() / "bin" / ("mino-scout.exe" if os.name == "nt" else "mino-scout")
@@ -22,6 +25,10 @@ def run_argv() -> list[str]:
 
 
 def spawn_run() -> subprocess.Popen:
+    from mino_scout.config import development
+    if development():
+        from mino_scout.development_runtime import spawn
+        return spawn()
     env = {**os.environ, "MINO_SCOUT_HOME": str(config_dir())}
     kwargs = {"cwd": str(config_dir()), "env": env, "close_fds": True}
     if os.name == "nt":

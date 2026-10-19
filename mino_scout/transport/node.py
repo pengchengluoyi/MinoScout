@@ -12,6 +12,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 import asyncio
+import contextvars
+import os
+from concurrent.futures import ThreadPoolExecutor
 import json
 import random
 import time
@@ -120,6 +123,12 @@ class NodeTransport:
         # 在途的请求处理任务。必须持强引用，否则会被 GC（见 _on_frame）
         self._inflight: set[asyncio.Task] = set()
         self._im_lock: Optional[asyncio.Lock] = None
+        # Long synchronous execution wrappers must not consume heartbeat,
+        # source-identity and stop-watch workers in asyncio's default pool.
+        self._execution_pool = ThreadPoolExecutor(
+            max_workers=min(32, (os.cpu_count() or 1) + 4),
+            thread_name_prefix="scout-request",
+        )
 
     # ---------------- 生命周期 ----------------
 
@@ -219,6 +228,7 @@ class NodeTransport:
                 self.core.shutdown()
             except Exception as exc:
                 SLog.w(TAG, f"playwright 退出清理: {exc}")
+            self._execution_pool.shutdown(wait=False)
             guard.release(HOLDER_NEXUS)
 
     def _keep_power(self) -> None:
@@ -335,6 +345,8 @@ class NodeTransport:
             executors=execs,
             devices=devices,
             plugins=[],  # 首次注册不得携带未验证 owner 的旧插件配置。
+            plugins_ready=False,
+            plugin_warning="正在核验插件账号归属",
             runtime_capabilities=runtime_caps,
             **epoch,
             host=await asyncio.to_thread(get_desktop_runtime().host, self.core.node_id, next((d for d in devices or [] if d.platform in {"mac", "win"}), None)),
@@ -458,7 +470,7 @@ class NodeTransport:
             await self._send(P.MsgType.HEARTBEAT, self.core.heartbeat())
         except Exception:
             pass
-        hb = self.core.heartbeat()
+        hb = await asyncio.to_thread(self.core.heartbeat)
         runs = ",".join(hb.active_runs) or "none"
         await self._send_framework("node.shutting_down", detail=f"active_runs={runs}")
 
@@ -501,7 +513,7 @@ class NodeTransport:
         from mino_scout.host_sample import sample_host
 
         host = await asyncio.to_thread(sample_host, mode=self.core.host_mode())
-        hb = self.core.heartbeat()
+        hb = await asyncio.to_thread(self.core.heartbeat)
         from mino_scout.desktop import get_desktop_runtime
         host.update(await asyncio.to_thread(get_desktop_runtime().host, self.core.node_id, next((d for d in devices or [] if d.platform in {"mac", "win"}), None)))
         hb.host = host
@@ -527,13 +539,8 @@ class NodeTransport:
         from mino_scout.platform_contract import validate_platform_announcement
         validate_platform_announcement(hb)
         await self._send(P.MsgType.HEARTBEAT, hb)
-        self._connection("heartbeat", connected=True, registered=True)
-        try:
-            from mino_scout.runtime_sidecar import write_runtime_sidecar
-
-            write_runtime_sidecar()
-        except Exception:
-            pass
+        # _connection already persists the sidecar, including build diagnostics.
+        await asyncio.to_thread(self._connection, "heartbeat", connected=True, registered=True)
         if devices is None:
             return
         from mino_scout.core import serials_adb_just_connected
@@ -622,10 +629,29 @@ class NodeTransport:
 
     async def _run_execute(self, env: P.Envelope, req: P.Execute) -> None:
         # core 是同步的（executor 全是阻塞 IO），丢线程池，别卡住事件循环
-        result = await asyncio.to_thread(self.core.execute, req)
+        received = time.perf_counter()
+        timing = {}
+        def execute():
+            entered = time.perf_counter()
+            timing["queue_ms"] = (entered - received) * 1000
+            try:
+                return self.core.execute(req)
+            finally:
+                timing["core_ms"] = (time.perf_counter() - entered) * 1000
+        if req.capability_id in {"cancel_run", "write_stop_status"}:
+            result = await asyncio.to_thread(execute)
+        else:
+            context = contextvars.copy_context()
+            result = await asyncio.get_running_loop().run_in_executor(
+                self._execution_pool, context.run, execute)
         SLog.i(TAG, f"RESULT run={req.run_id} step={req.step_idx} sn={req.sn} cap={req.capability_id} "
                     f"executor={result.executor_used} status={result.status.value} elapsed_ms={result.elapsed_ms}")
+        reply_started = time.perf_counter()
         await self._reply_result(env, _result_from_event(req, result))
+        SLog.i(TAG, f"PERF run={req.run_id} step={req.step_idx} cap={req.capability_id} "
+                    f"queue_ms={timing['queue_ms']:.2f} core_ms={timing['core_ms']:.2f} "
+                    f"reply_ms={(time.perf_counter() - reply_started) * 1000:.2f} "
+                    f"total_ms={(time.perf_counter() - received) * 1000:.2f}")
         self._apply_node_side_effects(result)
 
     def _apply_node_side_effects(self, ev) -> None:
@@ -640,10 +666,10 @@ class NodeTransport:
 
     # ---------------- 发送 ----------------
 
-    async def _send(self, mtype: P.MsgType, payload: Any, *, reply_to: Optional[str] = None) -> str:
+    async def _send(self, mtype: P.MsgType, payload: Any, *, reply_to: Optional[str] = None, msg_id: Optional[str] = None) -> str:
         if self._ws is None:
             raise RuntimeError("未连接")
-        env = P.Envelope(type=mtype, msg_id=_msg_id(), ts=_now_iso(), payload=payload, reply_to=reply_to)
+        env = P.Envelope(type=mtype, msg_id=msg_id or _msg_id(), ts=_now_iso(), payload=payload, reply_to=reply_to)
         text = json.dumps(P.dumps(env), ensure_ascii=False)
         size = len(text.encode())
         if size > _MAX_FRAME_BYTES:
@@ -657,7 +683,7 @@ class NodeTransport:
                 "schema_version": 1, "node_id": self.core.node_id,
                 "scout_process_generation": self.core.binding_guard.process_generation,
                 "node_connection_generation": self.core.binding_guard.connection_generation,
-                "build": process_build_identity(),
+                "build": await asyncio.to_thread(process_build_identity),
             }}
             await self._send(P.MsgType.RESULT, result, reply_to=req_env.msg_id)
         except Exception as exc:
@@ -666,14 +692,21 @@ class NodeTransport:
     async def _request(self, mtype: P.MsgType, payload: Any, *, timeout: float = 30.0):
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
-        msg_id = await self._send(mtype, payload)
+        msg_id = _msg_id()
         self._waiters[msg_id] = fut
         try:
-            return await asyncio.wait_for(fut, timeout=timeout)
+            # Register before send can yield; include transport backpressure in
+            # the original request budget, with no automatic resubmission.
+            async with asyncio.timeout(timeout):
+                await self._send(mtype, payload, msg_id=msg_id)
+                return await fut
         except asyncio.TimeoutError:
-            self._waiters.pop(msg_id, None)
             SLog.w(TAG, f"{mtype.value} 等应答超时 {timeout}s")
             return None
+        finally:
+            self._waiters.pop(msg_id, None)
+            if not fut.done():
+                fut.cancel()
 
     async def _emit_im_message(self, im: Optional[dict]) -> None:
         """发 node.plugin_im_message。ws 不可用 / 没拿到 RESULT 就进 im_pending；

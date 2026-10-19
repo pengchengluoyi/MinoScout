@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import re
 import shlex
+import time
 from typing import Any, Callable, Optional
 
 from mino_scout.log import SLog
@@ -237,11 +238,22 @@ def run_low_level(
 def _exec_one(cmd: str, shell: ShellRunner, out: LowLevelOutcome) -> tuple[int, str, str]:
     assert_command_allowed(cmd)
     out.dispatched += 1
+    started = time.perf_counter()
+    rc = None
     try:
         rc, stdout, stderr = shell(cmd)
     except Exception:
         out.uncertain = True
         raise
+    finally:
+        elapsed = (time.perf_counter() - started) * 1000
+        if elapsed >= 250:
+            # Command index + executable only: never rendered arguments/output.
+            try:
+                SLog.i(TAG, f"PERF command_index={out.dispatched} executable={shlex.split(cmd)[0]} "
+                            f"elapsed_ms={elapsed:.2f} rc={rc}")
+            except Exception:
+                pass  # Diagnostic failure must not change the command result.
     if rc == 0:
         out.completed += 1
     elif rc != -2:  # AdbExecutor._adb_shell: local binary missing, nothing dispatched.

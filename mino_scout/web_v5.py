@@ -244,8 +244,14 @@ class WebV5Runtime:
             return self._kill(lane, deadline, release=False)
 
     def _kill(self, lane, deadline, *, release=True):
-        with lane["kill_lock"]:
+        if not lane["kill_lock"].acquire(timeout=max(0, deadline - time.monotonic())):
+            # Another cleanup owns the process tree. Do not claim it stopped
+            # or advertise the lane as free when our deadline has expired.
+            return False
+        try:
             return self._kill_owned(lane, deadline, release=release)
+        finally:
+            lane["kill_lock"].release()
 
     def _kill_owned(self, lane, deadline, *, release):
         import psutil

@@ -14,6 +14,7 @@ import platform
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 def development() -> bool:
     return not getattr(sys, "frozen", False)
@@ -25,8 +26,8 @@ DEFAULT_NEXUS_WS = f"ws://{LAN_HOST}:50104/node"
 SCOUT_ID_LEN = 16
 
 
-def config_dir() -> Path:
-    if development():
+def _environment_dir(dev: bool) -> Path:
+    if dev:
         explicit = str(os.environ.get("MINO_SCOUT_DEV_HOME") or "").strip()
         if explicit:
             return Path(explicit).expanduser().resolve()
@@ -41,11 +42,48 @@ def config_dir() -> Path:
             return legacy
         return current
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "MinoScout"
+        current = Path.home() / "Library" / "Application Support" / "Mino" / "scout"
+        legacy = Path.home() / "Library" / "Application Support" / "MinoScout"
+        if current.exists() and legacy.exists():
+            raise ValueError("检测到新旧 Scout 目录，请显式指定 MINO_SCOUT_HOME；不会合并或覆盖配置")
+        return legacy if legacy.exists() else current
     xdg = str(os.environ.get("XDG_CONFIG_HOME") or "").strip()
     if xdg:
         return Path(xdg).expanduser() / "minoscout"
     return Path.home() / ".config" / "minoscout"
+
+
+
+def config_dir() -> Path:
+    selected = _environment_dir(development()).resolve()
+    reserved = ([Path.home() / "Library/Application Support/Mino/scout",
+                 Path.home() / "Library/Application Support/MinoScout",
+                 Path.home() / ".config/minoscout",
+                 Path(os.environ.get("APPDATA") or Path.home()) / "MinoScout"]
+                if development() else [Path.home() / ".mino-dev/scout"])
+    for other in reserved:
+        other = other.resolve()
+        if selected == other or selected in other.parents or other in selected.parents:
+            raise ValueError("开发与正式 Scout 配置目录必须完全独立，不能相同或互相包含")
+    # Marker makes separate invocations with different override environments fail closed.
+    marker = selected / ".scout-environment"
+    expected = "development" if development() else "production"
+    if marker.exists() and marker.read_text(encoding="utf-8").strip() != expected:
+        raise ValueError("Scout 配置目录属于另一环境，禁止共用")
+    return selected
+
+
+def claim_environment() -> None:
+    directory = config_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    marker = directory / ".scout-environment"
+    expected = "development" if development() else "production"
+    try:
+        with marker.open("x", encoding="utf-8") as stream:
+            stream.write(expected)
+    except FileExistsError:
+        if marker.read_text(encoding="utf-8").strip() != expected:
+            raise ValueError("Scout 配置目录属于另一环境，禁止共用")
 
 
 def config_path() -> Path:
@@ -72,6 +110,8 @@ def set_nexus_url(url: str, path: Path | None = None) -> Path:
 
 
 def save_config(data: dict[str, Any], path: Path | None = None) -> Path:
+    if path is None or path.resolve() == config_path():
+        claim_environment()
     target = path or config_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
@@ -192,10 +232,11 @@ def resolve_runtime(*, nexus: str = "", token: str = "", config: dict[str, Any] 
     if not ws:
         ws = "ws://127.0.0.1:50101/node" if development() else DEFAULT_NEXUS_WS
     if development():
-        from urllib.parse import urlsplit
         target = urlsplit(ws)
         if target.scheme not in {"ws", "wss"} or target.hostname not in {"127.0.0.1", "localhost", "::1"} or target.port != 50101:
             raise ValueError("开发 Scout 只能连接本机 Nexus :50101；请检查开发配置")
+    elif urlsplit(ws).port == 50101:
+        raise ValueError("正式 Scout 不能连接开发 Nexus :50101；请启动独立开发 Scout")
     tok = flag_token or str(cfg.get("pending_install_token") or cfg.get("token") or "").strip()
     return ws, tok
 
@@ -214,9 +255,8 @@ def configure_proxy_bypass() -> None:
 def runtime_identity() -> dict[str, Any]:
     """Public deployment identity; never returns tokens or URL credentials.
 
-    Packaging and environment are separate: a frozen process may connect to the
-    development Nexus. Unknown destinations stay custom instead of being labelled
-    production solely because the executable is frozen.
+    Source and frozen runtimes are separate environments. Destination aliases
+    do not select the storage namespace; neither runtime may cross environments.
     """
     from urllib.parse import urlsplit
     from mino_scout.app_version import process_build_identity
@@ -231,7 +271,8 @@ def runtime_identity() -> dict[str, Any]:
     if port is not None:
         authority += f":{port}"
     return {
-        "environment": environment,
+        "environment": "development" if development() else "production",
+        "destination_environment": environment,
         "runtime_kind": "source" if development() else "frozen",
         "config_dir": str(config_dir()),
         "nexus_origin": f"{target.scheme}://{authority}",

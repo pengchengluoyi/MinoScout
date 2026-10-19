@@ -16,9 +16,9 @@ class _NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def identifier(value):
+def identifier(value, *, field=""):
     if type(value) not in (str, int) or not re.fullmatch(r"[1-9][0-9]{0,18}", str(value)):
-        raise ValueError("source_api_id_invalid")
+        raise ValueError(f"source_api_{field}_id_invalid" if field else "source_api_id_invalid")
     return str(value)
 
 
@@ -140,18 +140,28 @@ def read_api(node_id, params):
         return {"complete": True, "options": options, "service_url": base}
     path = f"/api/sessions/{session}/cases" if session else "/api/cases"
     snapshots = [_items(fetch(path, token=token), "cases") for _attempt in range(2)]
-    for records in snapshots:
+    inferred_sessions = {"missing": 0, "null": 0}
+    for snapshot_index, records in enumerate(snapshots):
         seen = set()
         for record in records:
-            case_id = identifier(record.get("id"))
+            case_id = identifier(record.get("id"), field="case")
             if case_id in seen:
                 raise ValueError("source_api_duplicate_id")
             seen.add(case_id)
-            if "project_id" in record and identifier(record["project_id"]) != project:
+            if record.get("project_id") is not None and identifier(record["project_id"], field="record_project") != project:
                 raise ValueError("source_api_project_mismatch")
-            if session and identifier(record.get("session_id")) != session:
-                raise ValueError("source_api_session_mismatch")
+            if session:
+                if record.get("session_id") is None:
+                    # The scoped endpoint establishes membership when metadata is omitted.
+                    if snapshot_index == 1:
+                        inferred_sessions["null" if "session_id" in record else "missing"] += 1
+                    record["session_id"] = session
+                elif identifier(record["session_id"], field="record_session") != session:
+                    raise ValueError("source_api_session_mismatch")
     canonical = lambda records: sorted((json.dumps(record, sort_keys=True, ensure_ascii=False) for record in records))
     if canonical(snapshots[0]) != canonical(snapshots[1]):
         raise ValueError("source_api_changed_during_read")
+    if any(inferred_sessions.values()):
+        from mino_scout.log import SLog
+        SLog.i("CaseSourceApi", f"会话范围补齐 session_id: missing={inferred_sessions['missing']} null={inferred_sessions['null']}")
     return {"complete": True, "records": snapshots[1], "consistency": "conservative_double_read"}

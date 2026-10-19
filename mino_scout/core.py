@@ -152,6 +152,7 @@ class ScoutCore:
             for i in range(self._pw_shard_count)
         ]
         self._pw_lock = threading.Lock()
+        self._pw_worker = threading.local()
         self._adb_ime_last_check: dict[str, float] = {}
         self._device_workload: dict[str, P.DeviceWorkload] = {}
         from mino_scout.request_guard import RequestGuard
@@ -347,9 +348,12 @@ class ScoutCore:
 
         holder["ident"] = threading.get_ident()
         get_hub().note_lane(str(req.run_id or ""))
+        previous_run = getattr(self._pw_worker, "run_id", None)
+        self._pw_worker.run_id = str(req.run_id or "")
         try:
             return self._execute_body(req)
         finally:
+            self._pw_worker.run_id = previous_run
             if retired.is_set():
                 try:
                     get_hub().release_this_lane()
@@ -862,7 +866,12 @@ class ScoutCore:
         if rid:
             fake = P.Execute(run_id=rid, step_idx=-1, sn="", capability_id="cancel_run", platform="web")
             try:
-                self._playwright_executor(fake).submit(lambda: _release_playwright_run(rid)).result(timeout=12.0)
+                if getattr(self._pw_worker, "run_id", None) == rid:
+                    # Already on this run's single-worker lane. Submitting to
+                    # that same lane and waiting blocks the cleanup behind us.
+                    _release_playwright_run(rid)
+                else:
+                    self._playwright_executor(fake).submit(lambda: _release_playwright_run(rid)).result(timeout=12.0)
             except Exception as exc:
                 SLog.w(TAG, f"cancel run playwright release: {exc!r}")
         return len(keys)
@@ -940,6 +949,7 @@ class ScoutCore:
         workload.append(P.DeviceWorkload(sn=f"web{self.node_id}", **capacity))
         from mino_scout.input_contract import runtime_input_capabilities
         from mino_scout.plugins.state import status_list
+        from mino_scout.config import development
 
         runtime_caps = runtime_input_capabilities()
         epoch = self.binding_guard.announce(None, runtime_caps)
@@ -954,6 +964,9 @@ class ScoutCore:
             device_workload=workload,
             scout_version=report_scout_version(),
             plugins=status_list(self.node_id) if self._plugins_ready else [],
+            plugins_ready=self._plugins_ready,
+            plugin_warning=self._plugin_warning,
+            runtime_environment="development" if development() else "production",
             runtime_capabilities=runtime_caps,
         )
 

@@ -24,8 +24,17 @@ case "$(uname -s)" in
 esac
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
-  PREFIX="${MINO_SCOUT_HOME:-$HOME/Library/Application Support/MinoScout}"
-  if [[ -n "${MINO_SCOUT_HOME:-}" ]]; then
+  DEFAULT_PREFIX="$HOME/Library/Application Support/Mino/scout"
+  LEGACY_PREFIX="$HOME/Library/Application Support/MinoScout"
+  if [[ -z "${MINO_SCOUT_HOME:-}" ]]; then
+    if [[ -e "$DEFAULT_PREFIX" && -e "$LEGACY_PREFIX" ]]; then
+      echo "检测到新旧 Scout 目录；请显式指定 MINO_SCOUT_HOME，不会自动合并。" >&2
+      exit 1
+    fi
+    if [[ -e "$LEGACY_PREFIX" ]]; then DEFAULT_PREFIX="$LEGACY_PREFIX"; fi
+  fi
+  PREFIX="${MINO_SCOUT_HOME:-$DEFAULT_PREFIX}"
+  if [[ -n "${MINO_SCOUT_HOME:-}" || "$PREFIX" != "$LEGACY_PREFIX" ]]; then
     LOG_DIR="$PREFIX/logs"
   else
     LOG_DIR="$HOME/Library/Logs/MinoScout"

@@ -35,6 +35,8 @@ def lock_path() -> Path:
 
 
 def write_pid(pid: int | None = None) -> Path:
+    from mino_scout.config import claim_environment
+    claim_environment()
     path = pid_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(str(int(pid or os.getpid())), encoding="utf-8")
@@ -81,6 +83,8 @@ class _RunLockHold:
         self._fh: Any = None
 
     def try_acquire(self, *, stale_wait_sec: float = _STALE_LOCK_WAIT_SEC) -> tuple[bool, str]:
+        from mino_scout.config import claim_environment
+        claim_environment()
         path = lock_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         deadline = time.time() + max(0.5, float(stale_wait_sec))
@@ -227,6 +231,11 @@ def try_start_service(*, wait_sec: float = 4.0) -> int:
 
     if pid_alive(read_pid()):
         return cmd_public_status()
+
+    from mino_scout.config import development
+    if development():
+        from mino_scout.development_runtime import start
+        return start(wait_sec=wait_sec)
 
     started = False
     if sys.platform == "darwin":

@@ -12,7 +12,10 @@ import subprocess
 import sys
 from ctypes import wintypes
 
-SERVICE = "MinoScout"
+from mino_scout.config import development
+
+# Never read or migrate production vault entries from the source runtime.
+SERVICE = "MinoScout.Development" if development() else "MinoScout"
 
 _ERR_NOT_FOUND = -25300
 _ERR_DUPLICATE = -25299

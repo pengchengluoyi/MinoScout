@@ -413,7 +413,14 @@ def verify_local_owner(user_id: str, nexus_url: str) -> None:
     previous = str(cfg.get("plugin_owner_user_id") or "")
     previous_origin = str(cfg.get("plugin_owner_nexus") or "")
     if previous:
-        if previous != uid or previous_origin != origin:
+        def identity(value: str) -> tuple:
+            parsed = urlsplit(value)
+            host = (parsed.hostname or "").lower()
+            if host in {"localhost", "127.0.0.1", "::1"}:
+                host = "loopback"
+            scheme = {"http": "ws", "https": "wss"}.get(parsed.scheme, parsed.scheme)
+            return scheme, host, parsed.port or (443 if scheme == "wss" else 80)
+        if previous != uid or identity(previous_origin) != identity(origin):
             raise PermissionError("本地插件属于其他账号或服务，禁止继承；需先隔离旧配置")
         return
     cfg["plugin_owner_user_id"] = uid

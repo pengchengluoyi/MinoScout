@@ -9,7 +9,9 @@ from mino_scout.config import config_dir, development
 
 
 def log_paths() -> dict[str, str]:
-    if sys.platform == "darwin" and not development():
+    if (sys.platform == "darwin" and not development()
+            and config_dir() == Path.home() / "Library/Application Support/MinoScout"):
+
         base = Path.home() / "Library" / "Logs" / "MinoScout"
         return {
             "stdout": str(base / "scout.log"),
@@ -26,16 +28,29 @@ def log_paths() -> dict[str, str]:
 
 
 def _tail_file(path: Path, *, lines: int) -> list[str]:
-    if not path.is_file():
-        return []
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        if lines <= 0:
+            return path.read_text(encoding="utf-8", errors="replace").splitlines()
+        # Read backwards until there is an extra line: the leading partial line
+        # (and a possibly split UTF-8 character) must never enter the result.
+        with path.open("rb") as stream:
+            stream.seek(0, 2)
+            position = stream.tell()
+            chunks = []
+            size = 8192
+            while position:
+                count = min(position, size)
+                position -= count
+                stream.seek(position)
+                chunks.insert(0, stream.read(count))
+                rows = b"".join(chunks).decode("utf-8", errors="replace").splitlines()
+                if position == 0 or len(rows) > lines:
+                    return rows[-lines:]
+                size = min(size * 2, 1024 * 1024)
+            return []
     except OSError:
         return []
-    rows = text.splitlines()
-    if lines <= 0:
-        return rows
-    return rows[-lines:]
+
 
 
 def tail_logs(*, lines: int = 200) -> dict[str, Any]:
