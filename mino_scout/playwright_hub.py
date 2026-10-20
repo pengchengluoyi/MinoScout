@@ -21,7 +21,6 @@ from mino_scout.log import SLog
 TAG = "PlaywrightHub"
 
 # Old global name. Kept so is_web_slot still recognizes leftover REGISTER payloads.
-LEGACY_WEB_SLOT_SN = "web-local"
 VIEWPORT_W = 1280
 VIEWPORT_H = 800
 
@@ -38,15 +37,9 @@ _PROBE_TTL_SEC = 30.0
 
 
 def browsers_dir() -> Path:
-    frozen = getattr(sys, "frozen", False)
-    if frozen:
-        return Path(sys.executable).resolve().parent / "ms-playwright"
-    try:
-        from mino_scout.config import config_dir
-
-        return config_dir() / "bin" / "ms-playwright"
-    except Exception:
-        return Path.home() / ".cache" / "ms-playwright"
+    if getattr(sys,"frozen",False): return Path(sys.executable).resolve().parent / "ms-playwright"
+    from mino_scout.config import config_dir
+    return config_dir() / "bin" / "ms-playwright"
 
 
 def apply_browsers_path() -> Path:
@@ -67,17 +60,14 @@ def apply_browsers_path() -> Path:
 def web_slot_sn(scout_id: str) -> str:
     """Per-node Playwright sn: `web` + alphanumeric scout_id. Fixed for that install."""
     sid = "".join(c for c in str(scout_id or "").lower() if c.isalnum())
-    return f"web{sid}" if sid else LEGACY_WEB_SLOT_SN
+    if not sid: raise ValueError("web_node_identity_required")
+    return f"web{sid}"
 
 
 def is_web_slot(sn: str = "", platform: str = "") -> bool:
-    s = str(sn or "").strip().lower()
-    plat = str(platform or "").strip().lower()
-    if plat in ("web", "browser", "playwright"):
-        return True
-    if s in (LEGACY_WEB_SLOT_SN, "web") or s.startswith("web-"):
-        return True
-    return s.startswith("web") and len(s) > 3 and s[3:].isalnum()
+    s = str(sn or "")
+    valid = s.startswith("web") and len(s)>3 and s[3:].isascii() and s[3:].isalnum() and s==s.lower()
+    return valid and (not platform or platform=="web")
 
 
 def _session_key(sn: str, run_id: str = "") -> str:

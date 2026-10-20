@@ -158,3 +158,20 @@ MinoNexus 的共享运行配置 `Scout Development` 经 `MinoScout/scripts/run_d
 开发配置 `development_android_serials` 默认空列表，不自动登记 USB 手机。ADB 执行器、IDE APK 安装、启动与心跳输入法维护均检查该分配；未分配时拒绝动作。使用 `.venv/bin/python -m mino_scout.cli development-devices --add <serial>` 添加设备，可重复指定 `--add`；不传参数只查看。命令保留已有接入信息和已选设备，重复添加不重复写入。不依赖正式环境任务状态。运行节点重新上报设备后，测试 Nexus 可选择该设备；此列表不是跨 Nexus 硬件租约。
 
 PyCharm 启动器已完成真实接入：开发 Scout 独立解释器运行，测试 Nexus 注册和心跳成功，插件就绪。执行器直连设备诊断与 Nexus session 业务验收分别记录，不将截图成功当作用例或 APK 安装验收。
+
+
+## macOS 电池供电合盖运行
+
+Scout 在 macOS 启动时自动检查合盖运行权限，不依赖 `caffeinate -s`。未配置时自动发起首次管理员授权；已有可用辅助服务则直接复用。检查在后台线程执行，不阻塞连接 Nexus。拒绝或取消后，本次进程不再自动弹窗，下次启动可再次请求。用户显式关闭后保留关闭选择，不在启动时重新开启。也保留手动入口：
+
+- `mino-scout configure closed-lid on`：通过 macOS 原生管理员授权安装固定功能辅助服务，然后开启当前开发/正式环境的设置。
+- `mino-scout configure closed-lid status`：查看设置和辅助服务实际状态；只有 `active: true` 表示辅助服务已读回系统禁用睡眠状态。
+- `mino-scout configure closed-lid off`：关闭当前环境的设置，运行中的 Scout 自动读取，无需重启。
+
+开启后，在 PowerGuard 持有运行租约期间使用 `pmset -a disablesleep 1`，覆盖电池和插电两种情况；这影响整机睡眠而不只是 Scout。首次需要管理员授权，取消则不开启。该功能增加电池消耗，合盖运行时应保持通风，不能放在包内持续运行；不能防止低电量关机、过热保护或系统崩溃。屏幕捕获/桌面自动化在合盖后的显示拓扑变化需要独立验收。
+
+辅助服务仅执行固定系统命令，不以 root 运行 Scout 或用户可修改的 Python。仅接受安装授权用户的存活进程租约；租约每 3 秒刷新，15 秒未刷新后失效。Scout 正常退出、崩溃或释放最后一个 PowerGuard holder 后，在最后一个有效租约结束时恢复原来的 `SleepDisabled` 值（原本为 1 就恢复为 1）。多个开发/正式实例共享系统状态，任一仍持有租约时不会提前恢复。辅助服务由 launchd 保活，重启及机器重启后保留 root 专属恢复记录，检查租约后恢复；仍有有效租约时不短暂开启睡眠；恢复失败保留记录并报告错误。
+
+辅助服务标签为 `com.mino.scout.lid-sleep`，状态和租约位于 `/var/db/com.mino.scout.lid-sleep`。关闭功能后辅助服务保持待机，不持有禁用睡眠设置。另一登录用户不能覆盖原授权；不提供隐式迁移。不要在租约期间同时用其他程序修改同一全局睡眠设置。
+
+源码和静态检查不能代替硬件验收：首次启用后先确认状态 active，再拔电、合盖，检查远端 Nexus 是否持续收到 Scout 心跳及任务结果；重新开盖关闭功能后确认原状态恢复。未经过该验收的机型不可宣称合盖运行已验证。

@@ -475,7 +475,7 @@ class NodeTransport:
         if not self._intentional_stop:
             return
         try:
-            await self._send(P.MsgType.HEARTBEAT, self.core.heartbeat())
+            await self._send(P.MsgType.HEARTBEAT, await asyncio.to_thread(self.core.heartbeat))
         except Exception:
             pass
         hb = await asyncio.to_thread(self.core.heartbeat)
@@ -527,8 +527,6 @@ class NodeTransport:
         hb.host = host
         hb.device_delta = delta
         if devices is not None:
-            hb.executors = await asyncio.to_thread(self.core.executor_manifest)
-            hb.executor_snapshot_version = 1
             desktop = next((d for d in devices if d.platform in {"mac", "win"}), None)
             if desktop is not None:
                 from mino_scout.executors.desktop_executor import DesktopExecutor
@@ -615,10 +613,14 @@ class NodeTransport:
 
         协议 §6 规定 Nexus 会等 RESULT；这里静默失败会让它干等到超时。
         """
+        request_connection = self._ws
         try:
             await handler(env)
         except Exception as exc:
             SLog.e(TAG, f"处理 {env.type.value} 抛异常: {type(exc).__name__}: {exc}")
+            if self._ws is not request_connection:
+                SLog.w(TAG, "异常回执属于旧连接，禁止向重连后的会话补发")
+                return
             run_id = str(getattr(env.payload, "run_id", "") or "")
             step_idx = int(getattr(env.payload, "step_idx", -1) or -1)
             await self._reply_result(
@@ -638,6 +640,7 @@ class NodeTransport:
     async def _run_execute(self, env: P.Envelope, req: P.Execute) -> None:
         # core 是同步的（executor 全是阻塞 IO），丢线程池，别卡住事件循环
         received = time.perf_counter()
+        request_connection = self._ws
         timing = {}
         def execute():
             entered = time.perf_counter()
@@ -655,6 +658,9 @@ class NodeTransport:
         SLog.i(TAG, f"RESULT run={req.run_id} step={req.step_idx} sn={req.sn} cap={req.capability_id} "
                     f"executor={result.executor_used} status={result.status.value} elapsed_ms={result.elapsed_ms}")
         reply_started = time.perf_counter()
+        if self._ws is not request_connection:
+            SLog.w(TAG, "执行回执属于旧连接，禁止向重连后的会话补发；保留原执行收据")
+            return
         await self._reply_result(env, _result_from_event(req, result))
         SLog.i(TAG, f"PERF run={req.run_id} step={req.step_idx} cap={req.capability_id} "
                     f"queue_ms={timing['queue_ms']:.2f} core_ms={timing['core_ms']:.2f} "
@@ -686,13 +692,18 @@ class NodeTransport:
         return env.msg_id
 
     async def _reply_result(self, req_env: P.Envelope, result: P.Result) -> None:
+        request_connection = self._ws
+        generation = self.core.binding_guard.connection_generation
         try:
             result.extra = {**(result.extra or {}), "execution_identity": {
                 "schema_version": 1, "node_id": self.core.node_id,
                 "scout_process_generation": self.core.binding_guard.process_generation,
-                "node_connection_generation": self.core.binding_guard.connection_generation,
+                "node_connection_generation": generation,
                 "build": await asyncio.to_thread(process_build_identity),
             }}
+            if self._ws is not request_connection or self.core.binding_guard.connection_generation != generation:
+                SLog.w(TAG, "生成回执期间连接已改变，保留收据但不跨连接发送")
+                return
             await self._send(P.MsgType.RESULT, result, reply_to=req_env.msg_id)
         except Exception as exc:
             SLog.e(TAG, f"回 RESULT 失败（等待方按执行模式处理结果缺失）: {exc}")

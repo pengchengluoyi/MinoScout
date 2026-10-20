@@ -26,7 +26,7 @@ class DeviceRef:
     """
 
     sn: str
-    platform: str = "android"          # android | ios | web
+    platform: str = ""          # android | ios | web
     adb_serial: str = ""               # claw-* 设备解析后的真实 serial
     udid: str = ""                     # iOS
     password: str = ""                 # 锁屏密码。禁止入日志
@@ -45,9 +45,7 @@ class DeviceRef:
         if self.is_web:
             return frozenset({"playwright"})
         plat = str(self.platform or "").strip().lower()
-        if plat in ("ios", "iphone", "ipad"):
-            return frozenset({"ios_wda", "remote"})
-        if plat in {"desktop", "mac", "win"}:
+        if plat in {"mac", "win"}:
             return frozenset({"desktop"})
         if plat == "android":
             return frozenset({"adb", "remote"})

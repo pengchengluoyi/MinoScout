@@ -109,6 +109,17 @@ def cmd_heavy_deps() -> int:
 
 
 def cmd_configure(argv: list[str]) -> int:
+    if argv and argv[0] == "closed-lid":
+        from mino_scout.lid_sleep import configure
+        try:
+            if len(argv) != 2:
+                raise ValueError("用法: mino-scout configure closed-lid on|off|status")
+            result = configure(argv[1])
+        except (ValueError, OSError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
     if len(argv) == 2 and argv[0] == "source-root":
         from pathlib import Path
         from mino_scout.config import load_config, save_config

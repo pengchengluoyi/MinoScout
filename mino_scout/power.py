@@ -5,7 +5,7 @@ release。重连窗口也压住。不绑 `active_runs`。
 
 | 平台 | 手段 | 说明 |
 |---|---|---|
-| macOS | `caffeinate -dims -w <pid>` | `-d` 屏幕不熄（否则不少 Mac USB 掉电）；`-i` 系统 idle；`-m` 磁盘 idle；`-s` 合盖（**仅插电有效**，Apple 限制）；电池合盖仍会睡 |
+| macOS | `caffeinate -dims -w <pid>` | `-d` 显示器 idle；`-i` 系统 idle；`-m` 磁盘 idle；`-s` 系统睡眠断言（仅插电有效）；不保证阻止合盖或用户主动睡眠，也不保证 USB 供电 |
 | Windows | ES_CONTINUOUS \\| SYSTEM_REQUIRED \\| DISPLAY_REQUIRED | 心跳在长寿线程上重申 |
 | Linux | `idle:sleep:handle-lid-switch` | 无 systemd 时记 warn，不抑制 |
 
@@ -35,12 +35,12 @@ _ES_DISPLAY_REQUIRED = 0x00000002
 
 
 def macos_caffeinate_args(pid: int) -> list[str]:
-    """持续在线：屏幕、系统、磁盘、合盖（插电）一起压。"""
+    """持续在线：抑制显示器、系统和磁盘空闲睡眠；-s 仅在 AC 有效。"""
     return ["-d", "-i", "-m", "-s", "-w", str(int(pid))]
 
 
 def macos_on_ac_power() -> bool:
-    """合盖断言只在 AC 上生效。查不到时按插电处理，仍然传 `-s`。"""
+    """系统睡眠断言 -s 只在 AC 上生效。查不到时仍然传 -s。"""
     try:
         out = subprocess.run(
             ["pmset", "-g", "batt"],
@@ -74,6 +74,7 @@ class PowerGuard:
         self._win_active = False
         self._unavailable_reason = ""
         self._noop = noop
+        self._lid_sleep = None
 
     # ---------------- 对外 ----------------
 
@@ -134,6 +135,7 @@ class PowerGuard:
                 "platform": platform.system().lower(),
                 "unavailable_reason": self._unavailable_reason,
                 "child_alive": self._inhibition_alive(),
+                "closed_lid": dict(self._lid_sleep.state) if self._lid_sleep else {"active": False, "reason": "disabled"},
             }
 
     # ---------------- 存活 ----------------
@@ -192,6 +194,8 @@ class PowerGuard:
             SLog.w(TAG, f"睡眠抑制失败（任务照常跑，但机器可能睡）: {self._unavailable_reason}")
 
     def _disengage(self) -> None:
+        if self._lid_sleep is not None:
+            self._lid_sleep.stop()
         if self._noop:
             self._proc = None
             self._win_active = False
@@ -219,14 +223,16 @@ class PowerGuard:
             self._unavailable_reason = "caffeinate 不在 PATH"
             SLog.w(TAG, self._unavailable_reason)
             return
-        if not macos_on_ac_power():
-            SLog.w(TAG, "当前用电池：合盖仍会睡（caffeinate -s 只在插电时有效），USB/屏幕抑制照常")
         self._proc = subprocess.Popen(
             [exe, *macos_caffeinate_args(os.getpid())],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         self._unavailable_reason = ""
-        SLog.i(TAG, f"已抑制睡眠（caffeinate -dims，pid={self._proc.pid}；屏幕不熄、插电合盖不睡）")
+        SLog.i(TAG, f"已启动空闲防休眠（caffeinate -dims，pid={self._proc.pid}；合盖运行由独立授权功能控制）")
+        from mino_scout.lid_sleep import LidSleepLease
+        if self._lid_sleep is None:
+            self._lid_sleep = LidSleepLease()
+        self._lid_sleep.start()
 
     def _engage_windows(self, *, refresh: bool = False) -> None:
         rc = ctypes.windll.kernel32.SetThreadExecutionState(  # type: ignore[attr-defined]

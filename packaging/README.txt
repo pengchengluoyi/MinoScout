@@ -38,10 +38,11 @@ Control:
 
 Sleep: Scout keeps the machine online while it is trying to stay connected to
 Nexus, including reconnect. macOS uses caffeinate -dims (display, idle,
-disk, lid-on-AC). Windows uses SYSTEM_REQUIRED+DISPLAY_REQUIRED. Linux
-inhibits idle/sleep/lid. Display is kept awake so USB devices do not drop.
-Lid-close sleep on battery is an Apple limit and still happens until AC is
-plugged in.
+disk, and an AC-only system sleep assertion). Windows uses
+SYSTEM_REQUIRED+DISPLAY_REQUIRED. Linux inhibits idle/sleep/lid.
+On macOS, idle sleep assertions also work on battery. They do not guarantee
+USB power or prevent lid-close or user-requested sleep, even on AC. Keep the
+lid open during execution unless using a supported macOS closed-display setup.
 
 Playwright Chromium ships inside the browser layer; nothing to install
 by hand. PLAYWRIGHT_BROWSERS_PATH points at <prefix>/bin/ms-playwright.
@@ -54,3 +55,13 @@ Uninstall (macOS, user install):
   launchctl unload ~/Library/LaunchAgents/com.mino.scout.plist
   rm ~/Library/LaunchAgents/com.mino.scout.plist
   rm -rf ~/Library/Application\ Support/MinoScout
+
+macOS closed-lid execution (including battery power): startup automatically
+requests first-use authorization unless explicitly disabled. Cancellation is
+not retried during the same process. Manual controls:
+  mino-scout configure closed-lid on|off|status
+The on command requests native administrator authorization for a fixed-purpose
+launchd helper. While Scout holds a live lease, the helper uses system-wide
+SleepDisabled and restores its original value after all leases expire.
+Keep the machine ventilated; this consumes battery and affects manual sleep.
+See docs/DEVICE_SETUP.md for lease recovery and hardware acceptance checks.

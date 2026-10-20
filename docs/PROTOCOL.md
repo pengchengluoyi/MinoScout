@@ -463,7 +463,7 @@ fixtures_sha256 = 0be21298b045a908bb1a829cdb12413035724416327ff26eea33812a2ffebf
 - `REGISTER.host` 与 `HEARTBEAT.host` 由 Scout 上报实际 OS/arch/hostname 与 `desktop` 探测状态。持久化在 SQLite `nodes.extra`。
 - `DeviceManifest` 增加 `os`（macos/windows/linux）、持久逻辑槽 `session_key`、临时 `session_generation`、`desktop_state`、`blocked_reason`、可空 `capabilities` 和 `readiness`。持久化在 SQLite `m_device.extra`，设备家族为 `platform=desktop`。
 - 主桌面 SN 为 `desktop:<node_id>:console`。一个节点只能上报自己的槽及实际宿主 OS；窗口和显示器不生成设备。无 GUI/锁屏/缺权限/缺插件保留逻辑槽且通道为 disconnected，不表示可执行。
-- `HEARTBEAT.executors` 是可缺省的执行器状态增量，用于权限或插件变化后刷新 Desktop 的 available/provides/reason；不发送时保留旧状态。
+- `HEARTBEAT.executors` 必须是完整快照，且 `executor_snapshot_version=1`；不接受缺失或增量。Desktop 状态更新必须保留同帧其他执行器。
 - `device_delta` 比较完整 manifest；会话代次、能力或权限变化也必须发送。Nexus 替换完整设备状态，不能只合并 channels。
 - `EXECUTE.device_hint` 带 `os/session_key/session_generation/desktop_lease/target_package`。任务创建时冻结代次，Desktop 输入必须持有当前任务的 SQLite 独占租约。Scout 重启或 Cua readiness 状态变化使旧代次失效，不能用新心跳给旧任务续代次；系统会话及窗口的实际输入准入由 SDK 最终校验。
 - Desktop 只路由 `desktop` executor。未知平台显式拒绝，不落回 ADB 或 Playwright。截图 capture_id、OS session_generation、SDK snapshot_id 与报告截图 hash 是不同身份。
@@ -483,6 +483,7 @@ OBSERVE 的 screenshot 与 RESULT 的执行诊断通过 capture_id、session_gen
 消息 envelope 和 protocol dataclass 不变；以下元数据经既有 screenshot `remote_detail` 与 RESULT `extra` 传输。
 
 - Nexus 在 PC 首张截图前派发 `launch_app`，Scout 用 Cua 启动应用、确认目标 pid 并绑定 `target={kind:window,pid,window_id}`；macOS 和 Windows 均不在启动阶段调用 bring_to_front 或要求持续前台。`launch_app.params.window_id` 或 `device_hint.window_id` 可明确选窗；目标窗口不存在或不可唯一选择时 blocked。每个 run 保存独立绑定，取消、超时与代际变化清理绑定。
+- 桌面 `close_app` / `kill_app`：Scout 将 `kill_app` 归一为 `close_app`，经 Cua `terminate_app` 结束与 `package` / `target_package` 匹配的前台进程并清理窗口绑定；目标未在前台时 completed 并说明未命中，不强制先截图。
 - 截图使用 SDK 通用 `get_window_state`，指定 pid/window_id，关闭 AX 树并注册动作捕获（display_only=false）。typed WindowStateOutput 未暴露 capture_id，因此不能拿 snapshot_id 冒充捕获引用。不调用整屏截图，也不在窗口截图失败后改截桌面。
 - screenshot 元数据含 capture_scope=window、target、pid/window_id、snapshot_id、capture_id、session_generation、capture_width/capture_height、native_width/native_height、window_bounds、screenshot_scale、compress_ratio。capture 尺寸始终对应返回给模型的最终图像。PC 压缩默认 1，较大压缩比通过 Cua 原尺寸校准后设置 max_image_dimension；项目不再自行缩图。
 - 点击使用 ActionTarget.WINDOW 与 ClickPosition.CAPTURED_COORDINATES，Cua 原子校验捕获、所有者、窗口几何与有效期，处理 Retina/压缩映射并消费捕获。输入和按键也绑定窗口，显式 delivery_mode=foreground；项目不向整个桌面投递坐标或键盘事件。
@@ -576,7 +577,7 @@ Nexus 普通任务在已有 run payload 记录不含动态输入/秘密的写意
 
 ### V5 R5：HEARTBEAT executor 快照 v1（2026-10-15）
 
-两端 HEARTBEAT 新增 `executor_snapshot_version: int = 0`。`1` 明确声明 executors 为完整快照：缺省或 null 表示本次未更新；`[]` 撤销全部；非空数组完整替换当前连接清单，不能按 id 合入。`available=false` 不参与准入。未知快照版本停止使用该节点 executor，不能猜测语义。
+两端 HEARTBEAT 的 `executor_snapshot_version` 必须显式为整数 `1`，`executors` 必须提供完整数组：`[]` 撤销全部；非空数组完整替换当前连接清单，不能按 id 合入。dataclass 缺省 `0` 仅用于识别缺字段并拒绝，不是有效协议值。缺失/null、bool 或未知版本拒绝心跳。`available=false` 不参与准入。
 
 `0` 或缺省只用于已安装旧 Scout 的兼容增量，维持按 id 合入；其空数组不能证明撤销完成，不提供新绑定保证。必须按显式字段判断，不能凭 Scout 包版本猜测。新 Scout 上报全量 executor，再覆盖其中 desktop 的实时就绪事实，不发送 desktop-only 列表。设备 channel=connected 不能重新放行已撤销或 unavailable 的 executor。
 
@@ -840,3 +841,18 @@ Scout 使用经过已认证连接下发的 `service_url`、本机 `cli:case_api`
 REGISTER / HEARTBEAT 可携带 `plugins_ready: bool | null`、`plugin_warning: string`、`runtime_environment: development | production | 空串`。旧节点缺字段表示未知，不能推断为未安装或未配置。归属校验失败仍可保持在线，但必须发 `plugins_ready=false`、空插件列表和不含密钥的阻断原因；Nexus 原样向有权查看该节点的 Workbench 暴露就绪状态。成功心跳清除旧警告。环境标签只用于展示，不替代鉴权。
 
 开发与正式 Scout 为独立进程，配置、PID、锁、插件目录和凭据命名空间互不共用。开发启动不得调用正式系统服务；禁止跨环境回退或自动继承旧凭据。
+
+## V7 当前版本执行合同（2026-10-20，优先于历史示例）
+
+- 目标平台只有 `mac / win / android / web`，不得由 SN 推断、接受别名或缺失时补 Android。宿主 OS 另用 host.os；Linux 可以是宿主，不能作为当前被测目标平台。
+- Web 设备身份必须为 `web{node_id}`；不接收 web-local、web_local、web 或 web- 前缀旧身份，也不迁移其归属。
+- HEARTBEAT 必须提供 `executor_snapshot_version=1` 和完整 executors；旧增量快照不再合并。
+- 普通设备动作必须携带且只携带一个 `executor_order` 元素，selected_impl.executor 必须与之相同。Nexus 只能选择明确请求的或唯一可用的实现；缺失、歧义、不可用均拒绝。
+- Scout 不补执行器、不按失败状态换路；pass/blocked/declined/fail/skipped 均返回本次唯一尝试结果。未知写结果隔离、幂等缓存和停止控制仍必须保留。
+- screenshot/hierarchy/probe/cancel_run/node.* 框架指令按其专用合同处理，不通过普通设备动作的选路链。
+- 普通模式仍以 `execution_mode=legacy` 标识，与严格 Web 模式 v5 并存；此名称是当前执行模式枚举，不是允许旧消息兼容。
+
+
+### V7 心跳所有发送入口统一（2026-10-20）
+
+ScoutCore.heartbeat 统一生成完整 executors、executor_snapshot_version=1，并用同一快照计算 capability_revision。注册后的即时心跳、定时心跳、插件通知前心跳、停止前心跳均遵守此合同；设备重探失败不省略执行器快照。定时心跳若更新 desktop 就绪状态，必须重新计算该帧 capability_revision。Nexus 拒绝时返回具体合同错误码，不再统一提示“请升级 Scout”；不恢复旧增量兼容。

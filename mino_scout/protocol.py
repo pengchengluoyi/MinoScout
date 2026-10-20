@@ -174,7 +174,7 @@ class Heartbeat:
     runtime_environment: str = ""
     runtime_capabilities: Optional[list[dict[str, Any]]] = None
     executors: Optional[list[ExecutorManifest]] = None
-    executor_snapshot_version: int = 0  # 0: legacy delta; 1: complete executors snapshot
+    executor_snapshot_version: int = 0  # missing/unsupported; sender must explicitly set 1
     scout_process_generation: str = ""
     node_connection_generation: str = ""
     capability_revision: str = ""
@@ -191,13 +191,13 @@ class Execute:
     sn: str
     capability_id: str
     params: dict[str, Any] = field(default_factory=dict)
-    executor_order: list[str] = field(default_factory=list)
+    executor_order: list[str] = field(default_factory=list)  # device actions require exactly one selected executor
     low_level: dict[str, Any] = field(default_factory=dict)
     selected_impl: dict[str, Any] = field(default_factory=dict)
     device_hint: dict[str, Any] = field(default_factory=dict)
     timeout_sec: float = 30.0
     device_id: str = ""
-    platform: str = ""  # android | ios | web | playwright | other
+    platform: str = ""  # mac | win | android | web
     execution_contract_version: str = ""
     binding_id: str = ""
     binding_revision: int = 0

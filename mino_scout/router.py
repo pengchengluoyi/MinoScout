@@ -1,26 +1,4 @@
-"""按 Nexus 给定的 executor_order 依次尝试，返回五态结果。
-
-port(scout): 源自 MiniOrangeServer `server/services/regression/router.py`，
-**只搬 dispatch 半边**。
-
-上游 383 行里，以下部分归 Nexus（它们需要能力目录或 LLM）：
-  - `_build_menu_index` / `_build_impl_index`  读 plugins/**.yaml
-  - `_available_executors`                    跑 connectivity_probe
-  - `_needs_locate` / `_ensure_screen_for_locate` / `_inject_locate_coords`
-                                              VLM locate（先看后做）
-  - `_executor_order` 里"查菜单 + 按 connectivity 过滤 + capture_prefer 提前"的合成逻辑
-  - `assert_visual` / `wait_screen_ready` / `ai_persona` 的预抓图特例
-    （这三个 capability 的 executor 本身就在 Nexus）
-  - `_with_thumb`                             缩略图归 Nexus
-
-留在 Scout 的就是循环本体：**依次试、五态处置、记 attempts**。
-
-五态处置与上游 `router.py:150-170` 逐条对齐：
-    pass / blocked  → 立即返回（blocked 换 executor 没意义）
-    declined        → 记 info，试下一个（不算故障）
-    fail / skipped  → 记 info，试下一个
-    全试完          → 返回最后一次结果；一次都没试上 → synthetic fail
-"""
+"""执行 Nexus 明确选择的唯一执行器；任何结果均返回，不降级换路。"""
 from __future__ import annotations
 
 import time
@@ -40,8 +18,7 @@ from mino_scout.schemas import CapturedScreen, EventResult, PlanEvent
 
 TAG = "Router"
 
-# 收到这些状态就停，不再试 fallback。与上游 router.py:155 一致。
-_TERMINAL = frozenset({EventStatus.PASS, EventStatus.BLOCKED})
+
 
 
 class Router:
@@ -49,7 +26,7 @@ class Router:
 
     与上游 `CapabilityRouter` 的关键区别：**不做选路决策**。
     `executor_order` 由 Nexus 算好塞进 `EXECUTE` 载荷（CLAUDE.md §1 约束 3），
-    Router 严格按序尝试，不自行改序、不自行追加。
+    Router 只执行唯一指定项，不自行改序、不自行追加或降级。
     """
 
     def __init__(self, executors: dict[str, Executor]):
@@ -71,6 +48,10 @@ class Router:
         started = now_iso()
         t0 = time.time()
 
+        if len(event.executor_order or []) != 1:
+            return self._synthetic_fail(event, "executor_order_must_select_one", started_at=started)
+        if (event.selected_impl or {}).get("executor") != event.executor_order[0]:
+            return self._synthetic_fail(event, "selected_impl_executor_mismatch", started_at=started)
         ordered = self._resolve_order(event)
         compatible = device.compatible_executors
         skipped = [ex for ex in ordered if ex not in compatible]
@@ -142,24 +123,9 @@ class Router:
 
             result = normalize_ui_result(result, capability_id=event.capability_id,
                 run_id=run_id, step_idx=step_idx)
-            if result.status in _TERMINAL:
-                result.attempts = attempts
-                result.elapsed_ms = result.elapsed_ms or int((time.time() - t0) * 1000)
-                if result.status is EventStatus.BLOCKED:
-                    SLog.i(TAG, f"{ex_id} blocked cap={event.capability_id}: {result.summary} —— 中断 fallback")
-                return result
-
-            if result.status is EventStatus.DECLINED:
-                # 让位，不算故障。上游同样只记 info。
-                SLog.i(TAG, f"executor {ex_id} declined cap={event.capability_id}: {result.summary}")
-                continue
-
-            # fail / skipped
-            SLog.i(
-                TAG,
-                f"executor {ex_id} {_status_value(result.status)} cap={event.capability_id}: "
-                f"{(result.error or result.summary)[:120]}",
-            )
+            result.attempts = attempts
+            result.elapsed_ms = result.elapsed_ms or int((time.time() - t0) * 1000)
+            return result
 
         # 全试完都没成
         if last is None:  # pragma: no cover —— ordered 非空时不可能到这
@@ -224,6 +190,7 @@ class Router:
             elapsed_ms=0,
             summary=msg,
             error=msg,
+            raw_response={"execution":{"execution_started":"no","phase":"admission","reason_code":"executor_route_invalid"}},
         )
 
 

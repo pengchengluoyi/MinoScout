@@ -42,11 +42,11 @@ def execute(self, event: PlanEvent, ctx: ExecutorContext) -> EventResult:
 |---|---|---|
 | `pass` | 做成了 | 立即返回 |
 | `blocked` | 需要人介入（Scout 不问人，上报 Nexus） | **立即返回，中断 fallback** |
-| `declined` | 我不适合做这条，让位 | 试下一个 executor |
-| `fail` | 真故障（设备报错、超时、元素找不到） | 试下一个 executor |
-| `skipped` | 本次未执行（前置不满足等） | 试下一个 executor |
+| `declined` | 我不适合做这条，让位 | 立即返回本次结果，不切换 executor |
+| `fail` | 真故障（设备报错、超时、元素找不到） | 立即返回本次结果，不切换 executor |
+| `skipped` | 本次未执行（前置不满足等） | 立即返回本次结果，不切换 executor |
 
-**最容易写错的地方**：`declined` 和 `fail` **都会**走 fallback，区别在**是否算故障** —— `declined` 记 info、不计失败；`fail` 记为真故障。只有 `blocked` 会中断 fallback 链。
+**当前 V7 合同**：EXECUTE 必须选定唯一执行器；任何状态都结束本次尝试。禁止失败后切换执行器，未知写结果仍需隔离。
 
 （早期文档曾写成"四态、`FAIL` = 换谁都白搭"，与上游 `router.py:150-170` 不符，已修正。）
 

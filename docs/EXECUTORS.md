@@ -136,3 +136,7 @@ ADB 声明的 supports 与实际 low_level 解释器保持一致：shell 使用�
 ### 2026-10-16 有限宿主插件执行面
 
 除设备执行器外，`host_plugin` manifest 为既有插件处理器声明唯一具名读取 `plugin.gmail.fetch_otp`。它不属于设备 UI 通道，不进入设备 fallback，不改变设备 provides 矩阵。插件账号归属核验前 unavailable；configured 由独立插件状态与 Nexus 依赖合同核对。绑定请求必须使用完整 v1 投影，不能以空执行器或其他设备执行器取码。其他插件仍沿用原合同，不自动取得绑定资格。
+
+## V7 路由约束（2026-10-20）
+
+普通设备动作只执行 EXECUTE 指定的一个 executor，selected_impl.executor 必须一致。任何执行状态都不尝试后备执行器；保留实际 executor_used、attempts 和 execution 写边界证据。旧版依次 fallback 的说明不再适用。

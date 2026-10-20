@@ -41,38 +41,6 @@ _IDEMPOTENT_TTL_SEC = 600.0
 # adb 已连接但默认输入法被改回系统键盘时，心跳里复检（手机重启后常见）。
 _ADB_IME_DRIFT_CHECK_SEC = 300.0
 
-# executor_order 为空时按 **这台设备的 platform** 填。禁止把 adb 和 playwright 排进同一条链。
-_PLATFORM_EXECUTOR_ORDER: dict[str, tuple[str, ...]] = {
-    "android": ("adb", "remote"),
-    "ios": ("ios_wda",),
-    "web": ("playwright",),
-    "playwright": ("playwright",),
-    "desktop": ("desktop",),
-    "mac": ("desktop",),
-    "win": ("desktop",),
-    "other": (),
-}
-
-_PLATFORM_ALIASES = {
-    "android": "android",
-    "ios": "ios",
-    "iphone": "ios",
-    "ipad": "ios",
-    "web": "web",
-    "browser": "web",
-    "playwright": "playwright",
-    "other": "other",
-    "desktop": "desktop",
-}
-
-_CAP_ALIASES = {
-    "app_version": "get_app_version",
-    "foreground_app": "get_foreground_app",
-    "probe_device": "probe",
-    "stop": "node.stop",
-    "restart": "node.restart",
-}
-
 _NODE_COMMANDS = {
     "node.stop": "stop",
     "node.restart": "restart",
@@ -266,7 +234,7 @@ class ScoutCore:
             if stopped and req.capability_id not in READS | CLEANUP:
                 output = {"status": "fail", "data": {"execution": {"execution_started": "no",
                     "phase": "admission", "reason_code": "run_write_stopped"}, "execution_control": stopped}}
-            elif req.sn != f"web{self.node_id}" or req.platform not in {"web", "playwright"}:
+            elif req.sn != f"web{self.node_id}" or req.platform != "web":
                 output = {"status": "fail", "data": {"execution": {"execution_started": "no",
                     "phase": "admission", "reason_code": "node_pin_mismatch"}}}
             else:
@@ -491,9 +459,13 @@ class ScoutCore:
         if cap == "hierarchy":
             return self._dispatch_hierarchy(req)
 
-        device = _device_from_execute(req, node_id=self.node_id)
-        routed = _with_executor_order(req, device, registered=self.executors)
-        event = _event_from_execute(routed)
+        try:
+            device = _device_from_execute(req, node_id=self.node_id)
+        except ValueError as exc:
+            return make_event_result(_event_from_execute(req), status=EventStatus.BLOCKED, executor_used="core",
+                started_at=now_iso(), elapsed_ms=0, error=str(exc), summary="执行平台合同无效",
+                raw_response={"execution":{"execution_started":"no","phase":"admission","reason_code":"platform_contract_invalid"}})
+        event = _event_from_execute(req)
         return self.router.dispatch(
             event,
             device,
@@ -952,12 +924,15 @@ class ScoutCore:
         from mino_scout.config import development
 
         runtime_caps = runtime_input_capabilities()
-        epoch = self.binding_guard.announce(None, runtime_caps)
+        executors = self.executor_manifest()
+        epoch = self.binding_guard.announce(executors, runtime_caps)
         return P.Heartbeat(
             node_id=self.node_id,
             node_connection_generation=self.binding_guard.connection_generation,
             **epoch,
             platform_contract_version=1,
+            executor_snapshot_version=1,
+            executors=executors,
             uptime_sec=int(time.time() - self._started),
             busy=bool(active) or getattr(self, "_development_busy", False),
             active_runs=active,
@@ -1033,12 +1008,12 @@ def _release_playwright_run(run_id: str) -> None:
 
 
 def _canonical_cap(capability_id: str) -> str:
-    cap = str(capability_id or "").strip()
-    return _CAP_ALIASES.get(cap, cap)
+    return str(capability_id or "").strip()
 
 
 def _normalize_platform(raw: str) -> str:
-    return _PLATFORM_ALIASES.get(str(raw or "").strip().lower(), str(raw or "").strip().lower())
+    from mino_scout.platform_contract import target_platform
+    return target_platform(raw)
 
 
 def _event_from_execute(req: P.Execute) -> PlanEvent:
@@ -1060,19 +1035,13 @@ def _device_from_execute(req: P.Execute, *, node_id: str = "") -> DeviceRef:
         from mino_scout.platform_contract import native_request_platform
         native_request_platform({"platform": req.platform, "sn": req.sn, "device_hint": hint},
                                 node_id=node_id, host_system=host_platform.system())
-    platform = _normalize_platform(str(req.platform or hint.get("platform") or ""))
+    from mino_scout.platform_contract import execute_platform
+    platform = execute_platform({"platform":req.platform,"device_hint":hint})
     sn = str(req.sn or req.device_id or hint.get("sn") or hint.get("device_id") or "").strip()
     device_id = str(req.device_id or sn).strip()
 
-    if not platform:
-        platform = _platform_guess(sn)
-
-    if platform in ("web", "playwright") or sn.lower() in ("playwright", "web"):
-        from mino_scout.playwright_hub import is_web_slot, web_slot_sn
-
-        platform = "web"
-        if not is_web_slot(sn, platform):
-            sn = web_slot_sn(node_id) if node_id else (sn or "playwright")
+    if platform == "web" and sn != f"web{node_id}":
+        raise ValueError("web_identity_conflict")
 
     adb_serial = str(hint.get("adb_serial") or "")
     if not adb_serial and platform == "android":
@@ -1085,7 +1054,7 @@ def _device_from_execute(req: P.Execute, *, node_id: str = "") -> DeviceRef:
 
     return DeviceRef(
         sn=sn or device_id,
-        platform=platform or "android",
+        platform=platform,
         adb_serial=adb_serial,
         udid=str(hint.get("udid") or (device_id if platform == "ios" else "")),
         password=str(hint.get("password") or ""),
@@ -1094,21 +1063,7 @@ def _device_from_execute(req: P.Execute, *, node_id: str = "") -> DeviceRef:
     )
 
 
-def _with_executor_order(
-    req: P.Execute, device: DeviceRef, *, registered: Optional[dict] = None,
-) -> P.Execute:
-    family = _compatible_executors(device)
-    if req.executor_order:
-        order = [ex for ex in req.executor_order if ex in family]
-        return replace(req, executor_order=order)
-    plat = _normalize_platform(device.platform or req.platform) or "other"
-    order = list(_PLATFORM_EXECUTOR_ORDER.get(plat) or _PLATFORM_EXECUTOR_ORDER["other"])
-    order = [ex for ex in order if ex in family]
-    if registered:
-        present = [ex for ex in order if ex in registered]
-        if present:
-            order = present
-    return replace(req, executor_order=order)
+
 
 
 def _timeout_result(req: P.Execute, timeout: float, *, lane_reset: bool = False) -> EventResult:
@@ -1170,14 +1125,7 @@ def _stop_playwright_hub() -> None:
     get_hub().shutdown_thread()
 
 
-def _platform_guess(sn: str) -> str:
-    from mino_scout.playwright_hub import is_web_slot
 
-    if is_web_slot(sn):
-        return "web"
-    if sn.startswith("desktop:"):
-        return "desktop"
-    return "android"
 
 
 def _adb_serial_guess(sn: str) -> str:

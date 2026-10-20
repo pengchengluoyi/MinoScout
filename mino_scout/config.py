@@ -36,17 +36,9 @@ def _environment_dir(dev: bool) -> Path:
     if override:
         return Path(override).expanduser().resolve()
     if os.name == "nt":
-        current = Path(os.environ.get("APPDATA") or Path.home()) / "MinoScout"
-        legacy = Path(os.environ.get("LOCALAPPDATA") or current.parent) / "MinoScout"
-        if not (current / "config.json").is_file() and (legacy / "config.json").is_file():
-            return legacy
-        return current
+        return Path(os.environ.get("APPDATA") or Path.home()) / "MinoScout"
     if sys.platform == "darwin":
-        current = Path.home() / "Library" / "Application Support" / "Mino" / "scout"
-        legacy = Path.home() / "Library" / "Application Support" / "MinoScout"
-        if current.exists() and legacy.exists():
-            raise ValueError("检测到新旧 Scout 目录，请显式指定 MINO_SCOUT_HOME；不会合并或覆盖配置")
-        return legacy if legacy.exists() else current
+        return Path.home() / "Library" / "Application Support" / "Mino" / "scout"
     xdg = str(os.environ.get("XDG_CONFIG_HOME") or "").strip()
     if xdg:
         return Path(xdg).expanduser() / "minoscout"
@@ -96,9 +88,10 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
         return {}
     try:
         data = json.loads(target.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("scout_config_unreadable") from exc
+    if not isinstance(data,dict): raise ValueError("scout_config_object_required")
+    return data
 
 
 def set_nexus_url(url: str, path: Path | None = None) -> Path:
