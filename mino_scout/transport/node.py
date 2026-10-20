@@ -207,6 +207,7 @@ class NodeTransport:
                 backoff = min(backoff * 2, _BACKOFF_MAX)
         finally:
             local_stopper.cancel()
+            await asyncio.gather(local_stopper, return_exceptions=True)
             self._connection("stopped")
             UP.set_progress_hook(None)
             from mino_scout.plugins import progress as plugin_progress
@@ -262,6 +263,7 @@ class NodeTransport:
 
     async def _connect_once(self) -> None:
         import websockets
+        from websockets.exceptions import ConnectionClosed
 
         self._connection("connecting")
         SLog.i(TAG, f"dial {self.nexus_url}")
@@ -278,22 +280,28 @@ class NodeTransport:
                 await self._register()
                 hb = asyncio.create_task(self._heartbeat_loop())
                 done, _pending = await asyncio.wait(
-                    {recv, stopper}, return_when=asyncio.FIRST_COMPLETED,
+                    {recv, stopper, hb}, return_when=asyncio.FIRST_COMPLETED,
                 )
-                if stopper in done and not recv.done():
+                if stopper in done:
                     await self._announce_shutdown()
-                    try:
-                        await ws.close()
-                    except Exception:
-                        pass
-                    await recv
+                    await ws.close()
+                elif hb in done:
+                    # Propagate heartbeat failures to the reconnect loop, too.
+                    await hb
+                    await ws.close()
+                # asyncio.wait does not retrieve exceptions from completed tasks.
+                await recv
+            except ConnectionClosed as exc:
+                if getattr(exc.rcvd, "code", None) != 1012:
+                    raise
+                SLog.i(TAG, "Nexus 正在重启，连接关闭后将自动重连")
             finally:
-                if hb is not None:
-                    hb.cancel()
-                if not recv.done():
-                    recv.cancel()
-                if not stopper.done():
-                    stopper.cancel()
+                connection_tasks = [task for task in (hb, recv, stopper) if task is not None]
+                for task in connection_tasks:
+                    if not task.done():
+                        task.cancel()
+                # Drain every task even when REGISTER, shutdown or recv failed.
+                await asyncio.gather(*connection_tasks, return_exceptions=True)
                 self._ws = None
                 self.core.binding_guard.set_connection("")
                 self._connection("disconnected")

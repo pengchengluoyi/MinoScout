@@ -81,6 +81,7 @@ def _web_auth_evidence(name: str, value: str) -> str:
 _SUPPORTED_CAPS: set[str] = {
     "launch_app",
     "close_app",
+    "kill_app",
     "press_key",
     "wait_ms",
     "tap_element",
@@ -251,6 +252,8 @@ class PlaywrightExecutor:
         started_at = _now_iso()
         t0 = time.time()
         cap = event.capability_id
+        if cap == "kill_app":
+            cap = "close_app"
         sn = str(ctx.device.sn or "")
         run_id = str(ctx.run_id or "")
         focus_key = (sn, run_id)

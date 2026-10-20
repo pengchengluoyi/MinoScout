@@ -23,7 +23,7 @@ from typing import Any
 from mino_scout import protocol as P
 
 SDK_VERSION = "0.34.1"
-DESKTOP_CAPS = ("screenshot", "tap_xy", "tap_element", "input_text", "press_key", "launch_app", "get_foreground_app")
+DESKTOP_CAPS = ("screenshot", "tap_xy", "tap_element", "input_text", "press_key", "launch_app", "close_app", "kill_app", "get_foreground_app")
 _REASONS = {
     "ready": "",
     "no_session": "无图形桌面会话，请在已登录的桌面内启动 Scout",
@@ -567,9 +567,27 @@ class DesktopRuntime:
                                        stage=stage, package=package, pid=pid, diagnostics=diagnostics) from exc
 
     def _action(self, capability, params, hint, run_id):
-        self._check(hint, run_id, mutate=capability != "get_foreground_app")
+        if capability == "kill_app":
+            capability = "close_app"
+        self._check(hint, run_id, mutate=capability not in ("get_foreground_app", "close_app"))
         os_name = self.state()["os"]
         sdk, driver = self._session(run_id)
+        if capability == "close_app":
+            package = str(params.get("package") or hint.get("target_package") or "").strip()
+            active = self._active_apps(sdk, driver, os_name)
+            targets = [a for a in active if not package or application_matches(a, package, os_name)]
+            if not targets:
+                return {"execution": {"execution_started": "yes", "phase": "completed", "source": "desktop.cua.v1"},
+                        "summary": "close_app: 目标应用未在前台", "session_generation": hint.get("session_generation")}
+            pid = int(getattr(targets[0], "pid", 0) or 0)
+            if pid <= 0:
+                raise DesktopUnavailable("close_app 无法解析被测进程")
+            result = self._await(driver.call_tool("terminate_app", json.dumps({"pid": pid, "session": run_id})))
+            if getattr(result, "is_error", False):
+                raise DesktopUnavailable("Cua 未能终止被测应用")
+            self._clear_focus(run_id)
+            return {"execution": {"execution_started": "yes", "phase": "completed", "source": "desktop.cua.v1"},
+                    "summary": f"close_app pid={pid}", "session_generation": hint.get("session_generation")}
         if capability == "get_foreground_app":
             active = self._active_apps(sdk, driver, os_name)
             package = str(hint.get("target_package") or "")

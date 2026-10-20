@@ -109,6 +109,7 @@ def map_protocol_xy_to_display(
 _SUPPORTED_CAPS: set[str] = {
     "launch_app",
     "close_app",
+    "kill_app",
     "press_key",
     "wait_ms",
     "swipe_direction",
@@ -296,6 +297,8 @@ class AdbExecutor:
         started_at = _now_iso()
         t0 = time.time()
         cap = event.capability_id
+        if cap == "kill_app":
+            cap = "close_app"
         focus_key = (str(ctx.device.sn or ""), str(ctx.run_id or ""))
         # 只读取证不改变焦点，不能清掉点击留下的焦点引用：
         # Nexus 在 tap 与 input_text 之间会按 run_id 多次下发 probe_device_state（recovery_evidence）。
