@@ -153,10 +153,7 @@ class ScoutCore:
             from mino_scout.case_sources import dispatch
             return dispatch(self, req)
         if req.capability_id in {"node.update", "update"}:
-            return make_event_result(_event_from_execute(req), status=EventStatus.BLOCKED,
-                executor_used="core", started_at=now_iso(), elapsed_ms=0,
-                summary="升级与回退功能已取消", raw_response={"execution": {
-                    "execution_started": "no", "reason_code": "component_updates_removed"}})
+            return self._fixed_update(req)
         with self._lock:
             if self._update_busy:
                 return make_event_result(_event_from_execute(req), status=EventStatus.BLOCKED,
@@ -169,6 +166,54 @@ class ScoutCore:
         finally:
             with self._lock:
                 self._update_io -= 1
+
+
+    def _fixed_update(self, req):
+        from mino_scout import fixed_update as updates
+        from mino_scout.plugins import tool_tasks
+        params = req.params or {}
+        opid = str(params.get("operation_id") or "")
+        try:
+            if params.get("action") == "status":
+                data = updates.status(opid, self._loaded_build)
+            else:
+                # Nexus has already excluded all admitted batches. This lock closes
+                # the final local race with device/IDE requests after that snapshot.
+                with self._lock:
+                    old = updates.read(opid)
+                    if old:
+                        wanted = {"build_id": params.get("build_id", ""), "release_tag": params.get("release_tag", ""), "action": params.get("action", "update"),
+                                  "rollback_of": params.get("rollback_of", "")}
+                        if old["params"] != wanted:
+                            raise ValueError("operation_id 参数冲突")
+                        data = updates.status(opid, self._loaded_build)
+                    elif tool_tasks.has_active() or self._update_io or getattr(self, "_development_busy", False) or any(self._requests.active(r) for r in self._active_runs):
+                        data = {"operation_id": opid, "state": "busy"}
+                    else:
+                        capacity = self._web_v5.capacity()
+                        if capacity.get("lanes_free", 0) != capacity.get("lanes_total", 0) or capacity.get("lanes_quarantined"):
+                            data = {"operation_id": opid, "state": "busy"}
+                        else:
+                            self._update_busy = True
+                            try:
+                                data = updates.submit(opid, str(params.get("build_id", "")),
+                                    release_tag=str(params.get("release_tag", "")), action=params.get("action", "update"), rollback_of=params.get("rollback_of", ""), parent_pid=os.getpid())
+                            except Exception:
+                                self._update_busy = False
+                                raise
+            extra = {"update": data}
+            if self._update_busy and data.get("state") == "installing":
+                extra["_scout_shutdown"] = True
+            return make_event_result(_event_from_execute(req), status=EventStatus.PASS, executor_used="core",
+                started_at=now_iso(), elapsed_ms=0, summary=data["state"], raw_response=extra)
+        except Exception as exc:
+            try:
+                uncertain = bool(updates.read(opid)) or params.get("action") == "status"
+            except Exception:
+                uncertain = True
+            return make_event_result(_event_from_execute(req), status=EventStatus.FAIL, executor_used="core",
+                started_at=now_iso(), elapsed_ms=0, summary="固定版本更新未受理",
+                raw_response={"update": {"operation_id": opid, "state": "needs_operator" if uncertain else "failed", "reason": str(exc)[:500]}})
 
 
     def _execute_with_development(self, req: P.Execute) -> EventResult:
@@ -971,7 +1016,7 @@ class ScoutCore:
             scout_version=report_scout_version(),
             plugins=status_list(self.node_id) if self._plugins_ready else [],
             plugins_ready=self._plugins_ready,
-            tool_tasks_version=1,
+            tool_tasks_version=2,
             plugin_warning=self._plugin_warning,
             runtime_environment="development" if development() else "production",
             runtime_capabilities=runtime_caps,

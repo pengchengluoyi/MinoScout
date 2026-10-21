@@ -228,18 +228,5 @@ echo "→ 安装到 ${PREFIX}"
 ( cd "$INSTALL_DIR" && bash ./install.sh )
 
 SCOUT_BIN="${PREFIX}/bin/mino-scout"
-if [[ -x "$SCOUT_BIN" ]]; then
-  "$SCOUT_BIN" stop >/dev/null 2>&1 || true
-  if [[ "$(uname -s)" == "Darwin" ]]; then
-    uid="$(id -u)"
-    target="gui/${uid}/com.mino.scout"
-    launchctl kickstart -k "$target" >/dev/null 2>&1 \
-      || launchctl bootstrap "gui/${uid}" "$HOME/Library/LaunchAgents/com.mino.scout.plist" 2>/dev/null \
-      || true
-  elif command -v systemctl >/dev/null 2>&1; then
-    systemctl --user restart mino-scout.service >/dev/null 2>&1 || true
-  fi
-fi
-
 echo "→ 执行 ${SCOUT_BIN} status 查看服务状态"
 echo "Mino Scout ${APP_VER} 安装完成。账号绑定结果请在 Workbench 查看；拒绝原因见 Scout 日志。Chromium / ADB Keyboard 将在首次接入后自动下载。"

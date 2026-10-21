@@ -1,7 +1,6 @@
-"""App 层 semver：REGISTER/心跳必须读磁盘，不能只用 import 缓存。
+"""运行版本固定于进程启动；磁盘版本用于说明重启后将加载的代码。
 
-分层更新只替换 `bin/app/mino_scout/*.py`，不会卸载已 import 的 `mino_scout.core`。
-进程内 `SCOUT_VERSION` 常停留在启动时的旧值，而磁盘 `core.py` 已是新版本。
+源码只读取当前模块所在的源码目录，不能把另一份安装的版本当作源码版本。
 """
 from __future__ import annotations
 
@@ -41,20 +40,12 @@ def package_version_from_pyproject() -> str:
 
 
 def _core_py_candidates() -> list[Path]:
-    out: list[Path] = []
-    try:
-        from mino_scout.config import config_dir
-
-        out.append(config_dir() / "bin" / "app" / "mino_scout" / "core.py")
-    except Exception:
-        pass
+    mod = sys.modules.get("mino_scout.core")
+    file_path = getattr(mod, "__file__", None) if mod else None
+    out = [Path(file_path).resolve() if file_path else Path(__file__).with_name("core.py").resolve()]
     if getattr(sys, "frozen", False):
         base = Path(sys.executable).resolve().parent
         out.append(base / "app" / "mino_scout" / "core.py")
-    mod = sys.modules.get("mino_scout.core")
-    file_path = getattr(mod, "__file__", None) if mod else None
-    if file_path:
-        out.append(Path(file_path).resolve())
     return out
 
 
@@ -97,6 +88,20 @@ def imported_scout_version() -> str:
 def report_scout_version() -> str:
     """上报当前进程已加载的版本；磁盘版本只在本地安装状态中展示。"""
     return imported_scout_version()
+
+
+def runtime_version_facts() -> dict[str, Any]:
+    """同时报告运行版本和本地源码版本，不用磁盘版本重标记旧进程。"""
+    from mino_scout.config import development
+
+    source = development()
+    running = report_scout_version()
+    disk = read_app_semver() if source else ""
+    changed = source and process_build_identity().get("source_unchanged") is False
+    return {"runtime_environment": "development" if source else "production",
+            "running_version": running, "source_version": disk or None,
+            "source_changed": bool(changed),
+            "restart_required": bool(source and (changed or disk and disk != running))}
 
 
 def resolve_status_versions(

@@ -15,6 +15,12 @@ def disk_app_core_path() -> Path:
 
 
 def read_disk_app_semver() -> str:
+    from mino_scout.config import development
+
+    # Source nodes have no installed app layer. Source edits are shown separately
+    # and loaded by an explicit restart, never by watching an unrelated bin/.
+    if development():
+        return ""
     root = config_dir() / "bin" / "app" / "mino_scout"
     version_file = root / "VERSION"
     if version_file.is_file():

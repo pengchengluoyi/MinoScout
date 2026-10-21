@@ -909,3 +909,18 @@ Nexus 先提交 pending 再发送；丢失应答保持 unknown，仅查询原 ta
 插件状态增加 `import_blocked`，下载中心项目增加 `required_by_config`。缺失插件的导入配置持久停用；调用、消息监听、LangBot 启动均守卫。安装不自动启用，用户在配置页保存/启用后才解除。只有非空导入配置对应的缺失插件进入补装清单。Scout 下载中心使用单 worker FIFO，旧同步安装也共享串行锁；重启中的未完成任务保持 interrupted，不自动重放。
 
 HTTP POST `/runtime/nodes/{node_id}/configuration/export` 与 `/configuration/import`（`archive,overwrite:true`），仅节点所属账号可调用；覆盖前由 UI 确认目标节点及影响。LangBot 移除入口归下载中心。
+
+
+## 2026-10-21：恢复 Scout 在线升级与下载中心合同 v2
+
+本节替代此前“升级与回退功能移除”和下载中心核心只读的规定。Workbench、Nexus 和 Scout 支持由用户主动触发的 Scout 固定版本升级，以及 cli.feishu、cli.meego、langbot、chromium、adb.keyboard 的 install/update。普通业务请求不隐式安装或更新。
+
+REGISTER/HEARTBEAT 的 tool_tasks_version=2 仍使用现有字段；Nexus 保留识别 v1 首次插件安装，v1 不接收新增组件或 update。node.tools 返回 version=2、installable、updatable 与真实已安装版本；HTTP 工具状态返回 contract_version。node.tool_task_submit 参数 action=install|update，RESULT 回执必须匹配 task_id/tool_id/action。同一操作编号不得换参数，未知应答只查询或显式重试同一编号。组件任务与 Scout 更新互斥，刷新和切换账号不能重放安装。
+
+node.update 恢复合同 v1：固定 release_tag/build_id，等待节点空闲，独立助手校验安装包、保留旧层、重启后核验实际运行 build，再返回成功。Nexus 启动与停止更新 worker。无迁移且协议兼容的固定版本允许前向更新；是否自动回退独立取决于发布的实测兼容声明，不能因没有自动回退证据而禁止正常前向升级。未声明自动回退时，新版核验失败保留原层与原操作，明确需要核对，不伪造成功。旧版明确拒绝 node.update 的节点须先安装支持此合同的基线，不能伪称远程升级成功。
+
+CLI 新包在独立暂存目录校验后替换，原目录和授权保留；失败时原版本仍可用。LangBot 在独立的新 venv 中安装 Scout 声明的兼容版本，核验后切换环境引用，保留旧 venv、data、配置与密钥。Chromium 只安装当前 Playwright 运行时匹配的版本，不清理其他版本。ADB Keyboard 下载到电脑缓存，固定 Git 对象与摘要校验后替换，保留旧缓存；设备安装状态独立展示。
+
+源码节点的 scout.core 条目同时上报 runtime_environment、running_version、source_version、source_changed、restart_required；旧节点未报的源码版本保持未知，不能以发布版本补填。运行版本固定于进程启动，本地源码版本只读该进程模块所在目录的 VERSION，不读取其他安装或配置目录中的 bin。源码模式不展示安装包升级比较，代码或 VERSION 变更提示重启生效；正式节点仍使用固定安装包升级。
+
+ADB Keyboard 的电脑 APK 缓存与手机已安装事实独立：缓存缺失不表示已安装设备不可用。界面使用“下载 APK / 更新 APK 缓存”，不将缓存操作标成手机安装；无任务时不展示安装步骤。install 发现现有可用 APK 时直接复用，只有显式 update 才重新下载并校验缓存。

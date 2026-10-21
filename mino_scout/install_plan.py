@@ -1,6 +1,7 @@
 """分层更新计划（与 MinoStudio electron/scoutLayers.cjs 对齐，并加固 browser/runtime）。"""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +85,42 @@ def _normalize_dirs(value: Any) -> list[str]:
     return sorted(str(x) for x in value if str(x).strip())
 
 
+def browser_payload_ready(bin_dir: Path, directories: list[str]) -> bool:
+    paths = {
+        "chromium": (
+            "chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+            "chrome-linux/chrome",
+            "chrome-win/chrome.exe",
+        ),
+        "chromium_headless_shell": (
+            "chrome-mac/headless_shell",
+            "chrome-linux/headless_shell",
+            "chrome-win/headless_shell.exe",
+        ),
+        "ffmpeg": ("ffmpeg-mac", "ffmpeg-linux", "ffmpeg-win64.exe"),
+    }
+    if not directories or not any(name.startswith("chromium-") for name in directories):
+        return False
+    for name in directories:
+        if Path(name).name != name:
+            return False
+        directory = bin_dir / "ms-playwright" / name
+        if not directory.is_dir():
+            return False
+        candidates = paths.get(name.rsplit("-", 1)[0])
+        if candidates is None:
+            if not any(path.is_file() for path in directory.rglob("*")):
+                return False
+            continue
+        if not any(
+            executable.is_file() and executable.stat().st_size > 0
+            and (os.name == "nt" or os.access(executable, os.X_OK))
+            for executable in (directory / relative for relative in candidates)
+        ):
+            return False
+    return True
+
+
 def _refine_browser_steps(
     steps: list[dict[str, Any]],
     *,
@@ -91,20 +128,19 @@ def _refine_browser_steps(
     installed: dict[str, str],
     bin_dir: Path,
 ) -> list[dict[str, Any]]:
-    """无 Chromium 目录变化时不拉 browser；仅补装缺失或不匹配的 runtime。"""
-    if not steps:
-        return steps
-    names = {str(s.get("layer") or "") for s in steps}
-    if "browser" not in names:
-        return steps
-
+    """按实际文件补装 browser；仅补装缺失或不匹配的 runtime。"""
     manifest_browser = manifest_layers.get("browser") if isinstance(manifest_layers, dict) else None
+    if not isinstance(manifest_browser, dict) or not manifest_browser.get("url"):
+        return steps
     manifest_dirs = _normalize_dirs((manifest_browser or {}).get("dirs"))
     local_dirs = browser_dir_names(bin_dir / "ms-playwright")
+    ready = browser_payload_ready(bin_dir, manifest_dirs or local_dirs)
+    names = {str(step.get("layer") or "") for step in steps}
+    if "browser" not in names and not ready:
+        steps.append(_layer_step("browser", manifest_browser))
 
-    if manifest_dirs and local_dirs == manifest_dirs:
+    if manifest_dirs and local_dirs == manifest_dirs and ready:
         steps = [s for s in steps if s.get("layer") != "browser"]
-        names.discard("browser")
 
     if "browser" in {s.get("layer") for s in steps} and "runtime" not in names:
         manifest_runtime = manifest_layers.get("runtime") if isinstance(manifest_layers, dict) else None

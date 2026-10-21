@@ -19,7 +19,7 @@ from mino_scout.config import config_path, load_config, save_config
 from mino_scout.ide_client import Client, IDEError, configuration_names, connection_spec, local_url
 from mino_scout.ide_runtime import inspect_running
 from mino_scout.ide_run_control import available as has_run_control, connected as runtime_connection
-from mino_scout.ide_control import has_state, has_restart, read_state, control as control_configuration, recover as recover_control
+from mino_scout.ide_control import has_state, has_stop, has_restart, read_state, control as control_configuration, recover as recover_control
 
 _lock = threading.RLock()
 _progress = contextvars.ContextVar("ide_progress", default=None)
@@ -224,11 +224,8 @@ def sample_project(path, *, field="project_path"):
 
 
 def validate_project_paths(binding):
-    project = sample_project(binding["project_path"])
-    source = sample_project(binding["source_dir"], field="source_dir")
-    if not source.is_relative_to(project):
-        raise IDEError("应用源码目录不在 IDE 项目目录内", reason_code="ide_source_outside_project",
-                       remediation="将“应用源码目录”设为 IDE 项目根目录或其子目录；如果应用属于另一个项目，请同时修改“IDE 项目路径”。", error_field="source_dir")
+    sample_project(binding["project_path"])
+    sample_project(binding["source_dir"], field="source_dir")
 
 
 def perform(params):
@@ -314,11 +311,12 @@ def perform(params):
         runtime = read_state(client, binding) if has_state(client) and binding.get("run_configuration") in names else inspect_running(binding, client.url)
         managed = runtime.get("configuration_verified") is True
         restart_supported = has_restart(client) and (native_control or (debuggable and managed))
+        stop_supported = has_stop(client) and (native_control or managed)
         check = {"connected": True, "project_matched": True, "configurations": names,
                  "server": client.server, "tools": sorted(client.tools), "brave": "unknown",
                  "checked_at": time.time(), "connection_revision": connection["revision"],
                  "support": {"read": True, "execute": "execute_run_configuration" in client.tools,
-                             "restart": restart_supported, "stop": restart_supported, "restart_mode": "run_control_mcp" if native_control else "debugger_mcp" if restart_supported else "run_control_required" if has_state(client) and not managed else "unsupported_configuration" if has_state(client) and not debuggable else "run_control_required", "inspect_running": True,
+                             "restart": restart_supported, "stop": stop_supported, "restart_mode": "run_control_mcp" if native_control else "debugger_mcp" if restart_supported else "run_control_required" if has_state(client) and not managed else "unsupported_configuration" if has_state(client) and not debuggable else "run_control_required", "inspect_running": True,
                              "restart_reason": "通过 IDE 配置级工具停止当前 Run/Debug 实例、启动同一配置并确认新实例" if native_control else "通过 Debugger MCP 控制已确认的调试会话" if restart_supported else "当前连接只有调试会话控制；普通 Run 和不支持 Debug 的配置需要社区 MCP Run Control，不能仅凭插件已连接就认为可重启",
                              "logs": bool(binding.get("service_log_path"))},
                  "control_connection": getattr(client, "control_connection", None), "details_verified": False}
@@ -333,7 +331,7 @@ def perform(params):
         if not binding.get("execution_allowed") or not binding.get("test_parameters_confirmed"):
             raise IDEError("尚未授权应用执行或确认测试参数")
         if action in {"stop", "restart"} or (action == "execute" and restart_supported):
-            if not restart_supported:
+            if not (stop_supported if action == "stop" else restart_supported):
                 return {"state": "awaiting_developer", "reason_code": "ide_run_control_required",
                         "reason": check["support"]["restart_reason"], "remediation": "在 PyCharm 安装社区 MCP Run Control，启用原生 MCP。已保存的同一 PyCharm 原生连接会自动复用，无需改变已有 Run 配置或重复粘贴连接。"}
             details = result.get("configurations", []) if isinstance(result, dict) else []

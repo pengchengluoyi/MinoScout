@@ -105,6 +105,14 @@ $PREFIX/bin/
 延迟 kickstart；需要重启时由上层更新流程在完整计划结束后处理。后台补装 Chromium
 不重启 Scout，且已安装的 runtime 指纹匹配时只下载 browser 层。
 
+browser 的已装指纹仅作下载优化：仍检查清单目录与 Chromium、headless shell、FFmpeg
+关键文件是否存在、非空且具有执行权限，文件缺失时重新补装。此检查不代替完整文件校验。
+进程重启只调度一次并等待旧 PID 退出；属于 launchd 的进程只请求其对应服务启动，
+其他进程才直接拉起同一安装的 Scout，禁止同时直启与延迟强制 kickstart。
+bootstrap 写入配置后交由安装器完成服务启动，安装结束不再额外 stop/restart。
+普通 start 和安装器注册后的 kickstart 不使用 `-k`，已运行的服务不被再次终止；
+服务启动成功后不再继续尝试其他启动命令。
+
 ## 6. 版本闸门
 
 app 层的 `layers.txt` 带 `requires_runtime=<rtkey>`。只装 app 层时，install 脚本先比对

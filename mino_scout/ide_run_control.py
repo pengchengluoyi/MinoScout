@@ -17,7 +17,7 @@ def available(client):
     stop = (tools.get('stop_run_configuration', {}).get('inputSchema') or {}).get('properties', {})
     execute = (tools.get('execute_run_configuration', {}).get('inputSchema') or {}).get('properties', {})
     return ('list_running_run_configurations' in tools and {'sessionId', 'configurationName', 'stopAllMatches'} <= stop.keys()
-            and 'configurationName' in execute and 'projectPath' in execute)
+            and bool({'configurationName', 'name'} & execute.keys()) and bool({'projectPath', 'project_path'} & execute.keys()))
 
 
 def _ide_identity(endpoint):
@@ -203,7 +203,7 @@ def control(client, binding, operation_id, on_stage, *, action):
         raise IDEError('启动前当前配置已有活动会话，未重复启动', effect_unknown=True)
     on_stage('starting', control={**context, 'phase': 'starting'})
     result = client.call('execute_run_configuration', {'projectPath': binding['project_path'],
-                         'configurationName': binding['run_configuration'], 'timeout': 1000,
+                         'configurationName': binding['run_configuration'], 'mode': 'run', 'timeout': 1000,
                          'waitForExit': False, 'maxLinesCount': 20, 'truncateMode': 'END'})
     if not isinstance(result, dict) or result.get('exitCode') not in (None, 0):
         raise IDEError('IDE 未确认当前配置启动成功；不会重复启动', effect_unknown=True)

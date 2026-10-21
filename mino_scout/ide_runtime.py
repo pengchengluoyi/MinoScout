@@ -19,7 +19,6 @@ def _auxiliary_process(proc, ide_home):
 def inspect_running(binding, endpoint):
     base = {"scope": "project", "configuration_verified": False, "observed_at": time.time(), "instances": []}
     try:
-        project = Path(binding["project_path"]).expanduser().resolve(strict=True)
         source = Path(binding["source_dir"]).expanduser().resolve(strict=True)
         ide_port = urlsplit(local_url(endpoint)).port
         owners = [psutil.Process(pid) for pid in listeners(ide_port)]
@@ -36,7 +35,7 @@ def inspect_running(binding, endpoint):
                 if _auxiliary_process(proc, ide_home):
                     continue
                 cwd = Path(proc.cwd()).resolve()
-                if cwd != project and not cwd.is_relative_to(source):
+                if not cwd.is_relative_to(source):
                     continue
                 candidates[proc.pid] = {"process": proc, "parent": proc.ppid(), "name": proc.name(), "created_at": proc.create_time()}
             except psutil.NoSuchProcess:

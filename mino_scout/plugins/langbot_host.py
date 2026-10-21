@@ -66,8 +66,14 @@ def root() -> Path:
 
 
 def venv_dir() -> Path:
+    pointer = root() / ".active-venv.json"
+    if pointer.is_file():
+        relative = Path(json.loads(pointer.read_text())["path"])
+        target = root() / relative
+        if relative.is_absolute() or ".." in relative.parts or not target.resolve().is_relative_to(root().resolve()):
+            raise RuntimeError("LangBot 环境路径无效")
+        return target
     return root() / "venv"
-
 
 def venv_python() -> Path:
     return venv_dir() / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
@@ -178,44 +184,50 @@ def _bridge_version() -> str:
     return ""
 
 
-def install(node_id: str) -> str:
-    """创建独立 venv，pip 装锁定版本，复制 mino-bridge。"""
+def install(node_id: str, *, update=False) -> str:
+    import uuid
     global _state
     with _lock:
+        previous_state = _state
         _state = "installing"
+    candidate = root() / "environments" / uuid.uuid4().hex
     try:
         py = _base_python()
-        r = root()
-        r.mkdir(parents=True, exist_ok=True)
-        PP.emit("plan", kind=KIND, plugin_id=PID, label="创建独立环境", percent=5)
-        if not venv_python().is_file():
-            if venv_dir().exists():
-                shutil.rmtree(venv_dir())
-            _run([py, "-m", "venv", str(venv_dir())], timeout=180, label="创建 venv", percent=8)
-        _run(
-            [str(venv_python()), "-c", "import sys; sys.exit(0 if (3,11)<=sys.version_info[:2]<(4,0) else 1)"],
-            timeout=30, label="检查 Python 版本（需要 3.11 及以上）", percent=10,
-        )
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        PP.emit("plan", kind=KIND, plugin_id=PID, label="准备独立 LangBot 环境", percent=5)
+        _run([py, "-m", "venv", str(candidate)], timeout=180, label="创建独立环境", percent=8)
+        python = candidate / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         uv = shutil.which("uv")
         pkgs = [f"langbot=={LANGBOT_VERSION}", f"langbot-plugin=={LANGBOT_PLUGIN_VERSION}"]
-        if uv:
-            cmd = [uv, "pip", "install", "--python", str(venv_python()), *pkgs]
-        else:
-            cmd = [str(venv_python()), "-m", "pip", "install", "--disable-pip-version-check", *pkgs]
-        _run(cmd, timeout=3600, label="安装 LangBot（体积较大，请耐心等待）", percent=20)
+        command = [uv, "pip", "install", "--python", str(python), *pkgs] if uv else [str(python), "-m", "pip", "install", "--disable-pip-version-check", *pkgs]
+        _run(command, timeout=3600, label="安装 LangBot 及适配插件", percent=20)
+        _run([str(python), "-c", "import importlib.metadata as m; assert m.version('langbot') == " + repr(LANGBOT_VERSION) + "; assert m.version('langbot-plugin') == " + repr(LANGBOT_PLUGIN_VERSION)], timeout=30, label="核验安装版本", percent=85)
         if not bridge_src().is_dir():
             raise RuntimeError("缺少 mino-bridge 插件目录")
-        (r / ".installed").write_text(f"langbot={LANGBOT_VERSION}\n", encoding="utf-8")
-        PP.emit("done", kind=KIND, plugin_id=PID, label="安装完成", percent=100, done=True)
-        SLog.i(TAG, f"installed langbot {LANGBOT_VERSION}")
-        return "安装完成"
+        pointer = root() / ".active-venv.json"
+        previous = pointer.read_bytes() if pointer.is_file() else None
+        shutdown()
+        temporary = root() / (".active-venv." + uuid.uuid4().hex)
+        temporary.write_text(json.dumps({"path": str(candidate.relative_to(root()))}))
+        try:
+            os.replace(temporary, pointer)
+            (root() / ".installed").write_text(f"langbot={LANGBOT_VERSION}\n", encoding="utf-8")
+        except Exception:
+            if previous is None:
+                pointer.unlink(missing_ok=True)
+            else:
+                temporary.write_bytes(previous)
+                os.replace(temporary, pointer)
+            raise
+        PP.emit("done", kind=KIND, plugin_id=PID, label="LangBot 环境已更新，配置和数据已保留", percent=100, done=True)
+        reconcile(node_id)
+        return f"LangBot {LANGBOT_VERSION} 已安装，配置和数据已保留"
     except Exception as exc:
-        text = str(exc).strip() or "安装失败"
-        PP.emit("done", kind=KIND, plugin_id=PID, label=text[:80], percent=100, error=text[:300], done=True)
         with _lock:
-            _state = "stopped"
+            _state = previous_state if _sup and _sup.is_alive() else "stopped"
+        reconcile(node_id)
+        PP.emit("done", kind=KIND, plugin_id=PID, label="LangBot 更新未完成，原环境保留", percent=100, error=str(exc)[:300], done=True)
         raise
-
 
 # ---------------- 配置 → 期望状态 ----------------
 

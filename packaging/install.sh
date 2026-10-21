@@ -388,7 +388,7 @@ elif [[ "$(uname -s)" == "Darwin" ]]; then
     launchctl unload "$PLIST" >/dev/null 2>&1 || true
     launchctl bootstrap "gui/${uid}" "$PLIST" >/dev/null 2>&1 \
       || launchctl load "$PLIST"
-    launchctl kickstart -k "$target" >/dev/null 2>&1 \
+    launchctl kickstart "$target" >/dev/null 2>&1 \
       || launchctl load "$PLIST"
     echo "Registered LaunchAgent: $PLIST"
   fi

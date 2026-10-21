@@ -242,12 +242,14 @@ def try_start_service(*, wait_sec: float = 4.0) -> int:
         uid = os.getuid()
         target = f"gui/{uid}/com.mino.scout"
         for cmd in (
-            ["launchctl", "kickstart", "-k", target],
+            ["launchctl", "kickstart", target],
             ["launchctl", "bootstrap", f"gui/{uid}", str(Path.home() / "Library/LaunchAgents/com.mino.scout.plist")],
         ):
             try:
-                subprocess.run(cmd, capture_output=True, timeout=15)
-                started = True
+                result = subprocess.run(cmd, capture_output=True, timeout=15)
+                if result.returncode == 0:
+                    started = True
+                    break
             except (OSError, subprocess.TimeoutExpired):
                 continue
     elif sys.platform.startswith("linux"):
@@ -374,14 +376,6 @@ def schedule_reexec(*, delay_sec: float = 1.5) -> dict[str, Any]:
     from importlib import import_module
 
     return import_module("mino_scout.reexec_spawn").schedule_reexec(delay_sec=delay_sec)
-
-
-def _kickstart_service_after_reexec(*, delay_sec: float = 2.0) -> None:
-    from importlib import import_module
-
-    mod = import_module("mino_scout.reexec_spawn")
-    if hasattr(mod, "_kickstart_launchd"):
-        mod._kickstart_launchd(delay_sec=delay_sec)
 
 
 def request_stop(*, timeout_sec: float = 15.0) -> dict[str, Any]:

@@ -19,9 +19,12 @@ def has_state(client):
     return ide_run_control.available(client) or _accepts(client, "list_debug_sessions", {"project_path"})
 
 
+def has_stop(client):
+    return ide_run_control.available(client) or (has_state(client) and _accepts(client, "stop_debug_session", {"project_path", "session_id"}))
+
+
 def has_restart(client):
-    return ide_run_control.available(client) or (has_state(client) and _accepts(client, "start_debug_session", {"project_path", "configuration_name"})
-            and _accepts(client, "stop_debug_session", {"project_path", "session_id"}))
+    return ide_run_control.available(client) or (has_stop(client) and _accepts(client, "start_debug_session", {"project_path", "configuration_name"}))
 
 
 def _project(binding):

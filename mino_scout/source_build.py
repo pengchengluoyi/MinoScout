@@ -44,7 +44,7 @@ class ProcessBuild:
             relative = path.relative_to(self.package)
             if any(part.startswith(".") or part == "__pycache__" for part in relative.parts):
                 continue
-            if path.suffix not in {".py", ".json", ".yaml", ".yml", ".toml", ".md", ".txt", ".js", ".css", ".html"}:
+            if relative.as_posix() != "VERSION" and path.suffix not in {".py", ".json", ".yaml", ".yml", ".toml", ".md", ".txt", ".js", ".css", ".html"}:
                 continue
             if path.is_symlink():
                 raise ValueError("Source identity requires regular package files")

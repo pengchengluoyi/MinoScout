@@ -13,13 +13,15 @@ from mino_scout.plugins.state import installed, configured, plugin_dir
 
 
 def snapshot(core):
-    from mino_scout.app_version import report_scout_version
+    from mino_scout.app_version import runtime_version_facts
     from mino_scout.adb_ime import resolve_local_apk
     from mino_scout.install_plan import runtime_chromium_revision
     from mino_scout.plugins import langbot_host
     ready = bool(getattr(core, '_plugins_ready', False))
-    items = [dict(tool_id='scout.core', label='Scout 核心', purpose='节点运行', state='installed', version=report_scout_version(),
-                  detail='请使用添加节点提供的安装方式手动升级完整 Scout；不支持自动升级或回退。')]
+    versions = runtime_version_facts()
+    source = versions['runtime_environment'] == 'development'
+    items = [dict(tool_id='scout.core', label='Scout 核心', purpose='源码节点运行' if source else '节点运行', state='installed', version=versions['running_version'],
+                  **versions, detail='源码修改后重启节点生效；运行版本和本地源码版本分别显示。' if source else '支持固定版本在线升级；下载校验后切换安装，重新连接并核对运行版本。')]
     revision = runtime_chromium_revision(config_dir() / 'bin')
     from mino_scout.playwright_hub import browsers_dir
     root_override = os.environ.get('PLAYWRIGHT_BROWSERS_PATH')
@@ -35,10 +37,15 @@ def snapshot(core):
             pass
     matched = browser_root / f'chromium-{revision}'
     executable = any(p.is_file() for p in (matched / 'chrome-linux/chrome', matched / 'chrome-linux64/chrome', matched / 'chrome-win/chrome.exe', matched / 'chrome-win64/chrome.exe', matched / 'chrome-mac/Chromium.app/Contents/MacOS/Chromium', matched / 'chrome-mac-arm64/Chromium.app/Contents/MacOS/Chromium', matched / 'chrome-mac-x64/Chromium.app/Contents/MacOS/Chromium')) if revision else False
+    from mino_scout.plugins.components import chromium_root
+    browser_root = chromium_root()
+    matched = browser_root / f'chromium-{revision}'
+    executable = executable or any(path.is_file() for path in matched.rglob('chrome')) or any(path.is_file() for path in matched.rglob('Chromium'))
     items.append(dict(tool_id='chromium', label='Chromium', purpose='Web 自动化', state='matched' if executable else 'missing' if revision else 'unknown', version=revision or None,
-                      detail='按当前 runtime 的 Chromium revision 检查；启动准备策略保持不变。'))
-    items.append(dict(tool_id='adb.keyboard', label='ADB Keyboard', purpose='Android 文本输入', state='cached' if resolve_local_apk() else 'missing',
-                      detail='电脑缓存与设备安装分别记录；设备状态来自最近一次自检，未自检时未知。' + ('当前未找到 ADB，请修复或手动升级 Scout。' if not shutil.which('adb') else ''), device_state='unknown', devices=[{'sn': sn, **dict(fact)} for sn, fact in dict(getattr(core, '_adb_ime_facts', {})).items()]))
+                      installable=ready and not executable, updatable=ready and executable, detail='安装或更新当前 Scout 运行时匹配的 Chromium；保留其他浏览器版本。'))
+    apk = resolve_local_apk()
+    items.append(dict(tool_id='adb.keyboard', label='ADB Keyboard', purpose='Android 文本输入', state='cached' if apk else 'missing',
+                      installable=ready and not apk, updatable=ready and bool(apk), detail='电脑 APK 缓存为可选资源，设备已安装即可使用；仅给设备安装输入法时需要 APK。源码运行也不自带此第三方 APK。' + ('当前未找到 ADB，请检查 ADB 运行环境。' if not shutil.which('adb') else ''), device_state='unknown', devices=[{'sn': sn, **dict(fact)} for sn, fact in dict(getattr(core, '_adb_ime_facts', {})).items()]))
     for plugin_id, label in (('feishu', '飞书 CLI'), ('meego', 'Meego CLI')):
         present = installed('cli', plugin_id) if ready else None
         config = configured(core.node_id, 'cli', plugin_id) if ready else None
@@ -49,10 +56,16 @@ def snapshot(core):
                 version = marker.get('version') if isinstance(marker, dict) else None
             except (OSError, ValueError):
                 pass  # Legacy "ok" marker does not prove a version.
-        items.append(dict(tool_id=f'cli.{plugin_id}', label=label, purpose='工作项接入', state='installed' if present else 'missing' if ready else 'unknown',
-                          version=version, configured=config, installable=ready and not present, config_key=f'cli:{plugin_id}',
-                          detail='安装不代表配置或连通；工作项 CLI 不负责 Webhook 和对话。'))
+        items.append(dict(tool_id=f'cli.{plugin_id}', label=label, purpose='飞书工作项与消息接入' if plugin_id == 'feishu' else '工作项接入', state='installed' if present else 'missing' if ready else 'unknown',
+                          version=version, configured=config, installable=ready and not present, updatable=ready and bool(present), config_key=f'cli:{plugin_id}',
+                          detail='安装与升级保留配置和授权；消息接入及工作项功能在配置页管理。'))
     present = langbot_host.is_installed() if ready else None
+    langbot_version = None
+    if present:
+        try:
+            langbot_version = (langbot_host.root() / '.installed').read_text().strip().removeprefix('langbot=') or None
+        except OSError:
+            pass
     python_ok = False
     if ready:
         try:
@@ -60,7 +73,7 @@ def snapshot(core):
         except (OSError, RuntimeError, subprocess.TimeoutExpired):
             pass
     items.append(dict(tool_id='langbot', label='LangBot', purpose='飞书、钉钉、企业微信共用对话宿主', state='installed' if present else 'unknown' if not ready else 'missing' if python_ok else 'missing_python',
-                      installable=ready and python_ok and not present, config_key='im:langbot:lark',
+                      installable=ready and python_ok and not present, updatable=ready and python_ok and bool(present), version=langbot_version, config_key='im:langbot:lark',
                       detail='安装一个共享宿主，飞书、钉钉、企业微信渠道分别配置。使用独立环境，不升级系统 Python。' if python_ok or not ready else '缺少可用的系统 Python 3.11+；请手动准备 Python。'))
     from mino_scout.plugins.state import _item
     for tool in items:
@@ -69,7 +82,7 @@ def snapshot(core):
             kind, pid = ('im', 'langbot') if key == 'langbot' else ('cli', key.split('.')[1])
             tool.update(plugin_class=kind, plugin_id=pid, removable=ready and installed(kind, pid), configured=configured(core.node_id, kind, pid) if ready else None)
             tool['required_by_config'] = bool(_item(kind, pid).get('import_blocked'))
-    return dict(version=1, items=items)
+    return dict(version=2, items=items)
 
 
 def handle(core, req, cmd, event, started):

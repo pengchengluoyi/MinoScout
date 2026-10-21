@@ -6,6 +6,9 @@ Scout 自己的 manifest 里如果带了 plugins 条目，用那一条。
 from __future__ import annotations
 
 import base64
+import json
+import os
+import uuid
 from functools import wraps
 import hashlib
 import platform
@@ -95,7 +98,7 @@ def _github_cli(repo: str, name_prefix: str, *, kind: str, plugin_id: str) -> di
         sha = _checksum_for(blob.decode("utf-8", "replace"), filename)
     if len(sha) != 64:
         raise PluginInstallError(f"{repo} 的校验文件里没有 {filename}")
-    return {"url": url, "sha256": sha, "filename": filename}
+    return {"url": url, "sha256": sha, "filename": filename, "version": tag}
 
 
 def _npm_tarball(package: str) -> dict[str, Any]:
@@ -108,7 +111,7 @@ def _npm_tarball(package: str) -> dict[str, Any]:
     integrity = str(dist.get("integrity") or "")
     if not url.startswith("https://") or not integrity.startswith("sha512-"):
         raise PluginInstallError(f"{package} 没有可用的安装包")
-    return {"url": url, "sha512": integrity, "filename": url.rsplit("/", 1)[-1]}
+    return {"url": url, "sha512": integrity, "filename": url.rsplit("/", 1)[-1], "version": str(meta.get("version") or "")}
 
 
 def _resolve(kind: str, plugin_id: str) -> dict[str, Any]:
@@ -244,7 +247,7 @@ def _serial_install(fn):
 
 
 @_serial_install
-def install(node_id: str, kind: str, plugin_id: str, *, _held_lock=None) -> str:
+def install(node_id: str, kind: str, plugin_id: str, *, _held_lock=None, update=False) -> str:
     row = spec(kind, plugin_id)
     if row is None:
         raise PluginInstallError(f"未知插件 {kind}/{plugin_id}")
@@ -258,14 +261,14 @@ def install(node_id: str, kind: str, plugin_id: str, *, _held_lock=None) -> str:
         raise PluginInstallError("Scout 正在更新，等它结束再安装插件")
     lock = _held_lock or acquire_plugin(kind, plugin_id)
     dest = plugin_dir(kind, plugin_id)
-    staging = dest.with_name(dest.name + ".staging")
+    staging = dest.with_name(dest.name + ".staging-" + uuid.uuid4().hex)
     archive = staging.with_name(staging.name + ".pkg")
     if kind == "im" and plugin_id == "langbot":
         # LangBot 走 pip + 独立 venv，不是下载压缩包；进度仍走同一套 plugin_progress
         try:
             from mino_scout.plugins import langbot_host
 
-            return langbot_host.install(node_id)
+            return langbot_host.install(node_id, update=update)
         except Exception as exc:
             raise PluginInstallError(str(exc).strip() or "LangBot 安装失败") from exc
         finally:
@@ -278,9 +281,9 @@ def install(node_id: str, kind: str, plugin_id: str, *, _held_lock=None) -> str:
         filename = str(release.get("filename") or url.rsplit("/", 1)[-1] or "package.bin")
         if not url.startswith("https://") or "/" in filename or ".." in filename:
             raise PluginInstallError("安装包地址不完整")
-        if staging.exists():
-            shutil.rmtree(staging)
-        staging.mkdir(parents=True, exist_ok=True)
+        if dest.is_symlink():
+            raise PluginInstallError("插件安装目录不能是外部链接")
+        staging.mkdir(parents=True, exist_ok=False)
         _download_archive(url, archive, kind, plugin_id)
         PP.emit("verify", kind=kind, plugin_id=plugin_id, label="校验哈希", percent=80)
         _verify(archive, release)
@@ -301,16 +304,26 @@ def install(node_id: str, kind: str, plugin_id: str, *, _held_lock=None) -> str:
                 err = str(ran.get("stderr") or ran.get("stdout") or "安装入口失败")
                 raise PluginInstallError(err)
         authorization = dest / ".authorization"
+        if authorization.is_symlink():
+            raise PluginInstallError("授权目录不能是外部链接")
         if authorization.is_dir():
             shutil.copytree(authorization, staging / ".authorization", dirs_exist_ok=True)
+        _link_invoke(staging, plugin_id)
+        if kind == 'cli' and not (staging / 'invoke').is_file():
+            raise PluginInstallError("安装包没有可执行入口，保留原版本")
+        (staging / ".installed").write_text(json.dumps({"version": release.get("version"), "sha256": release.get("sha256"), "sha512": release.get("sha512")}), encoding="utf-8")
+        previous = dest.with_name(dest.name + ".previous-" + uuid.uuid4().hex)
         if dest.exists():
-            shutil.rmtree(dest)
-        staging.rename(dest)
-        _link_invoke(dest, plugin_id)
-        (dest / ".installed").write_text("ok\n", encoding="utf-8")
+            os.replace(dest, previous)
+        try:
+            os.replace(staging, dest)
+        except OSError:
+            if previous.exists() and not dest.exists():
+                os.replace(previous, dest)
+            raise
         PP.emit("done", kind=kind, plugin_id=plugin_id, label="安装完成", percent=100, done=True)
         SLog.i(TAG, f"installed {kind}/{plugin_id}")
-        return "安装完成"
+        return "更新完成，原配置和授权已保留" if update else "安装完成"
     except Exception as exc:
         archive.unlink(missing_ok=True)
         if staging.exists():

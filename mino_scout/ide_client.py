@@ -190,7 +190,7 @@ class Client:
         from pathlib import Path
         accepted = {key: value for key, value in args.items() if key in properties}
         if project_field in properties:
-            accepted[project_field] = str(Path(project).expanduser().resolve(strict=True)) if project_field == "project_path" else project
+            accepted[project_field] = str(Path(project).expanduser().resolve(strict=True))
         if name == "stop_run_configuration":
             if not isinstance(args.get("sessionId"), str) or not args["sessionId"] or not isinstance(args.get("configurationName"), str) or not args["configurationName"] or args.get("stopAllMatches") is not False:
                 raise IDEError("普通 Run 停止必须指定已核对的会话 ID 和配置名，不允许停止所有匹配实例")

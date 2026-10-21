@@ -70,11 +70,20 @@ def record_progress(payload):
             _write(db, body)
 
 
+def has_active():
+    with _GATE, _db(data_dir()) as db:
+        for (task_id,) in db.execute('SELECT task_id FROM tool_tasks WHERE active_tool IS NOT NULL').fetchall():
+            task = _read(db, task_id)
+            if task and task['state'] not in _TERMINAL:
+                return True
+    return False
+
+
 def submit(node_id: str, task_id: str, tool_id: str, action: str):
-    from mino_scout.plugins.install import acquire_plugin, install
-    from mino_scout.plugins.state import installed
+    from mino_scout.plugins.install import acquire_plugin
+    from mino_scout.plugins.components import install
     _validate_id(task_id)
-    if tool_id not in ('cli.feishu', 'cli.meego', 'langbot') or action != 'install':
+    if tool_id not in ('cli.feishu', 'cli.meego', 'langbot', 'chromium', 'adb.keyboard') or action not in ('install', 'update'):
         raise ValueError('unsupported_tool_action')
     profile = profile_id()
     if not profile:
@@ -88,7 +97,7 @@ def submit(node_id: str, task_id: str, tool_id: str, action: str):
             return old
         for (old_id,) in db.execute('SELECT task_id FROM tool_tasks WHERE active_tool IS NOT NULL').fetchall():
             _read(db, old_id)
-        kind, plugin_id = ('im', 'langbot') if tool_id == 'langbot' else ('cli', tool_id.split('.')[1])
+        kind, plugin_id = ('tool', tool_id) if tool_id in ('chromium', 'adb.keyboard') else ('im', 'langbot') if tool_id == 'langbot' else ('cli', tool_id.split('.')[1])
         lock = acquire_plugin(kind, plugin_id)
         body = dict(task_id=task_id, tool_id=tool_id, action=action, state='pending', active=True,
                     stage='pending', label='已排队，等待前一项安装结束', error='', created_at=time.time(), updated_at=time.time())
@@ -106,12 +115,10 @@ def submit(node_id: str, task_id: str, tool_id: str, action: str):
                 if profile_id() != profile:
                     raise ValueError('plugin_owner_changed')
                 with _GATE, _db(root) as worker_db:
-                    body.update(state='running', label='正在安装', updated_at=time.time())
+                    body.update(state='running', label='正在更新' if action == 'update' else '正在安装', updated_at=time.time())
                     _write(worker_db, body)
-                # Existing installation is authoritative; this endpoint is not an updater.
-                if not installed(kind, plugin_id):
-                    install(node_id, kind, plugin_id, _held_lock=lock)
-                final = dict(state='succeeded', label='安装完成', error='')
+                message = install(node_id, tool_id, action, lock)
+                final = dict(state='succeeded', label=message or ('更新完成' if action == 'update' else '安装完成'), error='')
             except Exception as exc:
                 # Do not persist subprocess output, URLs or credentials in public receipts.
                 from mino_scout.log import SLog
@@ -119,7 +126,7 @@ def submit(node_id: str, task_id: str, tool_id: str, action: str):
                 with _GATE, _db(root) as failed_db:
                     failed = _read(failed_db, task_id) or {}
                 stage = str(failed.get('last_stage') or failed.get('stage') or '准备')
-                final = dict(state='failed', label='安装失败', error=f'{stage} 阶段失败（{type(exc).__name__}），请查看节点安装日志中的任务 {task_id}')
+                final = dict(state='failed', label='更新失败' if action == 'update' else '安装失败', error=f'{stage} 阶段失败（{type(exc).__name__}），请查看节点安装日志中的任务 {task_id}')
             finally:
                 if lock.locked():
                     lock.release()
