@@ -82,6 +82,7 @@ def _install_env(*, inplace: bool) -> dict[str, str]:
     env = os.environ.copy()
     if inplace:
         env["MINO_SCOUT_UPDATING"] = "1"
+        env["MINO_SCOUT_SKIP_SERVICE"] = "1"
     return env
 
 

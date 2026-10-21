@@ -371,20 +371,7 @@ if [[ -n "${MINO_SCOUT_SKIP_SERVICE:-}" ]]; then
   echo "MINO_SCOUT_SKIP_SERVICE — not registering, restarting or linking a daemon"
 elif [[ -n "${MINO_SCOUT_UPDATING:-}" ]]; then
   install_cli_link
-  echo "In-place update finished (service registration skipped)."
-  if [[ "$(uname -s)" == "Darwin" ]]; then
-    PLIST="$HOME/Library/LaunchAgents/com.mino.scout.plist"
-    if [[ -f "$PLIST" ]]; then
-      uid="$(id -u)"
-      target="gui/${uid}/com.mino.scout"
-      # 进程内 reexec 可能仍跑在旧 import 上；装完层后由 launchd 兜底拉起。
-      (
-        sleep 2
-        launchctl kickstart -k "$target" >/dev/null 2>&1 \
-          || launchctl bootstrap "gui/${uid}" "$PLIST" >/dev/null 2>&1
-      ) &
-    fi
-  fi
+  echo "In-place update finished (service control delegated to caller)."
 elif [[ "$(uname -s)" == "Darwin" ]]; then
   if [[ "$(id -u)" -eq 0 ]]; then
     PLIST="/Library/LaunchDaemons/com.mino.scout.plist"

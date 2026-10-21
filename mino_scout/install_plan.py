@@ -91,7 +91,7 @@ def _refine_browser_steps(
     installed: dict[str, str],
     bin_dir: Path,
 ) -> list[dict[str, Any]]:
-    """无 Chromium 目录变化时不拉 browser；要拉 browser 时必须带上 runtime。"""
+    """无 Chromium 目录变化时不拉 browser；仅补装缺失或不匹配的 runtime。"""
     if not steps:
         return steps
     names = {str(s.get("layer") or "") for s in steps}
@@ -109,7 +109,8 @@ def _refine_browser_steps(
     if "browser" in {s.get("layer") for s in steps} and "runtime" not in names:
         manifest_runtime = manifest_layers.get("runtime") if isinstance(manifest_layers, dict) else None
         if isinstance(manifest_runtime, dict) and manifest_runtime.get("url"):
-            steps.insert(0, _layer_step("runtime", manifest_runtime))
+            if installed.get("runtime") != str(manifest_runtime.get("key") or ""):
+                steps.insert(0, _layer_step("runtime", manifest_runtime))
         else:
             return steps  # 无法安全只更 browser
 

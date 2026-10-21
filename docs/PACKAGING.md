@@ -100,6 +100,11 @@ $PREFIX/bin/
 **install 脚本不再整体 `rm -rf $PREFIX/bin`。** 那一句会连 780 MB 浏览器一起删，
 等于每次更新都重下重铺 —— 这是包体问题的一半。
 
+进程内分层安装同时设置 `MINO_SCOUT_UPDATING=1` 和 `MINO_SCOUT_SKIP_SERVICE=1`，
+兼容旧发布包并禁止每层安装停止或重启常驻服务。`install.sh` 的进程内更新分支也不安排
+延迟 kickstart；需要重启时由上层更新流程在完整计划结束后处理。后台补装 Chromium
+不重启 Scout，且已安装的 runtime 指纹匹配时只下载 browser 层。
+
 ## 6. 版本闸门
 
 app 层的 `layers.txt` 带 `requires_runtime=<rtkey>`。只装 app 层时，install 脚本先比对
