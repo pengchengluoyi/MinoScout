@@ -10,9 +10,12 @@ import httpx
 
 
 class IDEError(Exception):
-    def __init__(self, message, *, effect_unknown=False):
+    def __init__(self, message, *, effect_unknown=False, reason_code="", remediation="", error_field=""):
         super().__init__(message)
         self.effect_unknown = effect_unknown
+        self.reason_code = reason_code
+        self.remediation = remediation
+        self.error_field = error_field
 
 
 def local_url(value):
@@ -121,9 +124,11 @@ class Client:
             raise IDEError("IDE 操作期限已到")
         with self.http.stream("POST", self.url, headers=self.headers, json=body, timeout=min(40, remaining)) as response:
             if response.status_code in {401, 403}:
-                raise IDEError(f"IDE 拒绝访问（HTTP {response.status_code}），请检查 IDE 访问设置")
+                raise IDEError(f"IDE 拒绝访问（HTTP {response.status_code}）", reason_code="ide_auth_failed",
+                               remediation="在 PyCharm 的 MCP 服务器设置中允许此连接；若启用了认证，请核对所选 Scout 本机的认证环境变量。", error_field="connection_id")
             if response.status_code >= 300:
-                raise IDEError(f"IDE HTTP {response.status_code}，请核对 MCP 开关、端口和路径")
+                raise IDEError(f"IDE HTTP {response.status_code}", reason_code="ide_http_error",
+                               remediation="在 PyCharm 设置 → 工具 → MCP 服务器中启用并应用，复制当前 HTTP 流配置，通过“更换 IDE 连接”更新地址、端口和路径。", error_field="connection_id")
             sid = response.headers.get("mcp-session-id")
             if sid:
                 self.headers["Mcp-Session-Id"] = sid
@@ -168,28 +173,46 @@ class Client:
         return message["result"]
 
     def call(self, name, args):
+        if name == "get_run_configurations" and name not in self.tools and "list_run_configurations" in self.tools:
+            name = "list_run_configurations"
         tool = self.tools.get(name)
         if not tool:
-            raise IDEError(f"IDE 未提供 {name}，请在 IDE 人工处理")
+            raise IDEError(f"IDE 未提供 {name}，请检查所选 MCP 插件连接")
         schema = tool.get("inputSchema") or {}
         properties = schema.get("properties") or {}
-        if "projectPath" not in properties:
-            raise IDEError("IDE 工具不能明确路由 projectPath，拒绝依赖窗口焦点")
-        project = args.get("projectPath")
+        project_field = "project_path" if "project_path" in properties else "projectPath"
+        global_run_control = name in {"list_running_run_configurations", "stop_run_configuration"}
+        if project_field not in properties and not global_run_control:
+            raise IDEError("IDE 工具缺少明确项目路由，拒绝依赖窗口焦点")
+        project = args.get("projectPath", args.get("project_path"))
         if not isinstance(project, str) or not project.strip():
-            raise IDEError("IDE 操作必须指定非空 projectPath")
-        # Routing/intent fields must never disappear during schema adaptation.
-        # A permissive or changed IDE schema must fail before any side effect.
-        intent_field = {"execute_run_configuration": "configurationName",
-                        "execute_terminal_command": "command"}.get(name)
+            raise IDEError("IDE 操作必须指定非空项目路径")
+        from pathlib import Path
+        accepted = {key: value for key, value in args.items() if key in properties}
+        if project_field in properties:
+            accepted[project_field] = str(Path(project).expanduser().resolve(strict=True)) if project_field == "project_path" else project
+        if name == "stop_run_configuration":
+            if not isinstance(args.get("sessionId"), str) or not args["sessionId"] or not isinstance(args.get("configurationName"), str) or not args["configurationName"] or args.get("stopAllMatches") is not False:
+                raise IDEError("普通 Run 停止必须指定已核对的会话 ID 和配置名，不允许停止所有匹配实例")
+            if not {"sessionId", "configurationName", "stopAllMatches"} <= properties.keys():
+                raise IDEError("运行控制工具缺少精确停止参数")
+        intent_field = {"execute_run_configuration": "configurationName", "start_debug_session": "configurationName",
+                        "stop_debug_session": "session_id", "execute_terminal_command": "command"}.get(name)
         if intent_field:
+            target_field = intent_field
+            if name == "start_debug_session":
+                target_field = "configuration_name"
+            elif name == "execute_run_configuration" and "name" in properties:
+                target_field = "name"
             value = args.get(intent_field)
-            if intent_field not in properties or not isinstance(value, str) or not value.strip():
+            if target_field not in properties or not isinstance(value, str) or not value.strip():
                 raise IDEError("IDE 工具不能明确接收执行目标，拒绝派发")
-        accepted = {k: v for k, v in args.items() if k in properties}
+            accepted[target_field] = value
+        if name == "execute_run_configuration" and "mode" in properties and args.get("mode") not in {"run", "debug"}:
+            raise IDEError("Debugger MCP 执行配置必须明确选择 run/debug 模式")
         if set(schema.get("required") or []) - accepted.keys():
             raise IDEError("当前 IDE 工具要求未支持的参数")
-        mutating = name in {"execute_run_configuration", "execute_terminal_command"}
+        mutating = name in {"execute_run_configuration", "execute_terminal_command", "start_debug_session", "stop_debug_session", "stop_run_configuration"}
         try:
             raw = self.rpc("tools/call", {"name": name, "arguments": accepted})
         except Exception as exc:
@@ -197,14 +220,26 @@ class Client:
                 raise IDEError("IDE 执行回执未确认；不会自动重试", effect_unknown=True) from exc
             raise
         if raw.get("isError"):
+            text = "\n".join(part.get("text", "") for part in raw.get("content", []) if part.get("type") == "text")
+            if "buildSessionId" in text:
+                raise IDEError("MCP Run Control 与当前 PyCharm 的原生 MCP 接口不兼容（缺少 buildSessionId）",
+                               effect_unknown=mutating, reason_code="ide_plugin_incompatible",
+                               remediation="需要与当前 IDE 构建匹配的插件兼容版本；原版插件仅显示工具名称并不代表实际可用。当前普通实例可继续使用，不要重复启动。")
+            if name in {"get_run_configurations", "list_run_configurations"}:
+                raise IDEError("PyCharm 未能读取指定项目的启动配置", reason_code="ide_project_rejected",
+                               remediation="在 PyCharm 打开“IDE 项目路径”对应的项目，并将该字段改为 PyCharm 实际打开的项目根目录，再重新检查。", error_field="project_path")
             raise IDEError("IDE 工具执行失败，请核对项目及运行配置", effect_unknown=mutating)
         result = raw.get("structuredContent")
         if result is None:
-            text = "\n".join(c.get("text", "") for c in raw.get("content", []) if c.get("type") == "text")
+            text = "\n".join(content.get("text", "") for content in raw.get("content", []) if content.get("type") == "text")
             try:
                 result = json.loads(text)
             except ValueError:
                 result = {"output": text}
+        if isinstance(result, dict) and result.get("error"):
+            raise IDEError("IDE MCP 拒绝请求：" + str(result["error"]), effect_unknown=mutating,
+                           reason_code="ide_project_rejected" if result["error"] in {"project_not_found", "multiple_projects_open", "no_project_open"} else "ide_tool_rejected",
+                           error_field="project_path")
         return result
 
 

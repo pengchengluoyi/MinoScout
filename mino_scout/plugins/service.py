@@ -60,10 +60,6 @@ def handle_node_plugin(core: Any, req: P.Execute, cmd: str, event: Any, started:
 
                 langbot_host.reconcile(core.node_id)
         elif cmd == "plugin_remove":
-            if kind == "im" and plugin_id == "langbot":
-                from mino_scout.plugins import langbot_host
-
-                langbot_host.shutdown()
             summary = remove(core.node_id, kind, plugin_id)
         else:
             summary = f"不支持的插件指令 {cmd}"
@@ -113,7 +109,14 @@ def handle_plugin_cap(core: Any, req: P.Execute, cap: str) -> EventResult:
                 "binding_id": req.binding_id, "operation_ref": req.operation_ref}}
         return result
     try:
-        if cap == "plugin.cli.feishu":
+        if cap in ("plugin.cli.feishu", "plugin.cli.meego"):
+            from mino_scout.plugins.state import _item
+            if _item("cli", cap.rsplit(".", 1)[-1]).get("import_blocked"):
+                raise ValueError("导入配置已停用，请先安装插件并在配置页启用")
+        if cap in ("plugin.cli.feishu", "plugin.cli.meego") and (req.params or {}).get('action') == 'command':
+            from mino_scout.plugins.cli_bridge import call
+            data = call(core.node_id, cap.rsplit('.', 1)[-1], dict(req.params or {}))
+        elif cap == "plugin.cli.feishu":
             data = _feishu(core, req)
         elif cap == "plugin.cli.meego":
             from mino_scout.plugins.calls import meego_call
@@ -165,6 +168,14 @@ def _feishu(core: Any, req: P.Execute) -> dict[str, Any]:
 
     params = dict(req.params or {})
     action = str(params.get("action") or "read_doc")
+    if action in {"messages_start", "messages_status", "messages_stop"}:
+        from mino_scout.plugins import feishu_messages
+        return feishu_messages.action(action)
+    if action in {"auth_start", "auth_status", "auth_cancel"}:
+        from mino_scout.plugins.feishu_auth import action as auth_action
+        return auth_action(action)
+    if action not in {"check", "read_doc"}:
+        raise ValueError("不支持的飞书操作")
     if action == "check":
         data = feishu_check(core.node_id)
         data["summary"] = "飞书应用凭证可用"
@@ -222,12 +233,15 @@ def _im_send(req: P.Execute, node_id: str = "") -> dict[str, Any]:
     params = dict(req.params or {})
     channel, chat_id, sender_id, ctx = _im_target(params)
     send = im_bridge.text_sender(channel)
-    if send is None:
+    if send is None and channel != "feishu_cli":
         raise ValueError(f"不支持的渠道 {channel or '(空)'}")
     text = str(params.get("text") or "")
     delivery_id = str(params.get("delivery_id") or f"out-{uuid.uuid4().hex}")
     card = params.get('card') or {}
-    if channel == 'feishu' and im_bridge.sender_capabilities(channel).get('cards') and card:
+    if channel == "feishu_cli":
+        from mino_scout.plugins import feishu_messages
+        operation = lambda: feishu_messages.send(chat_id, ctx, text, delivery_id)
+    elif channel == 'feishu' and im_bridge.sender_capabilities(channel).get('cards') and card:
         from mino_scout.plugins import im_feishu
         operation = lambda: im_feishu.send(node_id, chat_id, sender_id, ctx, text, card, delivery_id)
     else:
@@ -313,6 +327,11 @@ def _apply_hold(kind: str, plugin_id: str, hold: Any, platform: str) -> None:
         from mino_scout.plugins import wechat
 
         wechat.set_hold(want)
+    elif kind == "cli" and plugin_id == "feishu":
+        from mino_scout.plugins import feishu_messages
+        from mino_scout.plugins.state import remember_plain
+        remember_plain("cli", "feishu", {"im_hold": "" if want else "0"})
+        feishu_messages.reconcile()
     elif kind == "im" and plugin_id == "langbot":
         from mino_scout.plugins import langbot_host
 

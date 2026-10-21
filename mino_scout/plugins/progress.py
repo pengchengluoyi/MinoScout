@@ -45,6 +45,8 @@ def emit(
         "error": str(error or ""),
         "updated_at": time.time(),
     }
+    from mino_scout.plugins.tool_tasks import record_progress
+    record_progress(payload)
     with _lock:
         _state.clear()
         _state.update(payload)

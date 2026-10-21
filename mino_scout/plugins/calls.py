@@ -13,7 +13,9 @@ _MEEGO = "https://project.feishu.cn"
 
 
 class PluginCallError(Exception):
-    pass
+    def __init__(self, message: str, *, code: Any = None):
+        super().__init__(message)
+        self.code = code
 
 
 def _need(node_id: str, kind: str, plugin_id: str, hint: str) -> None:
@@ -24,11 +26,16 @@ def _need(node_id: str, kind: str, plugin_id: str, hint: str) -> None:
 
 
 def feishu_read_doc(node_id: str, url: str) -> dict[str, Any]:
-    _need(node_id, "cli", "feishu", "请在这台 Scout 节点的 CLI / 飞书 填写 App ID 和 App Secret")
+    _need(node_id, "cli", "feishu", "请在这台 Scout 节点的飞书 CLI 页面完成扫码授权")
     link = str(url or "").strip()
     if not link:
         raise PluginCallError("url 不能为空")
-    cli = _invoke_bin("cli", "feishu")
+    from mino_scout.plugins import feishu_auth
+    if feishu_auth.ready():
+        data = feishu_auth.run_json(["docs", "+fetch", "--doc", link, "--doc-format", "markdown", "--as", "user"])
+        import json
+        return {"content": json.dumps(data, ensure_ascii=False), "title": "", "source": "cli"}
+    cli = None  # 手动应用凭据使用 OpenAPI；官方 CLI 不支持历史 read_doc 子命令。
     if cli is not None:
         text = _run_cli(node_id, "cli", "feishu", cli, ["read_doc", link])
         if text.strip():
@@ -42,7 +49,10 @@ def feishu_read_doc(node_id: str, url: str) -> dict[str, Any]:
 
 
 def feishu_check(node_id: str) -> dict[str, Any]:
-    _need(node_id, "cli", "feishu", "请在这台 Scout 节点的 CLI / 飞书 填写 App ID 和 App Secret")
+    from mino_scout.plugins import feishu_auth
+    if feishu_auth.ready():
+        return feishu_auth.check()
+    _need(node_id, "cli", "feishu", "请在这台 Scout 节点的飞书 CLI 页面完成扫码授权")
     app_id = plain_value("cli", "feishu", "app_id")
     app_secret = secret_value(node_id, "cli", "feishu", "app_secret")
     _feishu_tenant_token(app_id, app_secret)
@@ -58,7 +68,7 @@ def meego_call(node_id: str, params: dict[str, Any]) -> dict[str, Any]:
     user_key = plain_value("cli", "meego", "user_key")
     token = _meego_token(base, plugin_id, plugin_secret)
     if action == "token":
-        return {"ok": True, "plugin_id": plugin_id, "summary": f"已用插件 {plugin_id} 向 Meego 换到访问凭证，没有改工作项"}
+        return {"ok": True, "plugin_id": plugin_id, "summary": "Meego 插件凭据有效；尚未校验空间访问和创建工作项权限。"}
     if action != "work_item":
         raise PluginCallError(f"不支持的 Meego 动作 {action}")
     project_key = str(params.get("project_key") or "").strip()
@@ -196,7 +206,7 @@ def _meego_token(base: str, plugin_id: str, plugin_secret: str) -> str:
     err = data.get("error") if isinstance(data.get("error"), dict) else {}
     code = err.get("code", data.get("code", data.get("err_code", 0)))
     if code not in (0, None, "0"):
-        raise PluginCallError(str(err.get("msg") or data.get("msg") or "Meego 鉴权失败"))
+        raise PluginCallError(str(err.get("msg") or data.get("err_msg") or data.get("msg") or "Meego 鉴权失败"), code=code)
     token = str((data.get("data") or {}).get("token") or data.get("token") or "")
     if not token:
         raise PluginCallError("Meego 没有返回插件凭证")

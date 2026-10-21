@@ -79,7 +79,7 @@ present 的层就装，不 present 的层原地不动。
 
 ## 5. 安装布局
 
-`bootstrap.sh`（macOS/Linux）和 `bootstrap.ps1`（Windows PowerShell）随 Release 同时发布，使用 manifest 的精确系统/架构条目，缺包或不支持的架构明确失败，不回退为其他架构。两种入口均在启动服务前合并配置，保留已有身份、长期凭证和其他设置；短期安装凭证只写入待绑定字段，注册确认后才替换长期凭证。Windows 配置以 APPDATA 为默认目录，兼容已存在的 LOCALAPPDATA 配置；计划任务明确使用同一配置目录。安装成功仅代表文件和服务完成，账号接入结果在 Workbench 查看。
+`bootstrap.sh`（macOS/Linux）和 `bootstrap.ps1`（Windows PowerShell）随 Release 同时发布，使用 manifest 的精确系统/架构条目，缺包或不支持的架构明确失败，不回退为其他架构。两种入口均在启动服务前合并配置，保留已有身份、长期凭证和其他设置；短期安装凭证只写入待绑定字段，注册确认后才替换长期凭证。Windows 配置只使用 APPDATA/MinoScout 或显式 MINO_SCOUT_HOME，不探测 LOCALAPPDATA；计划任务明确使用同一配置目录。安装成功仅代表文件和服务完成，账号接入结果在 Workbench 查看。
 
 ```
 $PREFIX/bin/
@@ -162,3 +162,12 @@ CLI 恢复也须旧进程退出；不能通过删除锁文件清除维护状态�
 人工恢复和自动回退均先核验保留安装的 build/source_commit/clean 及可执行文件，再移动当前目录；旧包损坏不会先移走当前安装。第二次目录切换失败时立即恢复已保留旧层，再启动核验。
 预检候选（含显式回退来源）同样检查 clean 身份。查询回执增加 phase、preparation_error、startup_error、recovery_error；助手刷新账本后再写状态，避免回退时丢失前一步诊断。
 公开 manifest 生成器要求 dirty=false、validated=true、非空固定 build_id、合法且不重复的 OS/arch；兼容证据地址需有效 HTTPS 主机且不含用户名密码或空白。
+
+
+## 当前安装根合同（2026-10-20）
+
+macOS 默认且唯一根为 `~/Library/Application Support/Mino/scout`，Windows 为 `%APPDATA%/MinoScout`，Linux 为 `${XDG_CONFIG_HOME:-~/.config}/minoscout`。显式 `MINO_SCOUT_HOME` 是用户选择的安装根，不由旧文件存在与否推导。所有平台日志统一放 `<安装根>/logs`。
+
+bootstrap、install、运行时必须选同一根；bootstrap/install 向子命令导出 MINO_SCOUT_HOME，launchd/systemd/Windows 启动器持久携带该根。删除 macOS MinoScout 及 Windows LOCALAPPDATA 的存在性回退，不自动复制、合并或读取旧目录凭据。自定义根的直接 CLI 调用需携带相同 MINO_SCOUT_HOME。
+
+0.1.120 现场：安装输出落在 MinoScout，进程按 Mino/scout 读取，has_token=false，launchd last exit code=2。Workbench 的 0.1.119 是最后成功上报记录，并非 0.1.120 正在运行。源码修复后须重新发布包含两个 bootstrap/install 脚本的安装产物；仅更新 app 层不足以修复远程入口脚本。使用 Workbench 新安装命令向当前目录写入新接入凭证；旧目录不自动迁移。文件安装成功不等于节点接入成功。

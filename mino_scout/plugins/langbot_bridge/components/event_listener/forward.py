@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import urllib.request
 from pathlib import Path
 
@@ -64,7 +65,7 @@ def _endpoint() -> tuple[str, str]:
 def _post(payload: dict) -> int:
     url, token = _endpoint()
     if not url or not token:
-        print("[mino-bridge] endpoint missing", flush=True)
+        print("[mino-bridge] endpoint missing", file=sys.stderr, flush=True)
         return 0
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"), method="POST",
@@ -79,23 +80,28 @@ def _post(payload: dict) -> int:
 class ForwardListener(EventListener):
     async def initialize(self) -> None:
         await super().initialize()
+        print("[mino-bridge] listener initialized", file=sys.stderr, flush=True)
 
-        @self.handler(events.PersonNormalMessageReceived)
+        @self.handler(events.PersonMessageReceived)
         async def on_person(ctx: context.EventContext):
             await self._forward(ctx, "person")
 
-        @self.handler(events.GroupNormalMessageReceived)
+        @self.handler(events.GroupMessageReceived)
         async def on_group(ctx: context.EventContext):
             await self._forward(ctx, "group")
 
     async def _forward(self, ctx: context.EventContext, kind: str) -> None:
+        # This plugin owns the passthrough flow, including rejected events.
+        # Never fall through to LangBot's local model runner on an early return.
+        ctx.prevent_default()
         ev = ctx.event
+        print(f"[mino-bridge] event received kind={kind}", file=sys.stderr, flush=True)
         try:
             bot_uuid = await ctx.get_bot_uuid()
         except Exception:
             bot_uuid = ""
-        text = str(getattr(ev, "text_message", "") or "")
         chain = getattr(ev, "message_chain", None)
+        text = str(getattr(ev, "text_message", "") or chain or "")
         mentioned = True if kind == "person" else _is_at(chain, set())
         chat_id = str(getattr(ev, "launcher_id", "") or "")
         sender = str(getattr(ev, "sender_id", "") or "")
@@ -108,6 +114,7 @@ class ForwardListener(EventListener):
                 break
         if not msg_id:
             # 缺少平台消息标识无法可靠去重，不能执行助手工具。
+            print("[mino-bridge] rejected reason=message_id_missing", file=sys.stderr, flush=True)
             return
         mention_targets = [str(getattr(element, 'target', '') or '') for element in _elements(chain) if type(element).__name__ == 'At']
         raw_event = getattr(me, 'raw', None) or getattr(me, 'raw_message', None) or {}
@@ -138,15 +145,15 @@ class ForwardListener(EventListener):
             return
         payload["channel"] = await self._channel(ctx, bot_uuid)
         if not payload["channel"]:
-            print("[mino-bridge] channel unknown", flush=True)
+            print("[mino-bridge] rejected reason=channel_unknown", file=sys.stderr, flush=True)
+            return
         try:
             code = _post(payload)
-            if code and code != 200:
-                print(f"[mino-bridge] forward status={code} channel={payload['channel']}", flush=True)
+            print(f"[mino-bridge] forward status={code} channel={payload['channel']}", file=sys.stderr, flush=True)
         except Exception as exc:  # 转发失败也要阻止默认处理，否则 pipeline 会去找模型
             print(
                 f"[mino-bridge] forward failed: {type(exc).__name__} channel={payload['channel']}",
-                flush=True,
+                file=sys.stderr, flush=True,
             )
         ctx.prevent_default()
 
@@ -159,5 +166,5 @@ class ForwardListener(EventListener):
                 if isinstance(info, dict):
                     name = str(info.get("adapter") or info.get("name") or "")
             except Exception as exc:
-                print(f"[mino-bridge] bot info failed: {type(exc).__name__}", flush=True)
+                print(f"[mino-bridge] bot info failed: {type(exc).__name__}", file=sys.stderr, flush=True)
         return _map_channel(name)

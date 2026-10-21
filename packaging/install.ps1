@@ -20,11 +20,10 @@ if ($env:MINO_SCOUT_HOME) {
   $Prefix = $env:MINO_SCOUT_HOME
 } else {
   $Prefix = Join-Path $env:APPDATA "MinoScout"
-  $legacyPrefix = Join-Path $env:LOCALAPPDATA "MinoScout"
-  if (-not (Test-Path (Join-Path $Prefix "config.json")) -and (Test-Path (Join-Path $legacyPrefix "config.json"))) {
-    $Prefix = $legacyPrefix
-  }
+
 }
+
+$env:MINO_SCOUT_HOME = $Prefix
 
 $Logs = Join-Path $Prefix "logs"
 $Dest = Join-Path $Prefix "bin"

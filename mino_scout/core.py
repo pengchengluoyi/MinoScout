@@ -50,6 +50,11 @@ _NODE_COMMANDS = {
     "node.plugin_install": "plugin_install",
     "node.plugin_remove": "plugin_remove",
     "node.plugin_config": "plugin_config",
+    "node.config_export": "config_export",
+    "node.config_import": "config_import",
+    "node.tools": "tools",
+    "node.tool_task_submit": "tool_task_submit",
+    "node.tool_task_get": "tool_task_get",
 }
 
 
@@ -122,6 +127,7 @@ class ScoutCore:
         self._pw_lock = threading.Lock()
         self._pw_worker = threading.local()
         self._adb_ime_last_check: dict[str, float] = {}
+        self._adb_ime_facts: dict[str, dict] = {}
         self._device_workload: dict[str, P.DeviceWorkload] = {}
         from mino_scout.request_guard import RequestGuard
         from mino_scout.web_v5 import WebV5Runtime
@@ -133,6 +139,16 @@ class ScoutCore:
     # ---------------- EXECUTE（唯一 dispatch） ----------------
 
     def execute(self, req: P.Execute) -> EventResult:
+        # Management messages have no product mode. Bound device execution does.
+        if req.execution_contract_version or "execution_mode" in req.device_hint:
+            try:
+                P.execution_mode(req.device_hint.get("execution_mode"))
+            except ValueError:
+                return make_event_result(_event_from_execute(req), status=EventStatus.BLOCKED,
+                    executor_used="core", started_at=now_iso(), elapsed_ms=0,
+                    summary="execution_mode_unsupported", raw_response={"execution": {
+                        "execution_started": "no", "phase": "admission",
+                        "reason_code": "execution_mode_unsupported"}})
         if req.capability_id == "node.source_read":
             from mino_scout.case_sources import dispatch
             return dispatch(self, req)
@@ -229,7 +245,7 @@ class ScoutCore:
         if rejected is not None:
             self._requests.finish(req, rejected)
             return rejected
-        if req.device_hint.get("execution_mode", "legacy") == "v5":
+        if req.device_hint.get("execution_mode") == "v5":
             stopped = self._requests.stopped(req.run_id)
             if stopped and req.capability_id not in READS | CLEANUP:
                 output = {"status": "fail", "data": {"execution": {"execution_started": "no",
@@ -516,6 +532,12 @@ class ScoutCore:
                 error="" if ok else summary,
                 raw_response={"command": cmd, "mode": "running"},
             )
+        if cmd in ("tools", "tool_task_submit", "tool_task_get"):
+            from mino_scout.plugins.tools import handle
+            return handle(self, req, cmd, event, started)
+        if cmd in ("config_export", "config_import"):
+            from mino_scout.plugins.transfer import handle
+            return handle(self, req, cmd, event, started)
         if cmd in ("plugin_install", "plugin_remove", "plugin_config"):
             from mino_scout.plugins.service import handle_node_plugin
 
@@ -775,6 +797,10 @@ class ScoutCore:
                 continue
             self._adb_ime_last_check[sid] = now
             outcome = ensure_adb_keyboard(sid)
+            self._adb_ime_facts[sid] = {
+                'state': 'installed' if outcome.get('ok') else 'missing' if outcome.get('step') in ('download', 'verify_install') or str(outcome.get('error') or '').startswith('设备未安装') else 'unknown',
+                'checked_at': now,
+            }
             outcomes.append(outcome)
             if not outcome.get("ok"):
                 SLog.w(TAG, f"{tag}输入法检查 {sid}: {outcome.get('error')}")
@@ -802,8 +828,13 @@ class ScoutCore:
                 SLog.w(TAG, f"读取默认输入法 {sid}: {exc}")
                 continue
             if current == ADB_KEYBOARD_IME_ID:
+                self._adb_ime_facts[sid] = {'state': 'installed', 'checked_at': now}
                 continue
             outcome = ensure_adb_keyboard(sid)
+            self._adb_ime_facts[sid] = {
+                'state': 'installed' if outcome.get('ok') else 'missing' if outcome.get('step') in ('download', 'verify_install') or str(outcome.get('error') or '').startswith('设备未安装') else 'unknown',
+                'checked_at': now,
+            }
             outcomes.append(outcome)
             if outcome.get("ok"):
                 SLog.i(TAG, f"心跳复检输入法 {sid}: {outcome.get('summary') or '已校正'}")
@@ -940,6 +971,7 @@ class ScoutCore:
             scout_version=report_scout_version(),
             plugins=status_list(self.node_id) if self._plugins_ready else [],
             plugins_ready=self._plugins_ready,
+            tool_tasks_version=1,
             plugin_warning=self._plugin_warning,
             runtime_environment="development" if development() else "production",
             runtime_capabilities=runtime_caps,

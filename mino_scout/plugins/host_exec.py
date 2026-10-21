@@ -104,6 +104,7 @@ def run_entry(
         args,
         cwd=str(plugin_root.resolve()),
         env=env,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,

@@ -1,23 +1,13 @@
 """本机 Scout 日志路径与 tail（launchd 重定向的 scout.log）。"""
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Any
 
-from mino_scout.config import config_dir, development
+from mino_scout.config import config_dir
 
 
 def log_paths() -> dict[str, str]:
-    if (sys.platform == "darwin" and not development()
-            and config_dir() == Path.home() / "Library/Application Support/MinoScout"):
-
-        base = Path.home() / "Library" / "Logs" / "MinoScout"
-        return {
-            "stdout": str(base / "scout.log"),
-            "stderr": str(base / "scout.err.log"),
-            "dir": str(base),
-        }
     prefix = config_dir()
     logs = prefix / "logs"
     return {

@@ -6,6 +6,7 @@ Scout 自己的 manifest 里如果带了 plugins 条目，用那一条。
 from __future__ import annotations
 
 import base64
+from functools import wraps
 import hashlib
 import platform
 import shutil
@@ -23,7 +24,16 @@ from mino_scout.plugins.state import clear_plugin_secrets, plugin_dir, spec
 
 TAG = "PluginInstall"
 _MAX_BYTES = 512 * 1024 * 1024
-_lock = threading.Lock()
+_locks_guard = threading.Lock()
+_locks: dict[tuple[str, str], threading.Lock] = {}
+
+
+def acquire_plugin(kind: str, plugin_id: str):
+    with _locks_guard:
+        lock = _locks.setdefault((kind, plugin_id), threading.Lock())
+    if not lock.acquire(blocking=False):
+        raise PluginInstallError("tool_busy")
+    return lock
 
 
 class PluginInstallError(Exception):
@@ -222,7 +232,19 @@ def _link_invoke(root: Path, plugin_id: str) -> None:
         found.chmod(found.stat().st_mode | 0o755)
 
 
-def install(node_id: str, kind: str, plugin_id: str) -> str:
+_INSTALL_SERIAL = threading.RLock()
+
+
+def _serial_install(fn):
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        with _INSTALL_SERIAL:
+            return fn(*args, **kwargs)
+    return wrapped
+
+
+@_serial_install
+def install(node_id: str, kind: str, plugin_id: str, *, _held_lock=None) -> str:
     row = spec(kind, plugin_id)
     if row is None:
         raise PluginInstallError(f"未知插件 {kind}/{plugin_id}")
@@ -234,8 +256,7 @@ def install(node_id: str, kind: str, plugin_id: str) -> str:
 
     if UP.snapshot().get("active"):
         raise PluginInstallError("Scout 正在更新，等它结束再安装插件")
-    if not _lock.acquire(blocking=False):
-        raise PluginInstallError("已有插件正在安装")
+    lock = _held_lock or acquire_plugin(kind, plugin_id)
     dest = plugin_dir(kind, plugin_id)
     staging = dest.with_name(dest.name + ".staging")
     archive = staging.with_name(staging.name + ".pkg")
@@ -248,7 +269,8 @@ def install(node_id: str, kind: str, plugin_id: str) -> str:
         except Exception as exc:
             raise PluginInstallError(str(exc).strip() or "LangBot 安装失败") from exc
         finally:
-            _lock.release()
+            if _held_lock is None:
+                lock.release()
     try:
         PP.emit("plan", kind=kind, plugin_id=plugin_id, label="查找安装包", percent=5)
         release = _resolve(kind, plugin_id)
@@ -278,6 +300,9 @@ def install(node_id: str, kind: str, plugin_id: str) -> str:
             if int(ran.get("code") or 0) != 0:
                 err = str(ran.get("stderr") or ran.get("stdout") or "安装入口失败")
                 raise PluginInstallError(err)
+        authorization = dest / ".authorization"
+        if authorization.is_dir():
+            shutil.copytree(authorization, staging / ".authorization", dirs_exist_ok=True)
         if dest.exists():
             shutil.rmtree(dest)
         staging.rename(dest)
@@ -297,10 +322,31 @@ def install(node_id: str, kind: str, plugin_id: str) -> str:
         )
         raise
     finally:
-        _lock.release()
+        if _held_lock is None:
+            lock.release()
 
 
 def remove(node_id: str, kind: str, plugin_id: str) -> str:
+    lock = acquire_plugin(kind, plugin_id)
+    try:
+        row = spec(kind, plugin_id)
+        if row is None or not row.get("needs_install"):
+            raise PluginInstallError("仅支持卸载额外安装的插件")
+        if kind == "cli" and plugin_id == "feishu":
+            from mino_scout.plugins import feishu_messages, feishu_auth
+            feishu_messages.action("messages_stop")
+        if kind == "im" and plugin_id == "langbot":
+            from mino_scout.plugins import langbot_host
+            langbot_host.shutdown()
+        summary = _remove(node_id, kind, plugin_id)
+        if kind == "cli" and plugin_id == "feishu":
+            feishu_auth.forget_uninstalled()
+        return summary
+    finally:
+        lock.release()
+
+
+def _remove(node_id: str, kind: str, plugin_id: str) -> str:
     row = spec(kind, plugin_id)
     if row is None:
         raise PluginInstallError(f"未知插件 {kind}/{plugin_id}")

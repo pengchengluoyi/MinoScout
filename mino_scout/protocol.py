@@ -6,9 +6,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
-from typing import Any, Optional, get_args, get_origin
+from typing import Any, Literal, Optional, get_args, get_origin
 
 PROTOCOL_VERSION = 2
+
+
+ExecutionMode = Literal["agent", "v5"]
+
+
+def execution_mode(value: Any) -> ExecutionMode:
+    """Validate the current product mode; never infer it from a contract version."""
+    if not isinstance(value, str) or value not in ("agent", "v5"):
+        raise ValueError("execution_mode_unsupported")
+    return value
 
 
 class MsgType(str, Enum):
@@ -54,6 +64,8 @@ NODE_COMMAND_CAPS = frozenset({
     "node.stop", "node.restart", "node.update", "node.log_tail",
     "node.sleep", "node.wake",
     "node.plugin_install", "node.plugin_remove", "node.plugin_config",
+    "node.config_export", "node.config_import",
+    "node.tools", "node.tool_task_submit", "node.tool_task_get",
 })
 NODE_EVENT_CAPS = frozenset({
     "node.device_lost",
@@ -120,6 +132,7 @@ class Register:
     # None：旧 Scout 没报。空列表也会编码出去，用来和「没这个字段」区分。
     plugins: Optional[list[dict[str, Any]]] = None
     plugins_ready: Optional[bool] = None
+    tool_tasks_version: int = 0  # explicit download-centre contract, not a version guess
     plugin_warning: str = ""
     runtime_environment: str = ""
     # None：旧节点没报运行能力。不能用版本号猜测是否支持当前焦点输入。
@@ -170,6 +183,7 @@ class Heartbeat:
     host: dict[str, Any] = field(default_factory=dict)
     plugins: Optional[list[dict[str, Any]]] = None
     plugins_ready: Optional[bool] = None
+    tool_tasks_version: int = 0  # explicit download-centre contract, not a version guess
     plugin_warning: str = ""
     runtime_environment: str = ""
     runtime_capabilities: Optional[list[dict[str, Any]]] = None

@@ -228,6 +228,8 @@ def wanted_platforms() -> list[str]:
     from mino_scout.plugins.state import platform_filled
 
     item = _item(KIND, PID)
+    if item.get("import_blocked"):
+        return []
     out = []
     for p in IM_PLATFORMS:
         pid = p["id"]
@@ -352,7 +354,15 @@ def sync_bots(node_id: str) -> None:
         try:
             if cur is None:
                 created = _api("POST", "/api/v1/platform/bots", body)
-                _bots[pid] = str((created or {}).get("uuid") or "")
+                bot_uuid = str((created or {}).get("uuid") or "")
+                if not bot_uuid:
+                    raise ApiError("LangBot 创建机器人未返回实例标识")
+                _bots[pid] = bot_uuid
+                # LangBot 4.10.11 create_bot only loads the adapter; update_bot
+                # starts its receive task. Record the signature only after both
+                # succeed so a failed activation is retried without another POST.
+                if on:
+                    _api("PUT", f"/api/v1/platform/bots/{bot_uuid}", body)
                 _applied_sig[name] = _bot_signature(body)
                 if pid == 'lark':
                     from mino_scout.plugins import im_feishu
@@ -381,15 +391,26 @@ def sync_bots(node_id: str) -> None:
 
 
 def check_no_llm() -> str:
-    """LangBot 里不应启用任何大模型。发现就返回告警文本（不替用户删）。"""
+    """检查 Mino 流水线绑定；模型目录含官方预设，不代表已启用模型。"""
     try:
-        data = _api("GET", "/api/v1/provider/models/llm") or {}
-    except ApiError as exc:
-        return f"无法校验大模型配置: {exc}"
-    models = data.get("models") or []
-    if models:
-        return f"LangBot 里配置了 {len(models)} 个大模型，会绕过 Nexus，请在 LangBot 中删除"
-    return ""
+        data = _api("GET", "/api/v1/pipelines") or {}
+    except ApiError:
+        return "暂时无法核对 Mino 流水线配置"
+    for pipeline in data.get("pipelines") or []:
+        if pipeline.get("name") != PIPELINE_NAME:
+            continue
+        config = pipeline.get("config")
+        if not isinstance(config, dict) or not isinstance(config.get("ai"), dict):
+            return "Mino 流水线未返回可核对的 AI 配置"
+        ai = config["ai"]
+        runner = (ai.get("runner") or {}).get("runner", "local-agent")
+        model = (ai.get("local-agent") or {}).get("model") or {}
+        configured = (bool(model.get("primary") or model.get("fallbacks"))
+                      if isinstance(model, dict) else bool(model))
+        if runner != "local-agent" or configured:
+            return "Mino 透传流水线配置了额外 AI 执行器，请检查流水线配置"
+        return ""
+    return "未找到 Mino 透传流水线"
 
 
 # ---------------- 子进程 ----------------

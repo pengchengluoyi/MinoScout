@@ -25,24 +25,15 @@ esac
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
   DEFAULT_PREFIX="$HOME/Library/Application Support/Mino/scout"
-  LEGACY_PREFIX="$HOME/Library/Application Support/MinoScout"
-  if [[ -z "${MINO_SCOUT_HOME:-}" ]]; then
-    if [[ -e "$DEFAULT_PREFIX" && -e "$LEGACY_PREFIX" ]]; then
-      echo "检测到新旧 Scout 目录；请显式指定 MINO_SCOUT_HOME，不会自动合并。" >&2
-      exit 1
-    fi
-    if [[ -e "$LEGACY_PREFIX" ]]; then DEFAULT_PREFIX="$LEGACY_PREFIX"; fi
-  fi
   PREFIX="${MINO_SCOUT_HOME:-$DEFAULT_PREFIX}"
-  if [[ -n "${MINO_SCOUT_HOME:-}" || "$PREFIX" != "$LEGACY_PREFIX" ]]; then
-    LOG_DIR="$PREFIX/logs"
-  else
-    LOG_DIR="$HOME/Library/Logs/MinoScout"
-  fi
+  LOG_DIR="$PREFIX/logs"
 else
   PREFIX="${MINO_SCOUT_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/minoscout}"
   LOG_DIR="$PREFIX/logs"
 fi
+
+# One explicit installation root for installer children and CLI commands.
+export MINO_SCOUT_HOME="$PREFIX"
 
 DEST="$PREFIX/bin"
 BIN=""
@@ -353,6 +344,8 @@ write_launchd() {
     <string>/opt/homebrew/bin:/usr/local/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key>
     <string>${HOME}</string>
+    <key>MINO_SCOUT_HOME</key>
+    <string>${PREFIX}</string>
     <key>PLAYWRIGHT_BROWSERS_PATH</key>
     <string>${PREFIX}/bin/ms-playwright</string>
   </dict>
@@ -430,6 +423,7 @@ After=network-online.target
 Type=simple
 ExecStart=${BIN} run
 WorkingDirectory=${PREFIX}
+Environment="MINO_SCOUT_HOME=${PREFIX}"
 Restart=on-failure
 RestartSec=5
 

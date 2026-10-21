@@ -6,29 +6,29 @@ import hashlib
 import json
 import os
 import re
-import shlex
-import sys
 import tempfile
 import threading
 import time
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
-import psutil
 
 from mino_scout.config import config_path, load_config, save_config
 from mino_scout.ide_client import Client, IDEError, configuration_names, connection_spec, local_url
+from mino_scout.ide_runtime import inspect_running
+from mino_scout.ide_run_control import available as has_run_control, connected as runtime_connection
+from mino_scout.ide_control import has_state, has_restart, read_state, control as control_configuration, recover as recover_control
 
 _lock = threading.RLock()
 _progress = contextvars.ContextVar("ide_progress", default=None)
 
 
-def stage(name):
+def stage(name, **details):
     callback = _progress.get()
     if callback:
-        callback(name)
+        callback(name, **details)
 
 
 def redact_output(text):
@@ -105,75 +105,34 @@ def _connection(cid, revision=None):
     config = load_config()
     row = next((r for r in config.get("ide_connections", []) if r["connection_id"] == cid), None)
     if not row:
-        raise IDEError("此 Scout 尚未保存该 IDE 连接")
+        raise IDEError("此 Scout 尚未保存该 IDE 连接", reason_code="ide_connection_missing",
+                       remediation="通过“更换 IDE 连接”选择这台开发电脑已有的连接，或导入当前 PyCharm 的 HTTP 流配置，然后保存并检查。", error_field="connection_id")
     if revision is not None and revision != row["revision"]:
-        raise IDEError("连接配置已变更，请重新检查")
+        raise IDEError("已保存的 IDE 连接版本发生变化", reason_code="ide_connection_changed",
+                       remediation="打开“更换 IDE 连接”，刷新并重新选择当前连接，保存后再次检查。", error_field="connection_id")
     return row
 
 
-def _listeners(port):
-    from mino_scout.ide_stop import listeners
-    return listeners(port)
+def probe(binding, endpoint=None, *, runtime=None):
+    if endpoint:
+        runtime = runtime if runtime is not None else inspect_running(binding, endpoint)
+    observation = {"runtime": runtime} if runtime is not None else {}
+    if runtime is not None and runtime["state"] in {"running", "stopped"}:
+        observation["process_running"] = runtime["state"] == "running"
+    if runtime is not None and runtime["state"] == "running":
+        observation["reused_existing"] = True
+    if binding.get("target_url"):
+        result = _probe_health(binding)
+        return {**result, **observation}
+    if runtime is None:
+        return {"state": "awaiting_developer", "reason": "尚未读取运行实例；可检查项目运行状态或配置健康检查地址"}
+    running = runtime["state"] == "running"
+    return {"state": "ready" if running else "awaiting_developer", **observation,
+            "reason": "已使用现有实例，进程运行正常" if running else runtime["reason"],
+            "build_verified": False}
 
 
-def _old_process(binding, endpoint):
-    if sys.platform not in {"darwin", "linux", "win32"}:
-        raise IDEError("此平台尚不支持自动停止；请在 IDE 中 Rerun")
-    target = urlsplit(local_url(binding["target_url"]))
-    from mino_scout.config import development, resolve_runtime
-    from mino_scout.ide_stop import protected_ports
-    control = urlsplit(resolve_runtime()[0])
-    control_port = control.port or (443 if control.scheme == "wss" else 80)
-    if target.port in protected_ports(urlsplit(endpoint).port, control_port, source_runtime=development()):
-        raise IDEError("测试地址与正式/控制端口冲突，拒绝停止")
-    pids = _listeners(target.port)
-    if not pids:
-        return None
-    if len(pids) != 1:
-        raise IDEError("测试端口有多个监听进程，请在 IDE 人工处理")
-    proc = psutil.Process(pids.pop())
-    if proc.pid == os.getpid() or proc.pid in {p.pid for p in psutil.Process().parents()}:
-        raise IDEError("禁止停止 Scout 自身或其父进程")
-    from mino_scout.ide_stop import same_user
-    if not same_user(proc) or Path(proc.cwd()).resolve() != Path(binding["source_dir"]).resolve():
-        raise IDEError("端口占用进程的用户或源码目录不匹配")
-    ide_pids = _listeners(urlsplit(endpoint).port)
-    parents = proc.parents()
-    if not any(p.pid in ide_pids and "pycharm" in (p.name() + " " + p.exe()).lower() for p in parents):
-        raise IDEError("无法证明应用由当前已连接的 PyCharm 启动")
-    return proc, proc.create_time(), target.port
-
-
-def _stop(client, binding, old):
-    if old is None:
-        return
-    proc, created, port = old
-    from mino_scout.config import resolve_runtime
-    control = urlsplit(resolve_runtime()[0])
-    control_port = control.port or (443 if control.scheme == "wss" else 80)
-    # Fixed generated command: no user-provided command, PID+creation time rechecked in IDE.
-    args = ["--pid", str(proc.pid), "--created", repr(created), "--port", str(port),
-            "--ide-port", str(urlsplit(client.url).port), "--control-port", str(control_port),
-            "--source", binding["source_dir"]]
-    command = [sys.executable, "internal-ide-stop"] if getattr(sys, "frozen", False) else [sys.executable, str(Path(__file__).with_name("ide_stop.py"))]
-    if "execute_terminal_command" in client.tools and os.name != "nt":
-        result = client.call("execute_terminal_command", {"projectPath": binding["project_path"],
-            "command": shlex.join(command + args),
-            "timeout": 10000, "maxLinesCount": 30, "truncateMode": "END", "executeInShell": True})
-        if not isinstance(result, dict) or result.get("command_exit_code", result.get("exitCode")) != 0:
-            raise IDEError("IDE 停止命令未确认成功；请人工检查，不重复发送", effect_unknown=True)
-    else:
-        from mino_scout.ide_stop import main as stop_main
-        stop_main(args)
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        if (not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE) and not _listeners(port):
-            return
-        time.sleep(.2)
-    raise IDEError("旧进程或端口未释放；未使用 SIGKILL，也未启动新进程", effect_unknown=True)
-
-
-def probe(binding):
+def _probe_health(binding):
     url = binding.get("target_url")
     if not url:
         return {"state": "awaiting_developer", "reason": "未配置服务就绪地址，请读取 IDE 输出并人工核对", "target_ready": False}
@@ -238,33 +197,38 @@ def read_receipt(params):
     if record.get("digest") != params.get("target_digest"):
         raise IDEError("原操作参数摘要不匹配")
     result = record.get("result") or {"state": "unknown", "reason": "原操作没有最终回执；不会重新执行"}
+    control = result.get("control")
+    if isinstance(control, dict) and control.get("provider") in {"debugger_mcp", "run_control_mcp"} and result.get("state") in {"running", "unknown"}:
+        binding = control["binding"]
+        try:
+            with Client(_connection(binding["connection_id"], binding["connection_revision"])) as primary, runtime_connection(primary, expected=control.get("control_connection")) as client:
+                recovered = recover_control(client, control)
+            result = {**result, **recovered}
+            _save_receipt(path, {"digest": record["digest"], "result": result})
+        except (IDEError, httpx.HTTPError):
+            pass
     return {**result, "receipt_verified": True, "receipt_operation_id": target}
 
 
-def sample_project(path):
-    root = Path(path).expanduser().resolve(strict=True)
+def sample_project(path, *, field="project_path"):
+    label = "IDE 项目路径" if field == "project_path" else "应用源码目录"
+    try:
+        root = Path(path).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise IDEError(f"{label}不存在或无法访问：{path}", reason_code="ide_directory_invalid",
+                       remediation=f"将“{label}”改为所选开发电脑上实际存在、当前 Scout 账号可访问的目录绝对路径。", error_field=field) from exc
     if not root.is_dir():
-        raise IDEError("样例项目必须是已有目录")
-    scout_root = Path(__file__).resolve().parent.parent
-    if root == scout_root or root in scout_root.parents or root.is_relative_to(scout_root):
-        raise IDEError("开发 Scout 不允许把自身代码目录作为样例项目")
-    if any((root / marker).exists() for marker in ("mino_nexus", "mino_scout", "packaging/workbench_server.py")):
-        raise IDEError("MINO 控制链源码目录不能登记为测试 Scout 的样例项目")
+        raise IDEError(f"{label}指向文件而不是目录：{path}", reason_code="ide_directory_invalid",
+                       remediation=f"将“{label}”改为目录路径，不要填写文件路径。", error_field=field)
     return root
 
 
-def require_sample_project(binding):
-    from mino_scout.config import development
-    if not development():
-        return
+def validate_project_paths(binding):
     project = sample_project(binding["project_path"])
-    source = Path(binding["source_dir"]).expanduser().resolve(strict=True)
-    allowed = load_config().get("development_ide_projects", [])
-    if not isinstance(allowed, list) or project not in [sample_project(path) for path in allowed]:
-        raise IDEError("开发 Scout 仅能操作专用样例项目；请先用 development-ide-projects --add 登记")
-    if not source.is_relative_to(project) or not source.is_dir():
-        raise IDEError("测试源码目录必须位于已登记的样例项目内")
-    sample_project(source)
+    source = sample_project(binding["source_dir"], field="source_dir")
+    if not source.is_relative_to(project):
+        raise IDEError("应用源码目录不在 IDE 项目目录内", reason_code="ide_source_outside_project",
+                       remediation="将“应用源码目录”设为 IDE 项目根目录或其子目录；如果应用属于另一个项目，请同时修改“IDE 项目路径”。", error_field="source_dir")
 
 
 def perform(params):
@@ -294,11 +258,18 @@ def perform(params):
     if action == "list_connections":
         return {"state": "ready", "connections": [public_connection(r) for r in load_config().get("ide_connections", [])]}
     binding = params["binding"]
-    require_sample_project(binding)
+    validate_project_paths(binding)
     connection = _connection(binding["connection_id"], binding["connection_revision"])
     if action == "probe":
         stage("probing")
-        return probe(binding)
+        if binding.get("run_configuration"):
+            try:
+                with Client(connection) as primary, runtime_connection(primary) as client:
+                    if has_state(client):
+                        return probe(binding, connection["url"], runtime=read_state(client, binding))
+            except (httpx.TransportError, httpx.TimeoutException):
+                pass
+        return probe(binding, connection["url"])
     if action == "logs":
         stage("reading_logs")
         source = Path(binding["source_dir"]).resolve(strict=True)
@@ -319,36 +290,74 @@ def perform(params):
         from mino_scout.ide_apk import install
         stage("validating_apk")
         return install(binding, on_stage=stage)
-    lock = nullcontext() if action == "check" else machine_lock(connection["url"])
     stage("connecting")
-    with lock, Client(connection) as client:
+    from contextlib import ExitStack
+    with ExitStack() as stack:
+        primary = stack.enter_context(Client(connection))
+        client = stack.enter_context(runtime_connection(primary))
+        if action != "check":
+            stack.enter_context(machine_lock(client.url))
+        if action == "execute":
+            stage("inspecting_runtime")
+            runtime = read_state(client, binding) if has_state(client) and binding.get("run_configuration") else inspect_running(binding, connection["url"])
+            if runtime["state"] == "running":
+                return probe(binding, connection["url"], runtime=runtime)
+            if runtime["state"] != "stopped":
+                return {"state": "awaiting_developer", "runtime": runtime, "reason_code": "ide_runtime_unconfirmed", "reason": runtime["reason"]}
+        stage("matching_project")
         result = client.call("get_run_configurations", {"projectPath": binding["project_path"]})
         names = configuration_names(result)
+        configuration_details = result.get("configurations", []) if isinstance(result, dict) else []
+        selected_configuration = next((row for row in configuration_details if isinstance(row, dict) and row.get("name") == binding.get("run_configuration")), {})
+        debuggable = selected_configuration.get("canDebug") is not False
+        native_control = has_run_control(client)
+        runtime = read_state(client, binding) if has_state(client) and binding.get("run_configuration") in names else inspect_running(binding, client.url)
+        managed = runtime.get("configuration_verified") is True
+        restart_supported = has_restart(client) and (native_control or (debuggable and managed))
         check = {"connected": True, "project_matched": True, "configurations": names,
                  "server": client.server, "tools": sorted(client.tools), "brave": "unknown",
                  "checked_at": time.time(), "connection_revision": connection["revision"],
                  "support": {"read": True, "execute": "execute_run_configuration" in client.tools,
-                             "restart": sys.platform in {"darwin", "linux"} and "execute_run_configuration" in client.tools,
-                             "restart_mode": "window_close_only" if os.name == "nt" else "sigterm",
+                             "restart": restart_supported, "stop": restart_supported, "restart_mode": "run_control_mcp" if native_control else "debugger_mcp" if restart_supported else "run_control_required" if has_state(client) and not managed else "unsupported_configuration" if has_state(client) and not debuggable else "run_control_required", "inspect_running": True,
+                             "restart_reason": "通过 IDE 配置级工具停止当前 Run/Debug 实例、启动同一配置并确认新实例" if native_control else "通过 Debugger MCP 控制已确认的调试会话" if restart_supported else "当前连接只有调试会话控制；普通 Run 和不支持 Debug 的配置需要社区 MCP Run Control，不能仅凭插件已连接就认为可重启",
                              "logs": bool(binding.get("service_log_path"))},
-                 "details_verified": False}
+                 "control_connection": getattr(client, "control_connection", None), "details_verified": False}
         if action == "check":
-            return {"state": "ready", **check, "target_ready": False}
-        if action not in {"execute", "restart", "build", "install"}:
+            check["configuration_details"] = result.get("configurations", []) if isinstance(result, dict) else []
+            return {"state": "ready", **check, "runtime": runtime}
+        if action not in {"execute", "stop", "restart", "build", "install"}:
             raise IDEError("不支持的开发准备动作")
         name = binding.get("build_configuration") if action == "build" else binding.get("run_configuration")
-        if not name or name not in names:
+        if not name or names.count(name) != 1:
             raise IDEError("所选运行配置不在当前项目中，请重新检查")
         if not binding.get("execution_allowed") or not binding.get("test_parameters_confirmed"):
             raise IDEError("尚未授权应用执行或确认测试参数")
-        if action == "restart":
-            stage("locating_process")
-            old = _old_process(binding, connection["url"])
-            stage("stopping" if old else "no_old_process")
-            _stop(client, binding, old)
+        if action in {"stop", "restart"} or (action == "execute" and restart_supported):
+            if not restart_supported:
+                return {"state": "awaiting_developer", "reason_code": "ide_run_control_required",
+                        "reason": check["support"]["restart_reason"], "remediation": "在 PyCharm 安装社区 MCP Run Control，启用原生 MCP。已保存的同一 PyCharm 原生连接会自动复用，无需改变已有 Run 配置或重复粘贴连接。"}
+            details = result.get("configurations", []) if isinstance(result, dict) else []
+            selected = next((row for row in details if isinstance(row, dict) and row.get("name") == name), {})
+            if not native_control and action != "stop" and selected.get("canDebug") is False:
+                raise IDEError("所选 IDE 配置不支持调试会话，Debugger MCP 无法为它提供停止和重启", reason_code="ide_debug_unsupported")
+            result = control_configuration(client, binding, params["operation_id"], stage, action=action)
+            if result["state"] != "ready" or action == "stop":
+                return result
+            stage("probing")
+            verified = probe(binding, connection["url"], runtime=result["runtime"])
+            return {**result, **verified, "reused_existing": False,
+                    "reason": result["reason"] if verified["state"] == "ready" else verified["reason"]}
+        if action == "execute":
+            stage("inspecting_runtime")
+            runtime = read_state(client, binding) if has_state(client) else inspect_running(binding, connection["url"])
+            if runtime["state"] == "running":
+                return {**probe(binding, connection["url"], runtime=runtime), "reused_existing": True}
+            if runtime["state"] != "stopped":
+                return {"state": "awaiting_developer", "runtime": runtime, "reason_code": "ide_runtime_unconfirmed",
+                        "reason": runtime["reason"], "remediation": "先核对已运行实例；多个配置共用项目时可补充健康检查地址以定位目标实例，再检查运行状态。"}
         stage("building" if action == "build" else "starting")
         result = client.call("execute_run_configuration", {"configurationName": name,
-            "projectPath": binding["project_path"], "timeout": 5000, "maxLinesCount": 200, "truncateMode": "END"})
+            "projectPath": binding["project_path"], "mode": "run", "timeout": 5000, "maxLinesCount": 200, "truncateMode": "END"})
         if not isinstance(result, dict):
             raise IDEError("IDE 执行回执格式不支持")
         output = str(result.get("output", ""))
@@ -362,7 +371,7 @@ def perform(params):
             return {"state": "ready" if result.get("exitCode") == 0 else "unknown",
                     "reason": "构建回执；尚未安装或执行测试", "receipt": receipt}
         stage("probing")
-        return {**probe(binding), "receipt": receipt}
+        return {**probe(binding, connection["url"]), "receipt": receipt}
 
 
 def dispatch(core, req):
@@ -398,12 +407,14 @@ def dispatch(core, req):
                 return make_event_result(_event_from_execute(req), status=EventStatus.PASS,
                     executor_used="ide", started_at=now_iso(), elapsed_ms=0,
                     summary=data["reason"], raw_response={"development": data})
-        mutation = params.get("action") in {"execute", "restart", "build", "install"}
+        mutation = params.get("action") in {"execute", "stop", "restart", "build", "install"}
         admitted = False
         stages = []
-        def record_stage(name):
+        checkpoint = {}
+        def record_stage(name, **details):
+            checkpoint.update(details)
             stages.append({"name": name, "at": time.time()})
-            _save_receipt(path, {"digest": digest, "result": {"state": "running", "stage": name, "stages": list(stages)}})
+            _save_receipt(path, {"digest": digest, "result": {"state": "running", "stage": name, "stages": list(stages), **checkpoint}})
         progress_token = _progress.set(record_stage)
         try:
             if mutation:
@@ -413,20 +424,26 @@ def dispatch(core, req):
                     core._development_busy = True
                     admitted = True
             data = perform(params)
-        except (httpx.TimeoutException, httpx.TransportError):
-            data = {"state": "unknown" if mutation else "failed", "reason": "IDE 无回执，执行结果尚未确认；不会自动重试"}
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            data = {"state": "unknown" if mutation else "failed",
+                    "reason": "IDE 无回执，执行结果尚未确认；不会自动重试" if mutation else "PyCharm 响应超时" if isinstance(exc, httpx.TimeoutException) else "无法连接 PyCharm 的 MCP 服务",
+                    "reason_code": "ide_result_unknown" if mutation else "ide_timeout" if isinstance(exc, httpx.TimeoutException) else "ide_unreachable",
+                    "remediation": "先在 PyCharm 核对当前配置是否已执行，再读取本次操作的原回执；不要重复启动。" if mutation else "确认 PyCharm 已打开并启用 MCP 服务器，核对所选开发电脑和 HTTP 流配置的端口、路径；如 PyCharm 显示授权请求，请允许连接后重新检查。",
+                    "error_field": "connection_id"}
         except Exception as exc:
             effect_started = any(s["name"] in {"stopping", "starting", "building", "installing"} for s in stages)
             known_rejection = isinstance(exc, IDEError) and not exc.effect_unknown and not effect_started
             state = ("awaiting_developer" if known_rejection else "unknown") if admitted else "failed"
             data = {"state": state,
                     "reason": str(exc)[:2000] if isinstance(exc, IDEError) else type(exc).__name__}
+            if isinstance(exc, IDEError):
+                data.update({key: getattr(exc, key) for key in ("reason_code", "remediation", "error_field") if getattr(exc, key)})
         finally:
             _progress.reset(progress_token)
             if admitted:
                 with core._lock:
                     core._development_busy = False
-        data = sanitize({**data, "stages": stages} if stages else data)
+        data = sanitize({**checkpoint, **data, "stages": stages} if stages else data)
         with _lock:
             _save_receipt(path, {"digest": digest, "result": data})
     return make_event_result(_event_from_execute(req), status=EventStatus.PASS, executor_used="ide",

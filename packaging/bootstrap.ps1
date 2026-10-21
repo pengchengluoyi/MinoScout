@@ -21,10 +21,6 @@ if (-not $ManifestUrl) {
 
 if ($env:OS -ne "Windows_NT") { throw "此安装命令仅支持 Windows" }
 $Prefix = if ($env:MINO_SCOUT_HOME) { $env:MINO_SCOUT_HOME } else { Join-Path $env:APPDATA "MinoScout" }
-$legacyPrefix = Join-Path $env:LOCALAPPDATA "MinoScout"
-if (-not $env:MINO_SCOUT_HOME -and -not (Test-Path (Join-Path $Prefix "config.json")) -and (Test-Path (Join-Path $legacyPrefix "config.json"))) {
-  $Prefix = $legacyPrefix
-}
 $env:MINO_SCOUT_HOME = $Prefix
 $ScoutOs = "win32"
 $machineArch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }

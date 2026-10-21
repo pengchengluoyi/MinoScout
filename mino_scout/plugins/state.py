@@ -2,11 +2,23 @@
 from __future__ import annotations
 
 import json
+import threading
+from functools import wraps
+
 from pathlib import Path
 from typing import Any
 
 from mino_scout.plugins.paths import data_dir
 from mino_scout.plugins.secret_store import account_name, delete_secret, get_secret, put_secret
+
+CONFIG_LOCK = threading.RLock()
+
+def config_locked(fn):
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        with CONFIG_LOCK:
+            return fn(*args, **kwargs)
+    return wrapped
 
 # 插件类别。MCP 还没有具体项。im = 对话渠道（收 + 发），bot = 只发通知。
 PLUGIN_CLASSES = ("cli", "bot", "mail", "mcp", "im")
@@ -86,7 +98,7 @@ CATALOG: list[dict[str, Any]] = [
         "fields": [
             _f("base_url", "Base URL", "https://project.feishu.cn", optional=True),
             _f("plugin_id", "Plugin ID", ""),
-            _f("user_key", "User Key", "", optional=True),
+            _f("user_key", "User Key", "空间查询及创建工作项使用的 Meego 用户身份", optional=True),
             _f("plugin_secret", "Plugin Secret", "", secret=True),
         ],
     },
@@ -203,6 +215,9 @@ def installed(kind: str, plugin_id: str) -> bool:
         return False
     if not row.get("needs_install"):
         return True
+    if kind == "im" and plugin_id == "langbot":
+        from mino_scout.plugins.langbot_host import is_installed
+        return is_installed()
     marker = plugin_dir(kind, plugin_id) / ".installed"
     return marker.is_file()
 
@@ -214,6 +229,12 @@ def configured(node_id: str, kind: str, plugin_id: str) -> bool:
     if row is None or not row.get("fields"):
         return False
     item = _item(kind, plugin_id)
+    if item.get("import_blocked"):
+        return False
+    if kind == "cli" and plugin_id == "feishu":
+        from mino_scout.plugins.feishu_auth import ready
+        if ready():
+            return True
     if kind == "im" and plugin_id == "langbot":
         # 只要有一个平台把必填项填全就算已配置（每个平台独立，没填的平台不影响）
         return any(platform_filled(item, p["id"]) for p in IM_PLATFORMS)
@@ -271,6 +292,7 @@ def status_list(node_id: str) -> list[dict[str, Any]]:
             "id": pid,
             "installed": installed(kind, pid),
             "configured": configured(node_id, kind, pid),
+            "import_blocked": bool(item.get("import_blocked")),
             "values": values,
             "saved_secrets": saved_secrets,
             "fields": [dict(f) for f in row.get("fields") or []],
@@ -296,16 +318,21 @@ def status_list(node_id: str) -> list[dict[str, Any]]:
             except Exception:
                 entry["status"] = {"state": "error", "healthy": False, "error": "status unavailable"}
                 entry["platforms"] = {}
+        if kind == "cli" and pid == "feishu":
+            from mino_scout.plugins import feishu_messages
+            entry["status"] = feishu_messages.status()
         out.append(entry)
     return out
 
 
+@config_locked
 def apply_config(
     node_id: str,
     kind: str,
     plugin_id: str,
     values: dict[str, Any],
     clear: list[str],
+    *, importing: bool = False,
 ) -> None:
     row = spec(kind, plugin_id)
     if row is None:
@@ -346,6 +373,13 @@ def apply_config(
             current[key] = text[:500]
         else:
             current.pop(key, None)
+    if row.get("needs_install") and not installed(kind, plugin_id):
+        current["import_blocked"] = True
+        for field in row["fields"]:
+            if field.get("type") == "bool":
+                current[field["key"]] = "0"
+    elif not importing:
+        current.pop("import_blocked", None)
     items[_key(kind, plugin_id)] = current
     save_state(root)
 
@@ -357,6 +391,7 @@ def _field_type(row: dict[str, Any], key: str) -> str:
     return "text"
 
 
+@config_locked
 def remember_secret(node_id: str, kind: str, plugin_id: str, field: str, secret: str) -> None:
     """扫码登录这类不走表单的密钥。只在清单里记「有没有」，明文进保险库。"""
     text = str(secret or "")
@@ -375,6 +410,7 @@ def remember_secret(node_id: str, kind: str, plugin_id: str, field: str, secret:
     save_state(root)
 
 
+@config_locked
 def remember_plain(kind: str, plugin_id: str, values: dict[str, Any]) -> None:
     root = load_state()
     items = root.setdefault("items", {})
@@ -389,6 +425,7 @@ def remember_plain(kind: str, plugin_id: str, values: dict[str, Any]) -> None:
     save_state(root)
 
 
+@config_locked
 def clear_plugin_secrets(node_id: str, kind: str, plugin_id: str) -> None:
     row = spec(kind, plugin_id) or {}
     for field in row.get("fields") or []:

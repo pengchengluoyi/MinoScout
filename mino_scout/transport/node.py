@@ -219,8 +219,9 @@ class NodeTransport:
             im_bridge.set_hook(None)
             wechat_plugin.stop_listener()
             try:
-                from mino_scout.plugins import langbot_host
+                from mino_scout.plugins import langbot_host, feishu_messages
 
+                feishu_messages.set_connection(False)
                 langbot_host.shutdown()
                 im_bridge.stop_loopback()
             except Exception as exc:
@@ -418,13 +419,15 @@ class NodeTransport:
             note_plugin_access(self.core._plugins_ready, plugin_warning)
         except OSError as exc:
             SLog.w(TAG, f"插件状态写入失败: {type(exc).__name__}")
-        from mino_scout.plugins import wechat as wechat_plugin, langbot_host
+        from mino_scout.plugins import wechat as wechat_plugin, langbot_host, feishu_messages
         wechat_plugin.bind_node(self.core.node_id)
         if self.core._plugins_ready:
             wechat_plugin.ensure_listener()
             langbot_host.reconcile(self.core.node_id)
+            feishu_messages.set_connection(True)
         else:
             wechat_plugin.stop_listener()
+            feishu_messages.set_connection(False)
             langbot_host.shutdown()
         await self._send(P.MsgType.HEARTBEAT, await asyncio.to_thread(self.core.heartbeat))
         try:
@@ -740,6 +743,8 @@ class NodeTransport:
         async with self._im_lock:
             if self._ws is None:
                 return
+            if im and im.get("channel") == "feishu_cli":
+                await self._send(P.MsgType.HEARTBEAT, await asyncio.to_thread(self.core.heartbeat))
             # 旧版暂存迁入持久收件箱，平台 ACK 不能清除尚未处理的业务事件。
             await asyncio.to_thread(im_store.migrate_pending)
             queue = await asyncio.to_thread(im_store.pending_events)
