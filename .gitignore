@@ -252,3 +252,6 @@ coverage/
 /scripts/check_windows_lifecycle.py
 
 # 本地协议样例也属于 tests，留在本机调试，不提交到 Git。
+
+# 本机工具连接、凭据和个人设置不提交。
+.claude/

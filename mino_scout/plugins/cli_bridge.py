@@ -118,10 +118,12 @@ def _argv(command: list[str], options: dict) -> list[str]:
     return result
 
 
-def _native(node_id: str, plugin_id: str, command: list[str], options: dict) -> dict:
+def _native(node_id: str, plugin_id: str, command: list[str], options: dict, *, source_path: str = '') -> dict:
     root = plugin_dir('cli', plugin_id)
     extra = {}
     argv = _argv(command, options)
+    if source_path:
+        argv.insert(len(command), source_path)
     if plugin_id == 'feishu':
         from mino_scout.plugins import feishu_auth
         if not feishu_auth.ready():
@@ -281,6 +283,21 @@ def call(node_id: str, plugin_id: str, params: dict) -> dict:
                 'summary': str(exc), 'next_steps': ['检查 command 只包含命令名称，options 使用非空参数名；本次没有执行操作。']}
     if mode == 'read' and not _read_command(command, options):
         raise PluginCallError('此命令不是已识别的查询，请通过 cli.execute 执行写操作')
+    if params.get('attachment_ref') or params.get('attachments'):
+        from mino_scout.plugins import cli_attachments
+        try:
+            if mode != 'write' or plugin_id != 'meego':
+                raise ValueError('当前受控附件上传仅支持 Meego 写操作')
+            origin = params.get('attachment_origin') or {}
+            if params.get('attachment_ref') and not params.get('attachments') and command == ['attachment', '+upload']:
+                return cli_attachments.upload(node_id, cli_attachments.prepare(params['attachment_ref'], options, origin), options)
+            if params.get('attachments') and not params.get('attachment_ref') and command == ['workitem', 'create']:
+                return cli_attachments.create(node_id, options, params['attachments'], origin)
+            raise ValueError('附件引用仅用于 attachment +upload 或带附件的 workitem create')
+        except (ValueError, TypeError, KeyError, PermissionError) as exc:
+            return cli_attachments.failure(str(exc))
+    if command == ['attachment', '+upload'] and options.get('help') is not True:
+        return {'ok': False, 'status': 422, 'summary': '上传必须使用会话提供的 attachment_ref，不能传本地路径。'}
     if plugin_id == 'meego' and plain_value('cli', 'meego', 'plugin_id'):
         try:
             response = _meego_api(node_id, command, options)

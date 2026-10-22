@@ -895,12 +895,23 @@ Nexus 先提交 pending 再发送；丢失应答保持 unknown，仅查询原 ta
 - CLI 登录本人免二次绑定：Scout 在验证用户授权后，以同一应用 `whoami --as user` 的 `onBehalfOf.openId` 上报 status.authorized_sender_id。Nexus 仅在私聊发送者与该已验证身份一致、节点归属及实例校验通过时关联当前节点主人；不从消息自报字段推断身份，不覆盖其他账号的既有绑定。其他发送者保留绑定流程。
 
 - `plugin.cli.feishu` 增加 `messages_start/messages_status/messages_stop`；返回 `data.messages`（enabled、holding、instance_id、connected、connection_verified、last_message_at、error），不返回凭据或消息正文。
-- CLI 插件快照的 status 承载上述字段。`channel=feishu_cli` 与 LangBot 飞书分开绑定；instance_id 为 `cli:<appId>`，reply_ctx.transport 为 `feishu_cli`。当前只接受机器人身份接收的用户私聊文本，不声明群聊、附件、卡片或流式能力。
+- CLI 插件快照的 status 承载上述字段。`channel=feishu_cli` 与 LangBot 飞书分开绑定；instance_id 为 `cli:<appId>`，reply_ctx.transport 为 `feishu_cli`。接受机器人身份接收的用户私聊文本、图文、图片、文件和语音；不声明群聊、卡片或流式能力。附件扩展以本文末尾 2026-10-22 子合同为准。
 - 入站复用 `node.plugin_im_message` 和持久 inbox；先上报插件快照。Nexus 校验节点归属、启用状态、实例与持有权；发送和 ACK 路由到 class=cli,id=feishu，仍使用 `plugin.im.send/ack`，发送携带稳定幂等键。
 - 同一节点同一应用已启用 LangBot 接收时，CLI 启动失败并提示，不能并行抢收。断线与账号切换停止监听；重连按当前账号已验证授权自动恢复，不再依赖 messages_enabled。授权成功立即启动监听，未授权、导入隔离、卸载或节点断线时不启动；im_hold 仲裁仍有效。messages_start/messages_stop 仅保留兼容调用，页面不提供单独开关。
 
 
+## 2026-10-22：私聊图文与受控 Meego 附件上传 v1
+
+- 飞书 CLI 仍只接收用户私聊。`text/post/image/file/audio` 保留文字并提取资源；兼容 CLI 已渲染的 `[Image: img_…]`、`![Image](img_…)`、`<file …/>` 与 `<audio …/>`，也接受原始 JSON 内容。不支持的消息、缺失资源、超过 4 个附件或下载失败必须带 `media_error` 或附件 `error` 交给 Nexus 回复，不能静默丢弃整条图文。
+- Scout 通过当前应用的官方 CLI `im +messages-resources-download --as bot` 下载同一消息的资源，仅写私有临时目录并在读取后清理。每份附件最多 8 MB；原始字节在账号/实例/发送者隔离的附件表内保存，Nexus 只持久化 `kind/ref/name/mime/size`。图片识别是可选参考，失败不阻止上传原图；文件不自动解压、执行或当作授权。
+- `plugin.cli.meego` 的 `action=command,mode=write` 扩展可选 `attachment_ref` 和 `attachments`，二者互斥。来源 `attachment_origin` 由 Nexus 依据已绑定会话注入，目标必须是保有原件的同一节点，模型不能提供或覆盖来源。`attachment_ref` 仅用于 `attachment +upload`；`attachments=[{ref,field_key,resource_type,filename?}]` 仅用于 `workitem create`，最多 4 份，resource_type 仅 15（附件字段）或 16（富文本图片）。字段 key 必须先查询实际空间字段。
+- 节点 Meego 插件快照声明 `attachment_upload_version=1`。Nexus 只保留已知版本并在派发前校验；旧节点或未上报版本时拒绝带附件操作，不能降级成创建无附件工作项。顶层协议类不变，两仓文档同步。
+- 受控上传在 Scout 内解析当前会话的 `media-…` 引用，将字节写入新建临时文件，再调用官方 `meegle attachment +upload`；不开放任意路径、URL、Shell、登录或配置修改。已有工作项用 `work-item-id`；待创建工作项用 `work-item-type`。官方 CLI 用户授权与插件换票是两套条件，不能把 Plugin ID/Secret 或 User Key 冒充用户访问令牌。
+- 带附件创建先完成全部本地校验、再上传、最后携带文件 token/富文本地址发一次创建请求。附件上传失败时不创建空工作项。附件字段按官方格式使用 JSON 字符串数组及 `fileToken`、字符串 `size`；富文本图片使用带 file_token 注释的 Markdown。单独上传仅确认上传，不声称已关联。原写收据继续去重，保留 file_token/file_url；超时、缺少上传回执或创建回执时标记结果未知，不自动重放。多附件增加节点等待预算，不缩短单次 CLI 的安全超时。
+- 本次实现未修改共享业务数据库，不自动创建真实 Bug。运行验收需受管加载新版 Nexus/Scout，确认新快照，再用获授权的真实图文和文件核对 Meego 实际字段；离线校验不能替代授权、下载、上传和关联验收。
+
 ## Scout 配置迁移（2026-10-21）
+
 
 新增 owner-only 节点指令 `node.config_export`、`node.config_import`，复用 EXECUTE/RESULT，不改顶层字段。导出返回 `extra.archive`（UTF-8 JSON 的 base64 传输编码，不是加密）；导入参数为 `archive`，返回 `missing_tools/warnings/count`。仅用于用户显式配置迁移，不进入心跳、插件快照或持久业务日志。文件包含凭据，UI 必须提示妥善保管，响应 Cache-Control: no-store。
 

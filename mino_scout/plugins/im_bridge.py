@@ -56,7 +56,7 @@ def ingest(
         "recent_turns": turns,
     }
     meta = metadata or {}
-    im.update({key: meta[key] for key in ('event_type', 'reply_to', 'target_message_id', 'thread_id', 'revision', 'attachments', 'callback') if key in meta})
+    im.update({key: meta[key] for key in ('event_type', 'reply_to', 'target_message_id', 'thread_id', 'revision', 'attachments', 'media_error', 'callback') if key in meta})
     if im.get('attachments'):
         from mino_scout.plugins.im_attachments import save
         normalized = []
@@ -67,14 +67,20 @@ def ingest(
                 normalized.append(item)
             else:
                 try:
-                    if channel == 'feishu' and item.get('file_key'):
+                    if channel == 'feishu_cli' and item.get('file_key'):
+                        from mino_scout.plugins import feishu_media
+                        import base64
+                        content, mime = feishu_media.resource(msg_id, item)
+                        item = {**item, 'base64': base64.b64encode(content).decode(), 'mime': mime}
+                    elif channel == 'feishu' and item.get('file_key'):
                         from mino_scout.plugins import im_feishu, langbot_host
                         import base64
                         content, mime = im_feishu.resource(langbot_host._node_id, msg_id, str(item['file_key']), str(item.get('kind') or ''))
                         item = {**item, 'base64': base64.b64encode(content).decode(), 'mime': mime}
                     normalized.append(save(im, item))
-                except Exception:
-                    normalized.append({'kind': str(item.get('kind') or ''), 'ref': ''})
+                except Exception as exc:
+                    reason = str(exc) if isinstance(exc, ValueError) else '附件读取失败，请检查当前渠道的资源读取权限后重新发送。'
+                    normalized.append({'kind': str(item.get('kind') or ''), 'ref': '', 'error': reason[:300]})
         im['attachments'] = normalized
     if meta.get('quoted_text'):
         mapped = im_store.outgoing_reference(im, str(meta['quoted_text']))
@@ -111,6 +117,10 @@ def register_sender(channel: str, text: SenderText, image: SenderImage | None = 
 
 
 def sender_capabilities(channel: str) -> dict[str, Any]:
+    if channel == 'feishu_cli':
+        return {'markdown': False, 'cards': False, 'buttons': False, 'streaming': False,
+                'threads': False, 'max_characters': 1800, 'length_unit': 'characters',
+                'attachment_types': ['image', 'audio', 'file'], 'version': 1}
     if channel == 'feishu':
         from mino_scout.plugins import im_feishu
         if im_feishu.ready():

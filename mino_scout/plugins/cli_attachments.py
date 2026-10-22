@@ -1,0 +1,152 @@
+"""Upload scoped IM bytes with the official CLI, never a caller-supplied local path."""
+from __future__ import annotations
+
+import base64
+import json
+import mimetypes
+import re
+import tempfile
+from pathlib import Path
+
+from mino_scout.plugins.calls import PluginCallError
+
+
+def failure(summary: str, *, uncertain: bool = False) -> dict:
+    return {'ok': False, 'status': 503 if uncertain else 422, 'reason_code': 'meego_attachment_upload_failed',
+            'summary': summary, 'next_steps': [
+                '插件凭据不等于官方 Meegle CLI 用户授权；请检查该节点 CLI 授权和目标空间的附件权限。',
+                '结果未知时先核对已上传的附件，不要重复创建或上传。' if uncertain else '修正上述问题后继续原请求。']}
+
+
+def prepare(ref: str, options: dict, origin: dict) -> tuple[bytes, str, str]:
+    from mino_scout.plugins import im_store
+    from mino_scout.plugins.im_attachments import MAX_BYTES
+
+    if not re.fullmatch(r'media-[0-9a-f]{32}', str(ref or '')) or not isinstance(origin, dict):
+        raise ValueError('上传需要当前已绑定会话的附件引用，不能传本地路径或 URL')
+    if not all(origin.get(key) for key in ('channel', 'instance_id', 'sender_id')):
+        raise ValueError('附件上传缺少已确认的会话来源')
+    allowed = {'project-key', 'work-item-id', 'work-item-type', 'resource-type', 'field-key', 'filename', 'dry-run'}
+    if set(options) - allowed:
+        raise ValueError('附件上传包含不支持的参数')
+    if not options.get('project-key') or not (options.get('work-item-id') or options.get('work-item-type')):
+        raise ValueError('请指定目标空间，以及已有工作项 ID 或待创建的工作项类型')
+    resource_type = str(options.get('resource-type') or '')
+    if resource_type not in {'13', '14', '15', '16'}:
+        raise ValueError('附件 resource-type 必须是 13、14、15 或 16')
+    if resource_type in {'15', '16'} and not options.get('field-key'):
+        raise ValueError('上传到工作项字段时必须指定查询得到的 field-key')
+    media = im_store.read_attachment(origin, ref)
+    data = base64.b64decode(str(media.get('base64') or ''), validate=True)
+    if not 0 < len(data) <= MAX_BYTES:
+        raise ValueError('附件为空或超过 8 MB')
+    mime = str(media.get('mime') or 'application/octet-stream')
+    if resource_type in {'14', '16'} and not mime.startswith('image/'):
+        raise ValueError('图片字段只能上传图片，请将文件上传到附件字段')
+    name = str(options.get('filename') or 'attachment' + (mimetypes.guess_extension(mime) or '.bin'))
+    name = re.sub(r'[^\w.() -]', '_', name.replace('\\', '/').rsplit('/', 1)[-1])[:180].strip(' .')
+    return data, name or 'attachment.bin', mime
+
+
+def upload(node_id: str, prepared: tuple[bytes, str, str], options: dict) -> dict:
+    from mino_scout.plugins.cli_bridge import _native
+
+    data, name, mime = prepared
+    if options.get('dry-run') is True:
+        return {'ok': True, 'dry_run': True, 'summary': '附件参数已预览，尚未上传',
+                'data': {'name': name, 'size': len(data), 'mime_type': mime}}
+    with tempfile.TemporaryDirectory(prefix='mino-meego-upload-') as directory:
+        source = Path(directory) / name
+        source.write_bytes(data)
+        native = {key: value for key, value in options.items() if key not in {'filename', 'dry-run'}}
+        native.update({'filename': name, 'content-type': mime})
+        try:
+            result = _native(node_id, 'meego', ['attachment', '+upload'], native, source_path=str(source))
+        except PluginCallError as exc:
+            message = str(exc).replace(str(source), '[附件]').replace(directory, '[临时目录]')
+            return failure('Meego CLI 附件上传未完成：' + message, uncertain=True)
+    current = result
+    for _ in range(5):
+        if not isinstance(current, dict):
+            break
+        if isinstance(current.get('file_token'), str) and current['file_token']:
+            info = {key: current.get(key) for key in ('file_token', 'file_url', 'name', 'size', 'mime_type')}
+            info.update(name=name, size=len(data), mime_type=mime)
+            return {'ok': True, 'source': 'cli', 'id': info['file_token'], 'data': info,
+                    **info, 'summary': f'附件已上传：{name}；尚需关联到工作项字段或评论'}
+        current = current.get('data')
+    return failure('上传命令已返回，但没有可确认的 file_token；不会继续创建工作项。', uncertain=True)
+
+
+def create(node_id: str, options: dict, attachments: list[dict], origin: dict) -> dict:
+    from mino_scout.plugins.cli_bridge import _meego_api
+    from mino_scout.plugins.state import plain_value
+
+    if not plain_value('cli', 'meego', 'plugin_id'):
+        return failure('带附件创建需要已配置的 Meego 插件凭据；本次尚未上传或创建。')
+    preview = _meego_api(node_id, ['workitem', 'create'], {**options, 'dry-run': True})
+    if not preview or not preview.get('ok') or preview.get('needs_input'):
+        return preview or failure('带附件创建需要已配置的 Meego 插件凭据；本次尚未上传或创建。')
+    if not isinstance(attachments, list) or not 1 <= len(attachments) <= 4:
+        raise ValueError('一次创建最多关联 4 个附件')
+    params = options.get('params') or {}
+    if isinstance(params, str):
+        params = json.loads(params)
+    fields = [dict(item) for item in params.get('fields') or []]
+    field_modes = {}
+    for item in attachments:
+        if not isinstance(item, dict):
+            raise ValueError('附件参数格式不正确')
+        field_key, mode = str(item.get('field_key') or ''), str(item.get('resource_type', 15))
+        if field_key in field_modes and field_modes[field_key] != mode:
+            raise ValueError('同一个工作项字段不能同时作为附件字段和富文本图片字段')
+        field_modes[field_key] = mode
+        existing = next((field for field in fields if field.get('field_key') == item.get('field_key')), {})
+        value = existing.get('field_value')
+        if str(item.get('resource_type', 15)) == '15' and value:
+            value = json.loads(value) if isinstance(value, str) else value
+            if not isinstance(value, list):
+                raise ValueError('附件字段原值必须为数组或表示数组的 JSON 字符串')
+        elif str(item.get('resource_type', 15)) == '16' and value and not isinstance(value, str):
+            raise ValueError('图片所在的富文本字段原值必须为文本')
+    prepared = []
+    for item in attachments:
+        if not isinstance(item, dict) or set(item) - {'ref', 'field_key', 'resource_type', 'filename'}:
+            raise ValueError('附件参数格式不正确')
+        kind, field = str(item.get('resource_type', 15)), str(item.get('field_key') or '')
+        if kind not in {'15', '16'} or not field:
+            raise ValueError('创建工作项的附件必须指定实际字段，以及 resource_type=15 或 16')
+        if field in {'name', 'template'}:
+            raise ValueError('不能把标题或模板字段当作附件字段')
+        upload_options = {'project-key': options.get('project-key'), 'work-item-type': options.get('work-item-type'),
+                          'resource-type': kind, 'field-key': field, 'filename': item.get('filename')}
+        prepared.append((prepare(item.get('ref'), upload_options, origin), upload_options))
+    if options.get('dry-run') is True:
+        return {**preview, 'attachment_count': len(prepared)}
+    for media, upload_options in prepared:
+        result = upload(node_id, media, upload_options)
+        if not result.get('ok'):
+            return {**result, 'summary': result['summary'] + ' 本次尚未发送工作项创建请求。'}
+        info = result['data']
+        field = next((item for item in fields if item.get('field_key') == upload_options['field-key']), None)
+        if field is None:
+            field = {'field_key': upload_options['field-key'], 'field_value': ''}
+            fields.append(field)
+        if upload_options['resource-type'] == '16':
+            if not isinstance(info.get('file_url'), str) or not info['file_url'].startswith('https://'):
+                return failure('图片已上传，但未返回可用于富文本的图片地址；尚未创建工作项。', uncertain=True)
+            label = re.sub(r'[\[\]\\\r\n]', '_', info['name'])
+            field['field_value'] = str(field.get('field_value') or '') + f"\n![{label}]({info['file_url']}) <!-- {info['file_token']} -->"
+        else:
+            values = field.get('field_value') or []
+            if isinstance(values, str):
+                values = json.loads(values)
+            if not isinstance(values, list):
+                return failure('附件字段原值格式不正确；附件已上传，但尚未创建工作项。', uncertain=True)
+            values = values + [{'name': info['name'], 'type': info['mime_type'], 'size': str(info['size']), 'fileToken': info['file_token']}]
+            field['field_value'] = json.dumps(values, ensure_ascii=False)
+    result = _meego_api(node_id, ['workitem', 'create'], {**options, 'params': {**params, 'fields': fields}})
+    if result and result.get('ok'):
+        result['summary'] += f'；{len(prepared)} 个附件已上传并随创建请求提交'
+        result['attachment_count'] = len(prepared)
+    return result

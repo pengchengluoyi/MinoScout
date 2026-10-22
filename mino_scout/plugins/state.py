@@ -321,6 +321,8 @@ def status_list(node_id: str) -> list[dict[str, Any]]:
         if kind == "cli" and pid == "feishu":
             from mino_scout.plugins import feishu_messages
             entry["status"] = feishu_messages.status()
+        if kind == 'cli' and pid == 'meego':
+            entry['attachment_upload_version'] = 1
         out.append(entry)
     return out
 

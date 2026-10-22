@@ -31,13 +31,15 @@ def parse_event(row: dict) -> dict | None:
     # The installed CLI emits normalized, flat NDJSON (event schema), not raw WS envelopes.
     if row.get("type") != "im.message.receive_v1" or row.get("sender_type") != "user":
         return None
-    # Group mentions and rich-media routing need separate capability support.
-    if row.get("chat_type") != "p2p" or row.get("message_type") != "text":
+    if row.get("chat_type") != "p2p":
         return None
     keys = ("message_id", "chat_id", "sender_id")
     if not all(isinstance(row.get(k), str) and row[k] for k in keys):
         return None
-    return {k: row[k] for k in keys} | {"text": str(row.get("content") or "")[:12000],
+    from mino_scout.plugins.feishu_media import content
+    text, attachments, error = content(str(row.get('message_type') or ''), row.get('content'))
+    return {k: row[k] for k in keys} | {"text": text, "attachments": attachments, "media_error": error,
+                                       "reply_to": str(row.get('reply_to') or ''),
                                        "thread_id": str(row.get("thread_id") or "")}
 
 
@@ -134,7 +136,8 @@ def _run(home: Path):
                                  event["message_id"], event["text"], True,
                                  {"transport": "feishu_cli", "instance_id": instance,
                                   "source_message_id": event["message_id"]},
-                                 instance_id=instance, metadata={"thread_id": event["thread_id"]})
+                                 instance_id=instance, metadata={key: event[key] for key in
+                                     ('thread_id', 'reply_to', 'attachments', 'media_error')})
             proc.stdout.close()
             code = proc.wait()
             with _lock:

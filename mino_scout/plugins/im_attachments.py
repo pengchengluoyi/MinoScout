@@ -2,6 +2,7 @@
 from __future__ import annotations
 import base64
 import ipaddress
+import mimetypes
 import socket
 import urllib.request
 from urllib.parse import urlparse
@@ -18,6 +19,8 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def save(origin: dict, item: dict) -> dict:
     kind = str(item.get('kind') or '')
+    if kind not in {'image', 'audio', 'file'}:
+        raise ValueError('不支持的附件类型')
     mime = str(item.get('mime') or '')
     encoded = str(item.get('base64') or '')
     data = b''
@@ -61,9 +64,11 @@ def save(origin: dict, item: dict) -> dict:
                 raise ValueError('无法读取图片格式') from exc
         elif kind == 'audio':
             mime = 'audio/wav' if data[:4] == b'RIFF' and data[8:12] == b'WAVE' else 'audio/ogg' if data[:4] == b'OggS' else 'audio/mpeg' if data[:3] == b'ID3' or data[:2] in (b'\xff\xfb', b'\xff\xf3', b'\xff\xf2') else 'audio/mp4' if data[4:8] == b'ftyp' else ''
-    if not data or len(data) > MAX_BYTES or mime not in MIMES:
+    if kind == 'file':
+        mime = mimetypes.guess_type(str(item.get('name') or ''))[0] or 'application/octet-stream'
+    if not data or len(data) > MAX_BYTES or (kind != 'file' and mime not in MIMES):
         raise ValueError('附件为空、格式不支持或超过 8 MB')
     if kind == 'image' and not mime.startswith('image/') or kind == 'audio' and not mime.startswith('audio/'):
         raise ValueError('附件类型不一致')
     ref = im_store.save_attachment(origin, data, mime)
-    return {'kind': kind, 'ref': ref, 'mime': mime, 'size': len(data)}
+    return {'kind': kind, 'ref': ref, 'mime': mime, 'size': len(data), 'name': str(item.get('name') or '')[:200]}
