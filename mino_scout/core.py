@@ -811,9 +811,7 @@ class ScoutCore:
 
     def discover_devices(self) -> list[P.DeviceManifest]:
         """只重探设备，不重跑 executor probe。心跳热插拔走这里。"""
-        from mino_scout.config import android_device_allowed
-        return [d for d in _discover_devices(self.executors, scout_id=self.node_id)
-                if d.platform != "android" or android_device_allowed(d.sn)]
+        return _discover_devices(self.executors, scout_id=self.node_id)
 
     def ensure_android_adb_keyboard_on_startup(self) -> list[dict[str, Any]]:
         """进程启动后（REGISTER 前）检查已连接的 Android 设备默认输入法。"""
@@ -837,8 +835,7 @@ class ScoutCore:
         now = time.time()
         for serial in serials:
             sid = str(serial or "").strip()
-            from mino_scout.config import android_device_allowed
-            if not sid or not android_device_allowed(sid):
+            if not sid:
                 continue
             self._adb_ime_last_check[sid] = now
             outcome = ensure_adb_keyboard(sid)
@@ -860,9 +857,6 @@ class ScoutCore:
         now = time.time()
         outcomes: list[dict[str, Any]] = []
         for sid in connected_android_adb_serials(devices):
-            from mino_scout.config import android_device_allowed
-            if not android_device_allowed(sid):
-                continue
             last = self._adb_ime_last_check.get(sid, 0.0)
             if now - last < _ADB_IME_DRIFT_CHECK_SEC:
                 continue

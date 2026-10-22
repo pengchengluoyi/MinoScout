@@ -276,12 +276,3 @@ def runtime_identity() -> dict[str, Any]:
         "python_base_prefix": sys.base_prefix,
         "source_root": str(Path(__file__).resolve().parent),
     }
-
-
-def android_device_allowed(serial: str) -> bool:
-    """Select source-development phones independently of other environments."""
-    if not development():
-        return True
-    selected = load_config().get("development_android_serials", [])
-    return (isinstance(selected, list) and all(isinstance(s, str) and s.strip() == s and s for s in selected)
-            and bool(serial) and serial in selected)

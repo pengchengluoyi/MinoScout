@@ -155,7 +155,7 @@ MinoNexus 的共享运行配置 `Scout Development` 经 `MinoScout/scripts/run_d
 
 开发接入命令也使用 Scout/.venv，不再使用 Nexus 的 sys.executable。开发 Nexus 需重启加载更新；正常登录开发 Workbench 后，通过添加节点取得该命令，不复制正式 token。
 
-开发配置 `development_android_serials` 默认空列表，不自动登记 USB 手机。ADB 执行器、IDE APK 安装、启动与心跳输入法维护均检查该分配；未分配时拒绝动作。使用 `.venv/bin/python -m mino_scout.cli development-devices --add <serial>` 添加设备，可重复指定 `--add`；不传参数只查看。命令保留已有接入信息和已选设备，重复添加不重复写入。不依赖正式环境任务状态。运行节点重新上报设备后，测试 Nexus 可选择该设备；此列表不是跨 Nexus 硬件租约。
+开发 Scout 不做安卓设备分配白名单：`adb devices` 里处于 `device` 状态的手机都会上报，ADB 执行、IDE APK 安装、启动与心跳输入法维护也不再按序列号过滤。开发与正式的隔离只在进程、配置目录、凭据和 Nexus 地址层面；同一台手机同一时间只应由一个环境使用，这属于使用时的资源安排，不由 Scout 静默拦截（旧版 `development_android_serials` / `development-devices` 已移除，配置里残留该键不生效）。
 
 PyCharm 启动器已完成真实接入：开发 Scout 独立解释器运行，测试 Nexus 注册和心跳成功，插件就绪。执行器直连设备诊断与 Nexus session 业务验收分别记录，不将截图成功当作用例或 APK 安装验收。
 

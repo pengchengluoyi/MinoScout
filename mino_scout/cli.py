@@ -2,7 +2,6 @@
 
     mino-scout                                 服务在跑 → 公开 status；否则尝试拉起服务
     mino-scout run                             常驻（launchd / systemd 用）
-    mino-scout development-devices --add SERIAL  选择开发安卓设备
     mino-scout probe                           只探测 manifest，不连 Nexus
     mino-scout status | stop | start
     mino-scout configure nexus-url <origin>    只改 Nexus 地址（token 由 Nexus REGISTER 下发）
@@ -171,7 +170,7 @@ def cmd_default() -> int:
     _, token = resolve_runtime()
     if not token:
         print(
-            f"未配置 token。请用 Studio「复制远程安装命令」安装，或在 {config_path()} 写入 token。",
+            f"未配置 token。请在 Workbench 的 Scout 节点页复制安装命令，或在 {config_path()} 写入 token。",
             file=sys.stderr,
         )
         return 2
@@ -289,57 +288,6 @@ def main(argv: list[str] | None = None) -> int:
             print("开发接入配置已写入独立目录；运行 python -m mino_scout.cli run 启动开发节点")
             return 0
         except Exception as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
-    if sub == "development-devices":
-        from mino_scout.config import development, load_config, save_config
-        if not development():
-            print("开发设备配置仅限源码 Scout", file=sys.stderr)
-            return 2
-        ap = argparse.ArgumentParser(prog="mino-scout development-devices")
-        ap.add_argument("--add", action="append", default=[], metavar="SERIAL",
-                        help="将安卓设备加入开发配置，可重复指定；省略则只查看")
-        ns = ap.parse_args(raw[1:])
-        try:
-            cfg = load_config()
-            selected = cfg.get("development_android_serials", [])
-            if not isinstance(selected, list) or any(
-                not isinstance(s, str) or not s or any(c.isspace() or ord(c) < 32 for c in s)
-                for s in selected + ns.add
-            ):
-                raise ValueError("开发设备序列号必须为非空且不含空白的字符串")
-            updated = list(dict.fromkeys(selected + ns.add))
-            if ns.add and updated != selected:
-                cfg["development_android_serials"] = updated
-                save_config(cfg)
-            print(json.dumps({"environment": "development", "android_serials": updated},
-                             ensure_ascii=False, indent=2))
-            return 0
-        except (ValueError, OSError) as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
-    if sub == "development-ide-projects":
-        from mino_scout.config import development, load_config, save_config
-        from mino_scout.ide_prepare import sample_project
-        from mino_scout.ide_client import IDEError
-        if not development():
-            print("样例项目登记仅限源码 Scout", file=sys.stderr)
-            return 2
-        ap = argparse.ArgumentParser(prog="mino-scout development-ide-projects")
-        ap.add_argument("--add", action="append", default=[], metavar="PROJECT_PATH")
-        ns = ap.parse_args(raw[1:])
-        try:
-            cfg = load_config()
-            selected = cfg.get("development_ide_projects", [])
-            if not isinstance(selected, list) or any(not isinstance(path, str) for path in selected):
-                raise ValueError("现有样例项目配置格式无效；拒绝覆盖")
-            projects = list(dict.fromkeys(str(sample_project(path)) for path in selected + ns.add))
-            if ns.add:
-                cfg["development_ide_projects"] = projects
-                save_config(cfg)
-            print(json.dumps({"environment": "development", "ide_projects": projects}, ensure_ascii=False, indent=2))
-            return 0
-        except (ValueError, OSError, IDEError) as exc:
             print(str(exc), file=sys.stderr)
             return 2
     if sub == "identity":
