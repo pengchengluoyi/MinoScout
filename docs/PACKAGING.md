@@ -141,9 +141,9 @@ python scripts/build_binary.py --check                         # 冻结 + 真跑
 ```
 
 CI 在三个平台原生冻结并各跑一次真实 probe：`darwin-arm64`、`win32-x64`、`linux-x64`。
-Linux 额外跑 `scripts/check_layered_install.py`（全量装 + app 层增量，确认 browser 目录
-一个字节没动），Windows 保留安装器语法检查与无控制台窗口检查，macOS/Windows 保留 PC SDK
-原生库加载检查。mock、测试脚本及本地回归脚本由 `.gitignore` 屏蔽，不作为 CI 的仓库文件依赖。
+Windows 保留安装器语法检查与无控制台窗口检查，macOS/Windows 保留 PC SDK 原生库加载检查。
+mock、测试脚本及本地回归脚本（含 `scripts/check_layered_install.py`）由 `.gitignore` 屏蔽，
+不作为 CI 的仓库文件依赖。
 
 ## 0.1.76 Windows 更新与运行身份
 

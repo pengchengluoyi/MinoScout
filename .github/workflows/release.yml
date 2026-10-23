@@ -119,9 +119,6 @@ jobs:
           SCOUT_VERSION: ${{ needs.meta.outputs.version }}
           MINO_SCOUT_SKIP_BROWSER: "1"
         run: python scripts/pack_release.py --out dist --binary
-      - name: Verify layered install (Linux)
-        if: runner.os == 'Linux'
-        run: python scripts/check_layered_install.py --dist dist
       - name: Verify installed Windows Scout has no visible console
         if: runner.os == 'Windows'
         shell: bash
