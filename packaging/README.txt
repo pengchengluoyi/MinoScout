@@ -26,8 +26,9 @@ Daemon:
           user  → AtLogOn (Startup folder fallback)
   Linux   root → systemd mino-scout.service
           user → systemd --user mino-scout.service
+                 (headless machines: loginctl enable-linger $USER, or install as root)
 
-Mino Studio writes config.json next to the install (nexus_url + token)
+Mino Workbench writes config.json next to the install (nexus_url + token)
 before opening this package. Nexus never hosts these binaries.
 
 Control:

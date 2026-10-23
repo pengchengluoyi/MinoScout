@@ -47,7 +47,6 @@ ClawNode 能力受设备授予的运行时权限影响：
 
 | 能力 | 条件 |
 |---|---|
-| `system_pkg_clear`（清数据） | 需 `device_owner`。生产机多数没有 → **返回 `declined`**，让位给 Nexus 侧的 `ai_persona`（拟人化走设置页） |
 | `system_pkg_install` | 需用户在 UI 上点"允许安装" |
 | `exec_script` | ClawNode ≥ 1.8.0 |
 | `ui_stream` | ClawNode 独有，adb 只能轮询截图 |

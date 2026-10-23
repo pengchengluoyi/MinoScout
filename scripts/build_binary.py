@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib.util
 import os
 import platform
 import shutil
@@ -127,7 +128,7 @@ if getattr(sys, "frozen", False):
     if not (_app / "mino_scout" / "cli.py").is_file():
         sys.stderr.write(
             "mino-scout: app layer missing at %s\\n"
-            "The install is incomplete - reinstall from Mino Studio.\\n" % _app
+            "The install is incomplete - reinstall from Mino Workbench.\\n" % _app
         )
         sys.exit(2)
     sys.path.insert(0, str(_app))
@@ -172,6 +173,26 @@ def scan_external_imports(pkg: str) -> list[str]:
                     found.add(node.module.split(".")[0])
     found.discard(pkg)
     return sorted(found)
+
+
+def hidden_imports(pkg: str) -> list[str]:
+    """只把**本机真的能导入**的名字交给 PyInstaller。
+
+    `scan_external_imports` 是静态扫描，会把 `if sys.platform == "win32"` 分支里
+    的 pywinauto、以及可选 extra（cua_driver）也算进来。跨平台构建时这些模块
+    根本不装，PyInstaller 对每个不存在的 hidden-import 都会报 ERROR；Linux 首次
+    构建就是栽在这里。缺的模块本来也应该由运行时按平台降级，不能因此让打包失败。
+    """
+    names = set(scan_external_imports(pkg)) | set(EXTRA_HIDDEN)
+    out: list[str] = []
+    for name in sorted(names):
+        try:
+            if importlib.util.find_spec(name) is None:
+                continue
+        except (ImportError, AttributeError, ValueError):
+            continue
+        out.append(name)
+    return out
 
 
 def app_dir(dist_dir: Path) -> Path:
@@ -230,7 +251,7 @@ def build(*, clean: bool) -> Path:
     entry = BUILD / "_entry.py"
     entry.write_text(_ENTRY_SRC, encoding="utf-8")
 
-    hidden = sorted(set(scan_external_imports(PKG)) | set(EXTRA_HIDDEN))
+    hidden = hidden_imports(PKG)
     argv = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm", "--clean",
@@ -245,7 +266,6 @@ def build(*, clean: bool) -> Path:
         argv += ["--hidden-import", mod]
     # Optional wheels must include their native library AND distribution metadata.
     # Linux/Windows release readiness is independent from merely bundling a wheel.
-    import importlib.util
     if importlib.util.find_spec("cua_driver") is not None:
         argv += ["--collect-all", "cua_driver", "--copy-metadata", "cua-driver"]
     for pkg in COLLECT_ALL:

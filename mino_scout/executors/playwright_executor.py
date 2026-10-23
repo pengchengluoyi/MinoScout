@@ -227,9 +227,9 @@ class PlaywrightExecutor:
                 return "focus_unavailable: document_check_failed"
         return ""
 
-    # 与 MiniOrangeServer 的 plugins/executors/playwright.yaml 保持一致。
+    # 与 Nexus 能力目录同词表：只声明"我能执行哪些事件"。
     # Web 端按名字点/填，不先 VLM locate —— 所以 cost 比 VLM 路径低。
-    provides = ("ui_native_input", "ui_input_text", "ui_screenshot")
+    provides = tuple(sorted(_SUPPORTED_CAPS | {"screenshot", "hierarchy", "open_url"}))
 
     def probe(self) -> tuple[bool, str]:
         from mino_scout.playwright_hub import PROBE_OK_STATE, probe_playwright

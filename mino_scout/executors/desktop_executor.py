@@ -10,7 +10,8 @@ from mino_scout.schemas import EventStatus
 
 class DesktopExecutor:
     id = "desktop"
-    provides = ["ui_native_input", "ui_input_text", "ui_screenshot", "app_launch_native", "key_event"]
+    # 与 Nexus 能力目录同词表：桌面渠道能执行的事件 id。
+    provides = list(DESKTOP_CAPS)
 
     def probe(self):
         state = get_desktop_runtime().state()

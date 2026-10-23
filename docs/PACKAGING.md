@@ -74,6 +74,11 @@ browser 指纹取所有 revision 目录名而不只是 chromium 的 —— ffmpe
 / `browser/`）+ 安装脚本。层包只是少几个载荷目录，所以 **install 脚本只有一条代码路径**：
 present 的层就装，不 present 的层原地不动。
 
+CI 原生构建三个平台：`darwin-arm64`、`win32-x64`、`linux-x64`（`ubuntu-22.04`，要求
+glibc ≥ 2.35）。Linux 的 browser 层只带 Chromium 二进制，目标机仍需发行版运行库：
+`playwright install-deps chromium`（或对应的 apt/dnf 包）；缺库时 `playwright` 通道会以
+`disconnected` 上报并给出原因。
+
 层包是**增量**，不替代合并包 —— 全新安装本来就要全部字节，拆开只会多几次往返。
 代价是每平台每次发布上传约两倍字节（合并包 + 三个层包）。
 
@@ -135,7 +140,10 @@ app 层的 `layers.txt` 带 `requires_runtime=<rtkey>`。只装 app 层时，ins
 python scripts/build_binary.py --check                         # 冻结 + 真跑一次 probe
 ```
 
-CI 保留 Windows 安装器语法检查、PC SDK 原生库加载、冻结程序真实 probe 与发布包生成。mock、测试脚本及本地回归脚本由 `.gitignore` 屏蔽，不再作为 CI 的仓库文件依赖。
+CI 在三个平台原生冻结并各跑一次真实 probe：`darwin-arm64`、`win32-x64`、`linux-x64`。
+Linux 额外跑 `scripts/check_layered_install.py`（全量装 + app 层增量，确认 browser 目录
+一个字节没动），Windows 保留安装器语法检查与无控制台窗口检查，macOS/Windows 保留 PC SDK
+原生库加载检查。mock、测试脚本及本地回归脚本由 `.gitignore` 屏蔽，不作为 CI 的仓库文件依赖。
 
 ## 0.1.76 Windows 更新与运行身份
 

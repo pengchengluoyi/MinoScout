@@ -37,6 +37,7 @@ PLAYWRIGHT_PARALLEL_LANES = 4
 
 # 幂等缓存保留时长。CONVENTIONS.md §5：该 run 结束或 10 分钟，取先到者。
 _IDEMPOTENT_TTL_SEC = 600.0
+_IDLE_RUN_SEC = 90.0
 
 # adb 已连接但默认输入法被改回系统键盘时，心跳里复检（手机重启后常见）。
 _ADB_IME_DRIFT_CHECK_SEC = 300.0
@@ -890,7 +891,14 @@ class ScoutCore:
         """
         self._requests.stop(run_id, "task_cancelled", {}, terminal=True)
         if self._requests.active(run_id):
+            # 2026-10-23：Nexus 已宣告该 run 结束，但底层请求可能仍挂在旧 future 上。
+            # 以前这里直接 return，run 会一直留在 _active_runs，节点永久 busy，
+            # 之后所有 restart/execute 都被「有活动测试」挡住（实测卡了 20 分钟以上）。
+            # 停止语义是「不再继续」，不是回滚；因此这里照旧保留资源告警，但必须摘掉在途标记。
             SLog.w(TAG, f"cancel run={run_id}：仍有底层动作运行，停止未确认，保留资源")
+            with self._lock:
+                self._active_runs.discard(run_id)
+                self._run_seen.pop(run_id, None)
             return 0
         self._web_v5.close(run_id, time.monotonic() + 2)
         with self._lock:
@@ -1037,12 +1045,19 @@ class ScoutCore:
                 self._cancelled_runs.pop(rid, None)
 
     def _evict_idle_runs(self) -> None:
-        """Nexus 不会发 RUN_DONE。超过幂等 TTL 没再来 EXECUTE 的 run 视为结束。"""
-        cutoff = time.time() - _IDEMPOTENT_TTL_SEC
+        """Nexus 不会发 RUN_DONE。超过幂等 TTL 没再来 EXECUTE 的 run 视为结束。
+
+        另外：一个 run 只要没有在途请求，安静超过 _IDLE_RUN_SEC 就不再算「活动测试」。
+        否则 UI 的截图轮询（同样带 run_id）会把已结束的 run 一直刷新成在途，
+        节点永久 busy，后续 restart/execute 全被挡。
+        """
+        now = time.time()
+        cutoff = now - _IDEMPOTENT_TTL_SEC
+        idle_cutoff = now - _IDLE_RUN_SEC
         with self._lock:
             self._evict_cancelled()
             for rid, ts in list(self._run_seen.items()):
-                if ts < cutoff:
+                if ts < cutoff or (ts < idle_cutoff and not self._requests.active(rid)):
                     self._active_runs.discard(rid)
                     self._run_seen.pop(rid, None)
 

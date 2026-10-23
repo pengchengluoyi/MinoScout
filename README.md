@@ -65,7 +65,7 @@ https://github.com/<owner>/MinoScout/releases/latest/download/manifest.json
 
 `<owner>` 与本仓 `github.repository` 相同。`workflow_dispatch` 会打 `dev-<sha>` 预发布，**不会**改写 `latest`。
 
-推送 `v*` tag 或手动运行工作流时，会并行构建 macOS Apple Silicon（`darwin-arm64`）和 Windows x64（`win32-x64`），各自执行冻结程序自检，再上传到同一个 Release。Windows 合并包为 `MinoScout-<版本>-win32-x64.zip`，包含 `mino-scout.exe` 及运行依赖，无需另装 Python；解压后运行包内的 `install.ps1` 安装。每个平台还会发布 `app`、`runtime`、`browser` 三个层包，统一记录在 `manifest.json` 中。
+推送 `v*` tag 或手动运行工作流时，会并行构建 macOS Apple Silicon（`darwin-arm64`）、Windows x64（`win32-x64`）和 Linux x64（`linux-x64`，在 ubuntu-22.04 上冻结，要求 glibc ≥ 2.35），各自执行冻结程序自检，再上传到同一个 Release。Windows 合并包为 `MinoScout-<版本>-win32-x64.zip`，包含 `mino-scout.exe` 及运行依赖，无需另装 Python；解压后运行包内的 `install.ps1` 安装。Linux 合并包为 `MinoScout-<版本>-linux-x64.zip`，解压后运行包内的 `install.sh`，由 systemd（用户级或 root）注册服务；Web 渠道还需目标机具备 Chromium 运行库（`playwright install-deps chromium`）。每个平台还会发布 `app`、`runtime`、`browser` 三个层包，统一记录在 `manifest.json` 中。
 
 本机只打当前系统的 zip：
 

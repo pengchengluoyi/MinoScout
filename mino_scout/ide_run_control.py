@@ -158,13 +158,11 @@ def control(client, binding, operation_id, on_stage, *, action):
         raise IDEError('当前配置在 IDE 中有多个活动会话，未选择其他配置或停止所有匹配实例')
     if action == 'execute' and before['state'] == 'running':
         return {'state': 'ready', 'runtime': before, 'process_running': True, 'reused_existing': True}
-    if action == 'restart':
-        try:
-            ancestors = {os.getpid(), *(p.pid for p in psutil.Process().parents())}
-        except (psutil.Error, OSError) as exc:
-            raise IDEError('无法确认执行节点的进程身份，尚未发送重启') from exc
-        if any(r.get('pid') in ancestors for r in before['instances']):
-            raise IDEError('目标配置运行着当前执行节点；分步停止将中断本次操作', reason_code='ide_controller_restart')
+    # 2026-10-23：取消「目标配置运行着当前执行节点」的自我拒绝。
+    # 停止是按 sessionId 定位的（stop_run_configuration 传 sessionId + configurationName），
+    # 与 pid 无关；而 pid 只是 inspect_running 的观测值，Scout 作为独立进程（ppid=1）
+    # 与目标配置同目录时会被误认成同一实例，于是重启被误拒。
+    # 真正会自伤的场景（Scout 被目标配置直接拉起）由 IDE 的会话归属决定，这里不再猜。
     context = {'provider': 'run_control_mcp', 'action': action, 'operation_id': operation_id,
                'binding': binding, 'previous_instances': before['instances'], 'before_runtime': before,
                'control_connection': getattr(client, 'control_connection', {'url': client.url})}

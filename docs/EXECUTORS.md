@@ -12,7 +12,6 @@
 |---|:--:|:--:|:--:|:--:|
 | `system_shell` | ✅ | 受限 | — | — |
 | `system_pkg_install` | ✅ 静默 | ⚠️ 需用户点"允许" | — | — |
-| `system_pkg_clear` | ✅ | ⚠️ 需 device_owner | — | — |
 | `read_system_data` | ✅ | 受限 | — | — |
 | `ui_native_input` | ✅ | ✅ | ✅ | ✅ |
 | `ui_input_text` | ✅ | ✅ | ✅ | ✅ |

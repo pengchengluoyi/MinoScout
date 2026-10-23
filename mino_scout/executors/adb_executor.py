@@ -261,22 +261,15 @@ class AdbExecutor:
         except Exception as exc:  # noqa: BLE001 — 不重放已执行点击，缺引用交给原有恢复。
             SLog.w(TAG, f"input focus capture failed: {type(exc).__name__}")
 
-    # 上报给 Nexus 的 abstract cap（协议 §4.1 的 executors[].provides）。
-    # 词表真源是 Nexus 的 abstract_caps.yaml —— 本仓只报字符串，不解释含义。
-    # 与 MiniOrangeServer 的 plugins/executors/adb.yaml 保持一致。
-    provides = (
-        "system_shell",
-        "system_pkg_install",
-        "system_pkg_clear",
-        "read_system_data",
-        "ui_native_input",
-        "ui_input_text",
-        "ui_screenshot",
-        "app_launch_native",
-        "app_force_stop",
-        "clipboard_set",
-        "key_event",
-    )
+    # 上报给 Nexus 的执行能力：与 Nexus 能力目录同词表（同一批具体事件 id）。
+    # 每个渠道（adb / playwright / desktop）用同一套字段，只声明"我能执行哪些事件"，
+    # 这样跨渠道配置可以直接逐字段对比，排查时不必在两套词汇之间翻译。
+    # 观察类事件（screenshot / hierarchy / probe_device_state）也由 adb 提供。
+    provides = tuple(sorted(_SUPPORTED_CAPS | {
+        "clear_app_cache", "screenshot", "hierarchy", "probe_device_state",
+        # 系统级恢复能力：走 low_level 兜底执行（wake 用 keyevent，解锁用 swipe/keyevent）。
+        "wake_screen", "dismiss_keyguard",
+    }))
 
     def probe(self) -> tuple[bool, str]:
         """adb 二进制在不在。具体设备的连通性在 devices[].channels 里报。"""
@@ -291,7 +284,7 @@ class AdbExecutor:
         return True, ""
 
     def supports(self, capability_id: str, low_level: Optional[dict[str, Any]] = None) -> bool:
-        return capability_id in {"clear_app_cache", "system_pkg_clear"} or capability_id in _SUPPORTED_CAPS or _runnable_low_level(low_level)
+        return capability_id == "clear_app_cache" or capability_id in _SUPPORTED_CAPS or _runnable_low_level(low_level)
 
     def execute(self, event: PlanEvent, ctx: ExecutorContext) -> EventResult:
         started_at = _now_iso()
@@ -323,7 +316,7 @@ class AdbExecutor:
                     "adb serial 缺失：EXECUTE.device_hint 未带 adb_serial（Nexus 侧应注入）",
                 )
 
-            if cap in {"clear_app_cache", "system_pkg_clear"}:
+            if cap == "clear_app_cache":
                 from mino_scout.executors.app_cache import clear_app_cache
                 package = str((event.params or {}).get("package")
                               or ctx.device.extra.get("target_package", "") or "").strip()

@@ -62,8 +62,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 在各自平台原生冻结：macOS Apple Silicon + Windows x64。
-        os: [macos-latest, windows-latest]
+        # 在各自平台原生冻结：macOS Apple Silicon + Windows x64 + Linux x64。
+        # Linux 用 ubuntu-22.04（glibc 2.35），比 ubuntu-latest 兼容更多发行版。
+        os: [macos-latest, windows-latest, ubuntu-22.04]
 
     steps:
       - uses: actions/checkout@v5
@@ -91,6 +92,7 @@ jobs:
         if: runner.os == 'macOS' || runner.os == 'Windows'
         run: python -m pip install ".[desktop]"
       - name: Validate PC SDK native library
+        if: runner.os != 'Linux'
         run: python -c "import cua_driver; from importlib.metadata import version; assert version('cua-driver') == '0.34.1'; print('PC SDK native library loaded')"
       - name: Verify real Windows credential storage
         if: runner.os == 'Windows'
@@ -117,6 +119,9 @@ jobs:
           SCOUT_VERSION: ${{ needs.meta.outputs.version }}
           MINO_SCOUT_SKIP_BROWSER: "1"
         run: python scripts/pack_release.py --out dist --binary
+      - name: Verify layered install (Linux)
+        if: runner.os == 'Linux'
+        run: python scripts/check_layered_install.py --dist dist
       - name: Verify installed Windows Scout has no visible console
         if: runner.os == 'Windows'
         shell: bash

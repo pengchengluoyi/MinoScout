@@ -83,15 +83,20 @@
   "studio_id": "a1b2c3d4e5f67890",
   "executors": [
     {"id": "adb", "available": true,
-     "provides": ["system_shell","system_pkg_install","system_pkg_clear","read_system_data",
-                  "ui_native_input","ui_input_text","ui_screenshot",
-                  "app_launch_native","app_force_stop","clipboard_set","key_event"]},
+     "provides": ["launch_app","close_app","kill_app","press_key","wait_ms",
+                  "swipe_direction","swipe_element_to_element","install_apk",
+                  "read_device_data","get_app_version","get_foreground_app",
+                  "set_clipboard","tap_element","multi_tap","long_press_element",
+                  "input_text","exec_script","set_input_method","clear_app_cache",
+                  "screenshot","hierarchy","probe_device_state"]},
     {"id": "remote", "available": true,
-     "provides": ["ui_native_input","ui_input_text","ui_screenshot","ui_stream",
-                  "app_launch_native","clipboard_set","key_event","system_pkg_install",
-                  "read_system_data","exec_script"]},
+     "provides": ["launch_app","close_app","press_key","tap_element","input_text",
+                  "screenshot","hierarchy","probe_device_state","get_foreground_app"]},
     {"id": "ios_wda", "available": false, "provides": [], "reason": "no WDA runtime"},
-    {"id": "playwright", "available": true, "provides": ["ui_native_input","ui_screenshot"]}
+    {"id": "playwright", "available": true,
+     "provides": ["tap_element","tap_xy","input_text","press_key","screenshot",
+                  "hierarchy","launch_app","close_app","get_foreground_app",
+                  "open_url","reload_page","read_web_auth"]}
   ],
   "devices": [
     {"sn": "R5CT30xxxx", "platform": "android", "model": "SM-S9210",
@@ -109,7 +114,7 @@
 | `hostname` | 本机主机名，可空。只作展示 |
 | `studio_id` | 写入本机 Scout 配置的工作台 id（`[a-z0-9]{16}`），可空。Nexus 据此记归属 |
 | `executors[].id` | 必须是 `adb` / `remote` / `ios_wda` / `playwright` / `desktop` 之一 |
-| `executors[].provides` | **abstract cap id 列表**。取值域由 `catalog_entries`（`kind=abstract_cap`）定义（Nexus 侧真源），Scout 只报字符串 |
+| `executors[].provides` | **具体能力 id 列表**（与 Nexus `catalog_entries` 同一词表，例如 `tap_element`/`clear_app_cache`）。每个渠道用同一套字段声明自己能执行哪些事件，实现可以不同（adb/WDA/playwright/desktop 各写一份），但字段名与取值域一致，便于跨渠道逐字段对比。旧 Scout 上报的抽象通道名（`ui_native_input`/`system_shell`…）仍按 `requires_caps` 兼容匹配 |
 | `account_isolation_version` | 新版 Scout 固定上报 `1`，表示会在收到已认证 owner 后才恢复本地插件；缺失或不支持时 Nexus 拒绝注册（1008），不会消费安装凭证。旧节点需升级后重新连接 |
 | `executors[].available` | `false` 时 `provides` 必须为空数组，并给 `reason` |
 | `devices[].channels` | 取值：`connected` / `disconnected` / `unauthorized` / `not_applicable` |

@@ -106,13 +106,8 @@ def control(client, binding, operation_id, on_stage, *, action):
         return ide_run_control.control(client, binding, operation_id, on_stage, action=action)
     before = read_state(client, binding)
     _require_managed(before)
-    try:
-        controllers = {os.getpid(), *(proc.pid for proc in psutil.Process().parents())}
-    except (psutil.Error, OSError) as exc:
-        raise IDEError("无法核对 Scout 控制进程身份，尚未发送停止或启动请求") from exc
-    if action == "restart" and any(row["pid"] > 0 and row["pid"] in controllers for row in before["instances"]):
-        raise IDEError("所选配置包含执行本次操作的 Scout，停止它会中断后续启动", reason_code="ide_controller_restart",
-                       remediation="由同机另一在线 Scout 连接此 Debugger MCP 执行，避免由目标 Scout 停止自己后丢失启动步骤。")
+    # 2026-10-23：与 ide_run_control 同步取消自我拒绝。停止按会话/实例定位，
+    # pid 只是观测值；Scout 独立进程与目标配置同目录时会被误认成同一实例。
     context = {"provider": "debugger_mcp", "action": action, "operation_id": operation_id,
                "binding": binding, "previous_instances": before["instances"]}
     client.deadline = time.monotonic() + 115
