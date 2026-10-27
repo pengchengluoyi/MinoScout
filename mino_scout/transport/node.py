@@ -382,11 +382,6 @@ class NodeTransport:
                     self.request_shutdown()
             # 不要立刻重试 —— 退避由 run_forever 负责（协议 §4.2）
             raise RuntimeError(f"Nexus 拒绝注册: {reg.reason or '未给原因'}")
-        if reg.protocol_version != P.PROTOCOL_VERSION:
-            raise RuntimeError(
-                f"协议版本不一致：Scout v{P.PROTOCOL_VERSION} vs Nexus v{reg.protocol_version}。"
-                "按协议 §7 不做降级协商"
-            )
         if reg.platform_contract_version != 1 or type(reg.platform_contract_version) is not int:
             raise RuntimeError("Nexus 未确认平台合同 v1，请升级 Nexus")
         self.core.binding_guard.set_connection(reg.node_connection_generation)
@@ -588,9 +583,6 @@ class NodeTransport:
         except Exception as exc:
             SLog.e(TAG, f"解码失败，忽略: {type(exc).__name__}: {exc}")
             return
-
-        if env.v != P.PROTOCOL_VERSION:
-            raise RuntimeError(f"Nexus 用了协议 v{env.v}，本 Scout 是 v{P.PROTOCOL_VERSION}")
 
         # 应答类消息交给等待者
         if env.reply_to and env.reply_to in self._waiters:

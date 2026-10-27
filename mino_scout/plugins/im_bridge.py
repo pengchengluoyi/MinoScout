@@ -79,7 +79,9 @@ def ingest(
                         item = {**item, 'base64': base64.b64encode(content).decode(), 'mime': mime}
                     normalized.append(save(im, item))
                 except Exception as exc:
-                    reason = str(exc) if isinstance(exc, ValueError) else '附件读取失败，请检查当前渠道的资源读取权限后重新发送。'
+                    SLog.w(TAG, f"附件读取失败 channel={channel} kind={item.get('kind')} type={type(exc).__name__}")
+                    reason = (str(exc) if isinstance(exc, (ValueError, RuntimeError)) and str(exc)
+                              else '附件读取失败，请稍后重新发送；若持续失败，请检查当前渠道的资源读取权限。')
                     normalized.append({'kind': str(item.get('kind') or ''), 'ref': '', 'error': reason[:300]})
         im['attachments'] = normalized
     if meta.get('quoted_text'):

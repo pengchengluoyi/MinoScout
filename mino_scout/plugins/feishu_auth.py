@@ -57,11 +57,11 @@ def _url(line: str) -> str:
             return value
     return ""
 
-def run_json(args: list[str], *, home: Path | None = None) -> dict:
+def run_json(args: list[str], *, home: Path | None = None, cwd: Path | None = None) -> dict:
     home = home or root()
     entry = _safe_entry(home.parent, "invoke")
     try:
-        result = subprocess.run([str(entry), *args], cwd=home.parent, env=_env(home),
+        result = subprocess.run([str(entry), *args], cwd=str(cwd or home.parent), env=_env(home),
                                 stdin=subprocess.DEVNULL, capture_output=True, timeout=90)
         payload = json.loads(result.stdout)
     except (OSError, ValueError, subprocess.TimeoutExpired):

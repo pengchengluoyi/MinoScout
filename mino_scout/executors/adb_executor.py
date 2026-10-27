@@ -845,7 +845,7 @@ class AdbExecutor:
         if x is None or y is None:
             policy = str((event.params or {}).get("point_policy") or "")
             if policy == "node":
-                reason = "DOM 点击锚点未命中，不用坐标兜底"
+                reason = "DOM 点击锚点未命中且未给坐标"
             elif policy == "coordinate":
                 reason = "视觉点击缺少坐标"
             else:
@@ -891,8 +891,9 @@ class AdbExecutor:
         if policy in ("coordinate", "node"):
             x, y, _audit, how = self._point_for(event, serial)
             if x is None or y is None:
+                # 同上：锚点未命中且没有任何坐标，才是真的没法执行。
                 if policy == "node":
-                    return self._fail(event, started_at, t0, "DOM 连点锚点未命中，不用坐标兜底")
+                    return self._fail(event, started_at, t0, "DOM 连点无锚点也无坐标")
                 return self._fail(event, started_at, t0, "视觉连点缺少坐标")
             scale = how in ("xy", "fallback_xy")
         else:
@@ -1026,9 +1027,9 @@ class AdbExecutor:
         x, y, audit, how = self._point_for(event, serial)
         if x is None or y is None:
             if policy == "node":
-                return self._fail(event, started_at, t0, "DOM 输入锚点未命中，不用坐标兜底")
+                return self._fail(event, started_at, t0, "DOM 输入无锚点也无坐标")
             return self._fail(event, started_at, t0, "视觉输入缺少坐标")
-        self._inject_tap(serial, x, y, scale=how == "xy")
+        self._inject_tap(serial, x, y, scale=how in ("xy", "fallback_xy"))
         # adb input text 不支持中文 / 空格；空格转 %s
         safe_text = str(text).replace(" ", "%s")
         rc, out, err = self._adb_shell(serial, "input", "text", safe_text)
@@ -1097,10 +1098,31 @@ class AdbExecutor:
             ax, ay, audit = self._resolve_anchor_xy(event, serial)
             audit = {**audit, "point_policy": "node"}
             if ax is None or ay is None:
+                # 锚点没命中不是拒绝执行的理由：Nexus 已经算好的坐标就是指令。
+                # 回「不用坐标兜底」会把整条用例判死（cr-9f7f478af02c 的 21 条弹窗），
+                # 而 Scout 的职责是执行收到的指令，不是替 Nexus 决定策略。
+                fy = raw.get("fallback_xy")
+                if isinstance(fy, (list, tuple)) and len(fy) == 2:
+                    try:
+                        return int(fy[0]), int(fy[1]), {**audit, "point_policy": "anchor_fallback"}, "fallback_xy"
+                    except (TypeError, ValueError):
+                        pass
+                fx, fyy = raw.get("x"), raw.get("y")
+                if fx is not None and fyy is not None:
+                    try:
+                        return int(fx), int(fyy), {**audit, "point_policy": "anchor_fallback"}, "xy"
+                    except (TypeError, ValueError):
+                        pass
                 return None, None, audit, "none"
             return ax, ay, audit, "anchor"
         x, y = raw.get("x"), raw.get("y")
         if x is None or y is None:
+            fy = raw.get("fallback_xy")
+            if isinstance(fy, (list, tuple)) and len(fy) == 2:
+                try:
+                    return int(fy[0]), int(fy[1]), {"point_policy": "coordinate"}, "fallback_xy"
+                except (TypeError, ValueError):
+                    pass
             return None, None, {"point_policy": "coordinate"}, "none"
         try:
             x, y = int(x), int(y)

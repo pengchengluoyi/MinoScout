@@ -94,9 +94,12 @@ def resource(message_id: str, item: dict) -> tuple[bytes, str]:
         raise ValueError('不支持的附件类型')
     with tempfile.TemporaryDirectory(prefix='mino-feishu-media-') as directory:
         target = Path(directory) / 'attachment.bin'
+        # The CLI only writes under trusted roots (cwd, /tmp, ~/files). Its own
+        # cwd is always trusted, so run the download from the private temp dir
+        # instead of relying on the platform default temp path.
         data = feishu_auth.run_json(['im', '+messages-resources-download', '--message-id', message_id,
                                     '--file-key', key, '--type', 'image' if kind == 'image' else 'file',
-                                    '--output', str(target), '--as', 'bot'])
+                                    '--output', str(target), '--as', 'bot'], cwd=Path(directory))
         saved = Path(str(data.get('saved_path') or target))
         if saved.is_symlink() or saved.resolve().parent != Path(directory).resolve() or not saved.is_file():
             raise ValueError('附件下载结果不在临时目录内')

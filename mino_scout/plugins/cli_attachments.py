@@ -18,6 +18,22 @@ def failure(summary: str, *, uncertain: bool = False) -> dict:
                 '结果未知时先核对已上传的附件，不要重复创建或上传。' if uncertain else '修正上述问题后继续原请求。']}
 
 
+def _auto_field(node_id: str, options: dict) -> str:
+    """模型漏填附件字段时，仅在空间里存在唯一文件字段时自动使用它。"""
+    from mino_scout.plugins.cli_bridge import _meego_api
+
+    result = _meego_api(node_id, ['workitem', 'meta-fields'], {
+        'project-key': options.get('project-key'),
+        'work-item-type': options.get('work-item-type'),
+    })
+    data = result.get('data') if isinstance(result, dict) else None
+    fields = data if isinstance(data, list) else (data.get('fields') if isinstance(data, dict) else [])
+    candidates = [row for row in fields or [] if isinstance(row, dict)
+                  and str(row.get('field_type_key') or '') in {'multi_file', 'attachment', 'file'}
+                  and row.get('field_key')]
+    return str(candidates[0]['field_key']) if len(candidates) == 1 else ''
+
+
 def prepare(ref: str, options: dict, origin: dict) -> tuple[bytes, str, str]:
     from mino_scout.plugins import im_store
     from mino_scout.plugins.im_attachments import MAX_BYTES
@@ -93,6 +109,12 @@ def create(node_id: str, options: dict, attachments: list[dict], origin: dict) -
     if isinstance(params, str):
         params = json.loads(params)
     fields = [dict(item) for item in params.get('fields') or []]
+    for item in attachments:
+        if isinstance(item, dict) and str(item.get('field_key') or '') == '__auto__':
+            field_key = _auto_field(node_id, options)
+            if not field_key:
+                return failure('这个空间没有唯一的文件附件字段，无法自动挂载截图；请先查询字段后指定 field-key，本次尚未创建。')
+            item['field_key'] = field_key
     field_modes = {}
     for item in attachments:
         if not isinstance(item, dict):
