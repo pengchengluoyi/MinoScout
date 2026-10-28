@@ -35,8 +35,10 @@ def build_core() -> ScoutCore:
     executors: dict = {}
 
     from mino_scout.executors.adb_executor import AdbExecutor
+    from mino_scout.executors.ios_wda_executor import IosWdaExecutor
 
     executors["adb"] = AdbExecutor()
+    executors["ios_wda"] = IosWdaExecutor()
 
     try:
         from mino_scout.executors.playwright_executor import PlaywrightExecutor

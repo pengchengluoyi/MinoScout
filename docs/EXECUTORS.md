@@ -136,6 +136,19 @@ ADB 声明的 supports 与实际 low_level 解释器保持一致：shell 使用�
 
 除设备执行器外，`host_plugin` manifest 为既有插件处理器声明唯一具名读取 `plugin.gmail.fetch_otp`。它不属于设备 UI 通道，不进入设备 fallback，不改变设备 provides 矩阵。插件账号归属核验前 unavailable；configured 由独立插件状态与 Nexus 依赖合同核对。绑定请求必须使用完整 v1 投影，不能以空执行器或其他设备执行器取码。其他插件仍沿用原合同，不自动取得绑定资格。
 
+## 环境自证 `self_prove`
+
+用例要一次核对设备、安装包和节点，而不是靠人记住 UDID、签名和端口。能力 id 是 `self_prove`。回执形状在 [PROTOCOL.md](PROTOCOL.md) §4.4.3，协议版本不变。
+
+| 执行器 | 读什么 | 不读什么 |
+|---|---|---|
+| `adb` | `getprop`（与 `read_device_data` 的 serial / model / 版本同一批属性）、`dumpsys package`（与 `get_app_version` 同一个解析）、`pm path` 后对已安装 `base.apk` 做 sha256 与 md5 | 不哈希安装前的宿主机 APK；不拨 WDA / Appium |
+| `ios_wda` | `ideviceinfo` / `ideviceinstaller`（二进制已在 PATH 时），以及 hint 里给出的 WDA `/wda/device/info` 与 `/status` | 不把 Appium 当第二条驱动去拨；iOS 安装包字节摘要留空并写入 `missing` |
+
+`get_app_version` 额外带回这份 dumpsys 里的 `install_path` 与 `signing`，不在查版本时哈希 APK。`read_device_data` 的 `key` 增加 `serial` / `serialno` / `boot_serial`。驱动 URL 只接受 hint 里已经写明、且带端口的 http(s)。
+
+`ios_wda` 目前只声明 `self_prove`。其它 iOS 动作仍未搬迁，不会在这个执行器里用 `if backend == appium` 分叉。
+
 ## V7 路由约束（2026-10-20）
 
 普通设备动作只执行 EXECUTE 指定的一个 executor，selected_impl.executor 必须一致。任何执行状态都不尝试后备执行器；保留实际 executor_used、attempts 和 execution 写边界证据。旧版依次 fallback 的说明不再适用。

@@ -5,7 +5,7 @@
 支持的 capability：
   - launch_app / close_app / press_key / wait_ms
   - swipe_direction / install_apk / read_device_data / set_clipboard
-  - get_app_version / get_foreground_app
+  - get_app_version / get_foreground_app / self_prove
   - tap_element / multi_tap / input_text (需 VLM 在 ctx.screen 上先定位)
 """
 from __future__ import annotations
@@ -118,6 +118,7 @@ _SUPPORTED_CAPS: set[str] = {
     "read_device_data",
     "get_app_version",
     "get_foreground_app",
+    "self_prove",
     "set_clipboard",
     "tap_element",
     "multi_tap",
@@ -297,7 +298,7 @@ class AdbExecutor:
         # Nexus 在 tap 与 input_text 之间会按 run_id 多次下发 probe_device_state（recovery_evidence）。
         if cap not in (
             "tap_element", "input_text", "wait_ms", "get_foreground_app",
-            "probe_device_state", "read_device_data", "get_app_version",
+            "probe_device_state", "read_device_data", "get_app_version", "self_prove",
         ):
             self._focus_actions.pop(focus_key, None)
         # 上游是 ctx.run_context.adb["serial"]（RunContext 查库 + 跑 connectivity_probe
@@ -311,6 +312,8 @@ class AdbExecutor:
                     summary=f"adb 不服务 web 槽 sn={ctx.device.sn}",
                 )
             if not serial:
+                if cap == "self_prove":
+                    return self._self_prove(event, ctx, "", started_at, t0)
                 return self._fail(
                     event, started_at, t0,
                     "adb serial 缺失：EXECUTE.device_hint 未带 adb_serial（Nexus 侧应注入）",
@@ -345,6 +348,8 @@ class AdbExecutor:
                 return self._read_device_data(event, ctx, serial, started_at, t0)
             if cap == "get_app_version":
                 return self._get_app_version(event, ctx, serial, started_at, t0)
+            if cap == "self_prove":
+                return self._self_prove(event, ctx, serial, started_at, t0)
             if cap == "get_foreground_app":
                 return self._get_foreground_app(event, ctx, serial, started_at, t0)
             if cap == "set_clipboard":
@@ -655,6 +660,9 @@ class AdbExecutor:
             "sim_state": "gsm.sim.state",
             "operator": "gsm.operator.alpha",
             "phone_number": "gsm.line1.number",
+            "serial": "ro.serialno",
+            "serialno": "ro.serialno",
+            "boot_serial": "ro.boot.serialno",
         }
         prop = prop_map.get(key, key)
         rc, out, err = self._adb_shell(serial, "getprop", prop)
@@ -779,6 +787,9 @@ class AdbExecutor:
         rc, out, err = self._adb_sh_script(serial, version_dump_shell(pkg), timeout_sec=20.0)
         elapsed = int((time.time() - t0) * 1000)
         parsed = parse_package_version(out)
+        from mino_scout.self_prove import parse_code_path, parse_signing
+
+        identity = {"install_path": parse_code_path(out), "signing": parse_signing(out)}
         name = str(parsed.get("version_name") or "").strip()
         if rc == 0 and name:
             # 上游这里调 stamp_app_version(ctx, name) 把版本写回 RunContext。
@@ -788,13 +799,36 @@ class AdbExecutor:
             return make_event_result(
                 event, status=EventStatus.PASS, executor_used=self.id, started_at=started_at,
                 elapsed_ms=elapsed, summary=f"{pkg} {name}{extra}",
-                raw_response={"package": pkg, **parsed, "rc": rc},
+                raw_response={"package": pkg, **parsed, "rc": rc, **identity},
             )
         return make_event_result(
             event, status=EventStatus.FAIL, executor_used=self.id, started_at=started_at,
             elapsed_ms=elapsed, summary=f"读不到 {pkg} 的版本",
             error=err or out or f"rc={rc}",
-            raw_response={"package": pkg, **parsed, "rc": rc, "stdout": (out or "")[:400]},
+            raw_response={"package": pkg, **parsed, "rc": rc, "stdout": (out or "")[:400], **identity},
+        )
+
+    def _self_prove(self, event, ctx, serial, started_at, t0):
+        from mino_scout.probe.android_proof import prove_android
+
+        package = str((event.params or {}).get("package") or ctx.device.extra.get("target_package") or "").strip()
+        proof = prove_android(
+            serial=serial,
+            package=package,
+            node_id=str(ctx.device.extra.get("scout_node_id") or ""),
+            hint=ctx.device.extra,
+            script=lambda text, timeout=15.0: self._adb_sh_script(serial, text, timeout_sec=timeout),
+            argv=lambda *args, timeout=15.0: self._adb_shell(serial, *args, timeout_sec=timeout),
+        )
+        return make_event_result(
+            event,
+            status=EventStatus.PASS if proof.ok else EventStatus.FAIL,
+            executor_used=self.id,
+            started_at=started_at,
+            elapsed_ms=int((time.time() - t0) * 1000),
+            summary=proof.summary,
+            error=proof.error,
+            raw_response=proof.data,
         )
 
     def _get_foreground_app(self, event, ctx, serial, started_at, t0):

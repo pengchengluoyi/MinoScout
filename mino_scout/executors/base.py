@@ -49,6 +49,8 @@ class DeviceRef:
             return frozenset({"desktop"})
         if plat == "android":
             return frozenset({"adb", "remote"})
+        if plat == "ios":
+            return frozenset({"ios_wda"})
         return frozenset()
 
 

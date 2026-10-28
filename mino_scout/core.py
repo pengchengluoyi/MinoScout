@@ -1116,13 +1116,23 @@ def _event_from_execute(req: P.Execute) -> PlanEvent:
 
 def _device_from_execute(req: P.Execute, *, node_id: str = "") -> DeviceRef:
     hint = dict(req.device_hint or {})
-    if req.platform in {"mac", "win"} or str(req.sn).startswith(("mac:", "win:")):
-        import platform as host_platform
-        from mino_scout.platform_contract import native_request_platform
-        native_request_platform({"platform": req.platform, "sn": req.sn, "device_hint": hint},
-                                node_id=node_id, host_system=host_platform.system())
-    from mino_scout.platform_contract import execute_platform
-    platform = execute_platform({"platform":req.platform,"device_hint":hint})
+    from mino_scout.platform_contract import PlatformContractError, execute_platform
+    # V7 targets stay mac/win/android/web. iOS self-prove is selected by executor
+    # ios_wda; platform "" or "ios" names that proof family only.
+    ios_proof = req.capability_id == "self_prove" and list(req.executor_order or []) == ["ios_wda"]
+    if ios_proof:
+        if type(req.platform) is not str or req.platform not in ("", "ios"):
+            raise PlatformContractError("self_prove_platform_conflict", "platform")
+        if hint.get("platform", "") not in ("", "ios"):
+            raise PlatformContractError("self_prove_platform_conflict", "device_hint.platform")
+        platform = "ios"
+    else:
+        if req.platform in {"mac", "win"} or str(req.sn).startswith(("mac:", "win:")):
+            import platform as host_platform
+            from mino_scout.platform_contract import native_request_platform
+            native_request_platform({"platform": req.platform, "sn": req.sn, "device_hint": hint},
+                                    node_id=node_id, host_system=host_platform.system())
+        platform = execute_platform({"platform": req.platform, "device_hint": hint})
     sn = str(req.sn or req.device_id or hint.get("sn") or hint.get("device_id") or "").strip()
     device_id = str(req.device_id or sn).strip()
 
@@ -1137,6 +1147,7 @@ def _device_from_execute(req: P.Execute, *, node_id: str = "") -> DeviceRef:
              if k not in {"platform", "adb_serial", "udid", "password", "model", "sn", "device_id"}}
     if req.run_id:
         extra["run_id"] = str(req.run_id)
+    extra["scout_node_id"] = str(node_id or "")
 
     return DeviceRef(
         sn=sn or device_id,
