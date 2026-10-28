@@ -734,6 +734,19 @@ class ScoutCore:
                 "tabs": dump.tabs or [],
                 "elapsed_ms": int(dump.elapsed_ms or 0),
             }
+        if str(device.platform or "") == "ios":
+            from mino_scout.wda_session import WdaError, client_for
+
+            try:
+                xml = client_for(device.udid or device.sn).source()
+            except WdaError as exc:
+                return EventStatus.FAIL, {"error": str(exc), "source": "ios_wda"}
+            return EventStatus.PASS, {
+                "source": "ios_wda",
+                "hierarchy_text": xml,
+                "summary": "已读取 iOS 界面结构",
+                "extra": {"hierarchy_text": xml, "text": xml[:4000]},
+            }
         if not device.adb_serial or device.adb_serial.startswith("claw-"):
             return EventStatus.FAIL, {
                 "error": "hierarchy 目前只支持 adb 通道（remote/ios_wda 待 E3 搬迁）",
@@ -1255,6 +1268,14 @@ def _discover_devices(executors: dict[str, Executor], *, scout_id: str) -> list[
     out: list[P.DeviceManifest] = [native] if native is not None else []
     if "adb" in executors:
         out.extend(_discover_adb_devices())
+    if "ios_wda" in executors:
+        from mino_scout.wda_session import list_attached_devices
+
+        for row in list_attached_devices():
+            out.append(P.DeviceManifest(
+                sn=row["udid"], platform="ios", model=row.get("name") or "",
+                channels={"ios": row.get("state") or "disconnected"},
+            ))
     if "playwright" in executors:
         from mino_scout.playwright_hub import PROBE_OK_STATE, probe_playwright, web_slot_sn
 

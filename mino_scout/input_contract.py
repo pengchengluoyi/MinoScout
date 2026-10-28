@@ -34,6 +34,15 @@ def runtime_input_capabilities() -> list[dict[str, Any]]:
                 {"target_mode": "coordinate", "write_modes": ["replace"]},
             ],
         },
+        {
+            "id": "input_text",
+            "executor": "ios_wda",
+            "platform": "ios",
+            "contract_version": 2,
+            "supported_combinations": [
+                {"target_mode": "current_focus", "write_modes": ["replace"]},
+            ],
+        },
     ]
 
     rows.append({"id": "node.update", "executor": "core", "platform_scope": "all", "platforms": [],

@@ -47,6 +47,8 @@ def build_core() -> ScoutCore:
 
     from mino_scout.executors.desktop_executor import DesktopExecutor
     executors["desktop"] = DesktopExecutor()
+    from mino_scout.executors.wda_executor import WdaExecutor
+    executors["ios_wda"] = WdaExecutor()
     return ScoutCore(executors)
 
 

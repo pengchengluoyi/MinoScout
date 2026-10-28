@@ -507,12 +507,13 @@ def has_target(params: dict[str, Any]) -> bool:
 
 
 def lift_text_anchor(params: dict[str, Any]) -> dict[str, Any]:
-    """把 selector_text / description 提升为 params.target，供 resolve_target 使用。
-
-    决策模型常只给可见文案，不给 target{}。不提升的话执行侧只能盲点坐标，
-    底栏 Tab 很容易点到系统手势条上 —— 命令成功、界面不动。
-    """
+    """把 selector_text / description / 字符串 target 提升为 params.target。"""
     p = dict(params or {})
+    raw_target = p.get("target")
+    if isinstance(raw_target, str) and raw_target.strip():
+        label = raw_target.strip().strip("「」\"'")
+        p["target"] = {"text": label, "content_desc": label}
+        return p
     if has_target(p):
         return p
     target = dict(p.get("target") or {}) if isinstance(p.get("target"), dict) else {}

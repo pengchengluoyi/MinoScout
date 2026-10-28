@@ -312,6 +312,19 @@ def capture(
             device_hint=dict(device.extra or {}),
             screenshot_params=screenshot_params,
         )
+    elif device.platform == "ios":
+        from mino_scout.wda_session import WdaError, client_for
+
+        try:
+            image = client_for(device.udid or device.sn).screenshot()
+            raw = base64.b64decode(image)
+            width, height = peek_png_size(raw)
+            shot = CapturedScreen(
+                ok=True, source="ios_wda", image_base64=image, image_mime="image/png",
+                width=width, height=height, elapsed_ms=int((time.time() - started) * 1000),
+            )
+        except (WdaError, ValueError) as exc:
+            shot = CapturedScreen(ok=False, source="ios_wda", error=str(exc))
     elif device.platform == "android":
         shot = capture_via_adb(
             device.adb_serial,

@@ -5,7 +5,7 @@ Installing these helpers does not advertise or activate the new wire contract.
 """
 from __future__ import annotations
 
-TARGET_PLATFORMS = ("mac", "win", "android", "web")
+TARGET_PLATFORMS = ("mac", "win", "android", "ios", "web")
 NATIVE_PLATFORMS = frozenset({"mac", "win"})
 HOST_SYSTEMS = frozenset({"mac", "win", "linux"})
 PLATFORM_CONTRACT_VERSION = 1
@@ -212,7 +212,7 @@ def runtime_capabilities_contract(rows, *, system):
             seen.add(key)
             if executor == "desktop" and (p not in NATIVE_PLATFORMS or p != system):
                 raise PlatformContractError("executor_platform_conflict")
-            if executor in {"adb", "playwright"} and p != {"adb": "android", "playwright": "web"}[executor]:
+            if executor in {"adb", "playwright", "ios_wda"} and p != {"adb": "android", "playwright": "web", "ios_wda": "ios"}[executor]:
                 raise PlatformContractError("executor_platform_conflict")
         if cap != "input_text":
             continue
@@ -223,6 +223,7 @@ def runtime_capabilities_contract(rows, *, system):
             raise PlatformContractError("input_combinations_invalid")
         allowed = {"desktop": {"current_focus": {"replace", "append"}},
                    "adb": {"current_focus": {"append"}, "coordinate": {"replace"}},
+                   "ios_wda": {"current_focus": {"replace"}},
                    "playwright": {"current_focus": {"replace", "append"}, "coordinate": {"replace"}, "node": {"replace"}}}.get(executor, {})
         modes_seen = set()
         for combo in combos:

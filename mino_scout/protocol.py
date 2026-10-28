@@ -211,7 +211,7 @@ class Execute:
     device_hint: dict[str, Any] = field(default_factory=dict)
     timeout_sec: float = 30.0
     device_id: str = ""
-    platform: str = ""  # mac | win | android | web
+    platform: str = ""  # mac | win | android | ios | web
     execution_contract_version: str = ""
     binding_id: str = ""
     binding_revision: int = 0

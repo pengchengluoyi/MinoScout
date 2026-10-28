@@ -845,7 +845,7 @@ class AdbExecutor:
         if x is None or y is None:
             policy = str((event.params or {}).get("point_policy") or "")
             if policy == "node":
-                reason = "DOM 点击锚点未命中且未给坐标"
+                reason = "界面文案锚点未命中且未给坐标"
             elif policy == "coordinate":
                 reason = "视觉点击缺少坐标"
             else:
