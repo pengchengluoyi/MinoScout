@@ -85,7 +85,7 @@
     {"id": "adb", "available": true,
      "provides": ["launch_app","close_app","kill_app","press_key","wait_ms",
                   "swipe_direction","swipe_element_to_element","install_apk",
-                  "read_device_data","get_app_version","get_foreground_app",
+                  "read_device_data","get_app_version","get_foreground_app","self_prove",
                   "set_clipboard","tap_element","multi_tap","long_press_element",
                   "input_text","exec_script","set_input_method","clear_app_cache",
                   "screenshot","hierarchy","probe_device_state"]},
@@ -234,8 +234,10 @@ LangBot（`class=im,id=langbot`）的 `status` 描述进程，`platforms[平台]
 |---|---|---|
 | `screenshot` | N→S | 截图。`params.compress_ratio` 对 playwright 与 adb 都生效 |
 | `hierarchy` | N→S | UI 层级 dump |
-| `get_app_version`（别名 `app_version`） | N→S | 目标包版本 |
+| `get_app_version`（别名 `app_version`） | N→S | 目标包版本。回执在原有 `package` / `version_name` / `version_code` 上追加同一份 dumpsys 里的 `install_path` 与 `signing`（见 §4.4.3） |
 | `get_foreground_app`（别名 `foreground_app`） | N→S | 前台包名 / bundle id |
+| `self_prove` | N→S | 一次取回当前执行环境自证。形状见 §4.4.3。不新增消息类型，协议版本仍为 2 |
+| `read_device_data` | N→S | 既有单键读取。`key=serial` / `serialno` 读 `ro.serialno`，`key=boot_serial` 读 `ro.boot.serialno`。整份环境自证用 `self_prove`，不要把多次 getprop 当成自证 |
 | `probe`（别名 `probe_device`） | N→S | 重探连通性，结果在 `RESULT.data` / `extra.channels` |
 | `cancel_run` | N→S | 不再继续该 run，不回滚已发到设备的动作 |
 | `node.stop`（别名 `stop`） | N→S | 应答 RESULT 后 Scout 退出 |
@@ -328,6 +330,110 @@ S→N 的框架事件可丢（超时未等到 RESULT 时 Scout 只记 warn）；
 
 Nexus 侧收到 `fail` 时**不得**让本 turn 失败：按 `docs/NAVIGATION_ATLAS.md` §10.0.2 降级
 （`hierarchy_text` 置空、localize 退回 session + history、GuardGate 本 turn 不 block）。
+
+
+#### 4.4.3 `self_prove` 的 RESULT 形状（用例自证，两仓钉死）
+
+用例脚本用这一条能力核对「现在这台手机 / 这台 Mac 上的 Scout，跑的是哪一个包」。它不建立第二套设备清单：Android 复用 `get_app_version` 的 `dumpsys package`、`read_device_data` 的 `getprop`，以及 `pm path` 指向的已安装 APK；iOS 复用同一份字段，证据来自已有的 `ideviceinfo` / `ideviceinstaller`（在 PATH 上时）和 `device_hint` 里已经给出的 WDA 地址。
+
+协议版本仍是 2。`RESULT.data` 与 `RESULT.extra` 都带这份文档（与 hierarchy 一样两处镜像）。传输层仍可能往 `extra` 追加 `execution_identity`；脚本读 **`data`**。`data.schema` 必须是 `self_prove.v1`。
+
+调用仍走普通设备动作的 V7 选路：`executor_order` 只有一个元素，`selected_impl.executor` 与它相同。
+
+| 通道 | `executor_order` | `platform` | 设备地址 |
+|---|---|---|---|
+| adb | `["adb"]` | `android` | `device_hint.adb_serial`（缺省时用 `sn`） |
+| ios_wda | `["ios_wda"]` | `ios` 或省略 | `device_hint.udid`，没有则用 `sn` |
+
+`platform=ios` 只允许出现在这条能力、且执行器为 `ios_wda` 时。它不是 V7 目标平台集合的新成员；其它能力仍只接受 `mac` / `win` / `android` / `web`。`ios_wda` 配上 `android` / `mac` / `win` / `web` 拒绝为 `self_prove_platform_conflict`。
+
+`params.package` 可选。Android 是包名，iOS 是 bundle id。给出之后才会去读安装身份；不给出则只证明设备和节点，`missing` 里不出现 `app.*`。
+
+```json
+{
+  "status": "pass",
+  "summary": "self_prove android R5CT30xxxx com.example.app sha256=0123456789ab",
+  "executor_used": "adb",
+  "data": {
+    "schema": "self_prove.v1",
+    "device": {
+      "id": "R5CT30xxxx",
+      "serial": "R5CT30xxxx",
+      "reported_serial": "R5CT30xxxx",
+      "udid": "",
+      "platform": "android",
+      "model": "SM-S9210",
+      "name": "",
+      "os_version": "14",
+      "id_source": "ro.serialno",
+      "ids_agree": true,
+      "hint_id": "R5CT30xxxx",
+      "hint_match": true
+    },
+    "app": {
+      "package_id": "com.example.app",
+      "installed": true,
+      "version_name": "1.2.3",
+      "version_code": 120,
+      "install_path": "/data/app/~~xx==/com.example.app-yy==/base.apk",
+      "digest": {
+        "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "md5": "0123456789abcdef0123456789abcdef",
+        "source": "installed_base_apk",
+        "path": "/data/app/~~xx==/com.example.app-yy==/base.apk",
+        "reason": ""
+      },
+      "signing": {
+        "apk_signing_version": 3,
+        "cert_sha256": "",
+        "source": ""
+      },
+      "splits": []
+    },
+    "runtime": {
+      "scout_version": "0.1.29",
+      "node_id": "3f8a1c0e9b2d4f71",
+      "build_id": "dev-0123456789abcdef01234567",
+      "identity_kind": "source",
+      "source_unchanged": true
+    },
+    "drivers": {
+      "adb": {"serial": "R5CT30xxxx", "server_port": null},
+      "wda": {"url": "", "port": null, "reachable": null, "version": "", "udid": "", "error": ""},
+      "appium": {"url": "http://127.0.0.1:4723", "port": 4723}
+    },
+    "missing": ["app.signing.cert_sha256"]
+  }
+}
+```
+
+| 字段 | 规定 |
+|---|---|
+| `device.id` | 设备自己报出来的标识。Android 优先 `ro.serialno`，否则 `ro.boot.serialno`，都没有则用这次实际拨到的 adb serial。iOS 优先 `ideviceinfo -k UniqueDeviceID`，否则用 WDA `/wda/device/info` 的 uuid。没有读到设备应答时为空，此时 `status=fail` |
+| `device.serial` | 这次 adb 拨号用的 serial。iOS 为空串 |
+| `device.reported_serial` | Android `getprop` 读到的 serial。没有第二来源时为空串 |
+| `device.udid` | iOS 读到的 UDID。Android 为空串 |
+| `device.platform` | 证明所属家族：`android` 或 `ios`。不是把 `ios` 写进 V7 目标平台枚举 |
+| `device.id_source` | `ro.serialno` / `ro.boot.serialno` / `adb_serial` / `ideviceinfo` / `wda` / 空串 |
+| `device.ids_agree` | 两个及以上设备侧标识都存在时，是否完全相同。只有一个来源时为 `null` |
+| `device.hint_id` | 调用方传入的 serial 或 udid。不是设备应答 |
+| `device.hint_match` | 设备应答与 `hint_id` 是否一致。设备没有报出可比较的标识时为 `null`。换机后这里应为 `false`，或根本 `fail`（旧 serial / udid 已不应答） |
+| `app.installed` | 未请求包时为 `null`。请求了且确认安装为 `true`，确认未安装为 `false` |
+| `app.digest` | Android：已安装 APK 字节的 sha256 与 md5，优先 `base.apk`（`source=installed_base_apk`）。这是手机上的安装路径，不是安装前宿主机 APK 的 `apk_sha256`。读不到文件时 digest 为空，`reason` 说明（常见 `unreadable` / `not_installed` / `pm_path_empty`）。iOS 不宣称安装包字节摘要，`reason=ios_bundle_bytes_not_readable` |
+| `app.signing` | 只解析本次 dumpsys 里已经出现的 `apkSigningVersion`、`certDigest` / `SHA-256 digest`，或 `signatures:[...]` 里完整证书 DER 的 sha256。没有这些文本则 `cert_sha256` 为空，不额外拉取 apksigner |
+| `app.splits` | 除主 APK 外、最多再哈希 7 个 split。主 APK 不重复列入 |
+| `runtime.scout_version` | 本进程已加载的 Scout 版本，与 REGISTER / HEARTBEAT 的 `scout_version` 同一来源 |
+| `runtime.node_id` | 本进程 Scout 节点 id |
+| `runtime.build_id` | 与 `execution_identity.build.build_id` 同一进程身份。源码进程在磁盘已变时 `source_unchanged=false` |
+| `drivers.adb.server_port` | 仅当进程环境变量 `ANDROID_ADB_SERVER_PORT` 有合法端口时填写。未设置则为 `null`，不把默认 5037 写成已观测事实 |
+| `drivers.wda` / `drivers.appium` | 只回显 `device_hint.wda_url` / `wda_port` / `appium_url` / `appium_port`。URL 必须是带显式端口的 `http` 或 `https`，不能带账号、query、fragment。Android 不拨这些地址。iOS 只对通过校验的 WDA URL 请求固定路径 `/wda/device/info` 与 `/status`，不扫端口，不调用 Appium |
+| `missing` | 字典序。设备 id、Scout 版本、节点 id 为空时列入。只有请求了 `params.package` 才列入 `app.package_id`、`app.installed`、`app.digest.sha256`、`app.digest.md5`、`app.signing.cert_sha256` |
+
+`status=pass` 表示设备应答了，标识已写入 `device.id`。包摘要或签名缺失仍是 `pass`，差距在 `missing` 和 `digest.reason`；脚本自己决定这算不算换错了包。`status=fail` 表示 serial / udid / WDA 都没有让设备应答。`executor_used` 为 `adb` 或 `ios_wda`。
+
+`get_app_version` 不改为计算摘要（避免每次查版本都哈希安装包）。它只把同一份 dumpsys 里的 `install_path` 与 `signing` 附加进原回执。包字节摘要只在 `self_prove`。
+
+同一 `(run_id, step_idx)` 的重复请求仍返回缓存，不重新读设备。要换机后再证，使用新的 `step_idx`。
 
 
 ### 4.5 `RESULT`（双向）
@@ -858,7 +964,7 @@ REGISTER / HEARTBEAT 可携带 `plugins_ready: bool | null`、`plugin_warning: s
 
 ## V7 当前版本执行合同（2026-10-20，优先于历史示例）
 
-- 目标平台只有 `mac / win / android / web`，不得由 SN 推断、接受别名或缺失时补 Android。宿主 OS 另用 host.os；Linux 可以是宿主，不能作为当前被测目标平台。
+- 目标平台只有 `mac / win / android / web`，不得由 SN 推断、接受别名或缺失时补 Android。宿主 OS 另用 host.os；Linux 可以是宿主，不能作为当前被测目标平台。唯一例外是 §4.4.3：`self_prove` 且 `executor_order=["ios_wda"]` 时，`platform` 可以为 `ios` 或省略，用来标明证明家族；其它能力收到 `ios` 仍然拒绝。
 - Web 设备身份必须为 `web{node_id}`；不接收 web-local、web_local、web 或 web- 前缀旧身份，也不迁移其归属。
 - HEARTBEAT 必须提供 `executor_snapshot_version=1` 和完整 executors；旧增量快照不再合并。
 - 普通设备动作必须携带且只携带一个 `executor_order` 元素，selected_impl.executor 必须与之相同。Nexus 只能选择明确请求的或唯一可用的实现；缺失、歧义、不可用均拒绝。

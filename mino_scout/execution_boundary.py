@@ -4,7 +4,7 @@ from typing import Any
 
 # Only these framework/read implementations are known not to mutate UI.
 READS = frozenset({"write_stop_status", "probe", "probe_device_state", "screenshot", "hierarchy", "get_foreground_app", "get_app_version",
-                   "read_web_auth", "read_web_target_facts", "read_device_data"})
+                   "self_prove", "read_web_auth", "read_web_target_facts", "read_device_data"})
 
 
 def ui_write(cap: str) -> bool:
