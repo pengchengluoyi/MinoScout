@@ -255,3 +255,6 @@ coverage/
 
 # 本机工具连接、凭据和个人设置不提交。
 .claude/
+
+# Archify local artifacts
+.archify/
