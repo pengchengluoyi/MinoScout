@@ -163,7 +163,7 @@ class ScoutCore:
                     raw_response={"execution": {"execution_started": "no", "reason_code": "blocked_by_update"}})
             self._update_io += 1
         try:
-            return self._execute_with_development(req)
+            return self._execute_guarded(req)
         finally:
             with self._lock:
                 self._update_io -= 1
@@ -188,7 +188,7 @@ class ScoutCore:
                         if old["params"] != wanted:
                             raise ValueError("operation_id 参数冲突")
                         data = updates.status(opid, self._loaded_build)
-                    elif tool_tasks.has_active() or self._update_io or getattr(self, "_development_busy", False) or any(self._requests.active(r) for r in self._active_runs):
+                    elif tool_tasks.has_active() or self._update_io or any(self._requests.active(r) for r in self._active_runs):
                         data = {"operation_id": opid, "state": "busy"}
                     else:
                         capacity = self._web_v5.capacity()
@@ -216,28 +216,6 @@ class ScoutCore:
                 started_at=now_iso(), elapsed_ms=0, summary="固定版本更新未受理",
                 raw_response={"update": {"operation_id": opid, "state": "needs_operator" if uncertain else "failed", "reason": str(exc)[:500]}})
 
-
-    def _execute_with_development(self, req: P.Execute) -> EventResult:
-        if req.capability_id == "node.ide_prepare":
-            from mino_scout.ide_prepare import dispatch
-            try:
-                return dispatch(self, req)
-            except Exception as exc:
-                return make_event_result(_event_from_execute(req), status=EventStatus.BLOCKED,
-                    executor_used="ide", started_at=now_iso(), elapsed_ms=0,
-                    summary="开发准备回执不可确认", error=type(exc).__name__)
-        with self._lock:
-            if getattr(self, "_development_busy", False) and req.capability_id != "cancel_run":
-                return make_event_result(_event_from_execute(req), status=EventStatus.BLOCKED,
-                    executor_used="core", started_at=now_iso(), elapsed_ms=0,
-                    summary="开发环境正在准备，稍后再运行测试",
-                    raw_response={"execution": {"execution_started": "no", "reason_code": "development_busy"}})
-            self._development_io = getattr(self, "_development_io", 0) + 1
-        try:
-            return self._execute_guarded(req)
-        finally:
-            with self._lock:
-                self._development_io -= 1
 
     def _execute_guarded(self, req: P.Execute) -> EventResult:
         from mino_scout.secret_redaction import register_inputs, sanitize
@@ -1012,7 +990,7 @@ class ScoutCore:
             executor_snapshot_version=1,
             executors=executors,
             uptime_sec=int(time.time() - self._started),
-            busy=bool(active) or getattr(self, "_development_busy", False),
+            busy=bool(active),
             active_runs=active,
             device_workload=workload,
             scout_version=report_scout_version(),

@@ -243,10 +243,6 @@ def _os_getpid() -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    internal_args = list(sys.argv[1:] if argv is None else argv)
-    if internal_args and internal_args[0] == "internal-ide-stop":
-        from mino_scout.ide_stop import main as stop_main
-        return stop_main(internal_args[1:])
     import multiprocessing
     multiprocessing.freeze_support()
     from mino_scout.config import config_path, configure_proxy_bypass

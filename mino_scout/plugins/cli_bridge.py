@@ -13,8 +13,9 @@ _WORD = re.compile(r'^[A-Za-z+][A-Za-z0-9_.+-]{0,100}$')
 _FLAG = re.compile(r'^[a-z][a-z0-9-]{0,70}$')
 _LOCAL = {'auth', 'config', 'install', 'uninstall', 'upgrade', 'update-cli', 'completion', 'mcp', 'api', 'raw', 'server', 'daemon', 'event', 'events', 'version', 'skills', 'doctor', 'extension', 'telemetry', 'ai-handoff'}
 _OPTIONS = {'help', 'params', 'data', 'json', 'body', 'fields'}
-_BLOCKED_OPTIONS = {'file', 'files', 'input', 'output', 'out', 'output-dir', 'save', 'save-to', 'upload', 'upload-file', 'download', 'download-to', 'config', 'config-dir', 'profile', 'host', 'base-url', 'url', 'api-url', 'api-base', 'endpoint', 'header', 'headers', 'token', 'access-token', 'user-access-token', 'app-secret', 'plugin-secret', 'verbose', 'debug', 'trace', 'format', 'as', 'all', 'auto-paginate', 'page-all'}
-_READ = {'get', 'list', 'search', 'query', 'fetch', 'read', 'batch-get', 'batch_get', 'batch-query', 'batch_query', 'mget', 'me', 'todo', 'agenda', '+fetch', '+search', '+list', '+agenda', '+messages-list', '+messages-get'}
+_BLOCKED_OPTIONS = {'file', 'files', 'input', 'output', 'out', 'output-dir', 'save', 'save-to', 'upload', 'upload-file', 'download', 'download-to', 'config', 'config-dir', 'profile', 'host', 'base-url', 'url', 'api-url', 'api-base', 'endpoint', 'header', 'headers', 'token', 'access-token', 'user-access-token', 'app-secret', 'plugin-secret', 'verbose', 'debug', 'trace', 'as'}
+_PAGING_OPTIONS = {'all', 'auto-paginate', 'page-all'}
+_READ = {'get', 'list', 'search', 'query', 'fetch', 'read', 'batch-get', 'batch_get', 'batch-query', 'batch_query', 'mget', 'me', 'todo', 'agenda', '+fetch', '+search', '+list', '+agenda', '+messages-list', '+messages-get', '+chat-list', '+chat-get', '+chat-search', '+chats-list', '+messages-search', '+thread-list', '+thread-get'}
 _MEEGO_API = {'meta-types', 'meta-fields', 'meta-templates', 'get', 'create'}
 _MEEGO_LABELS = {'project.list': '查询可访问空间', 'project.get': '查询空间详情',
                  'meta-types': '查询工作项类型', 'meta-fields': '查询字段',
@@ -94,6 +95,8 @@ def _arguments(params: dict) -> tuple[list[str], dict, str]:
     for key, value in options.items():
         if not isinstance(key, str) or not _FLAG.fullmatch(key) or key in _BLOCKED_OPTIONS or key == 'path' or key.endswith(('-file', '-path', '-dir')):
             raise PluginCallError(f'不支持的 CLI 参数名：{key!r}；请使用具体长参数名，未执行操作')
+        if key in _PAGING_OPTIONS and mode != 'read':
+            raise PluginCallError(f'{key} 只用于查询命令，写操作不能使用全量/自动翻页')
         if key in _OPTIONS and isinstance(value, str) and value.lstrip().startswith('@'):
             raise PluginCallError('请直接传 JSON 内容，不能读取节点本地文件')
     return command, options, mode
@@ -103,7 +106,10 @@ def _read_command(command: list[str], options: dict) -> bool:
     if command[0] in ('help', 'schema', 'inspect') or command == ['auth', 'status'] or options.get('help') is True:
         return True
     action = command[-1]
-    return action in _READ or action.startswith(('meta-', 'list-', 'get-', 'search-', 'query-', 'batch-get-', 'batch-query-'))
+    if action in _READ or action.startswith(('meta-', 'list-', 'get-', 'search-', 'query-', 'batch-get-', 'batch-query-')):
+        return True
+    # Official CLI uses +resource-action; +*-list/+*-get/+*-search are reads.
+    return action.startswith('+') and action.endswith(('-list', '-get', '-search', '-query'))
 
 
 def _argv(command: list[str], options: dict) -> list[str]:
@@ -127,10 +133,13 @@ def _native(node_id: str, plugin_id: str, command: list[str], options: dict, *, 
     if plugin_id == 'feishu':
         from mino_scout.plugins import feishu_auth
         if not feishu_auth.ready():
-            raise PluginCallError('请先在该 Scout 的飞书 CLI 配置中完成扫码授权；应用凭据不等于 CLI 用户授权')
+            raise PluginCallError('请先在该 Scout 的飞书 CLI 配置中完成授权：用户扫码或应用机器人凭据至少一种可用')
         extra['LARKSUITE_CLI_CONFIG_DIR'] = str(feishu_auth.root())
         if command[0] not in ('help', 'schema', 'auth'):
-            argv.append('--as=user')
+            # 文档/表格等用户态命令用 user；IM 发送/会话命令必须用 bot。
+            # 飞书的“自己给自己发私聊”在 user 身份下不成立，硬编码 user 会把主动推送卡死。
+            identity = 'bot' if command[0] == 'im' else 'user'
+            argv.append(f'--as={identity}')
     else:
         home = root / '.authorization'
         home.mkdir(parents=True, exist_ok=True, mode=0o700)

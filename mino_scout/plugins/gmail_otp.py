@@ -232,14 +232,14 @@ def fetch_otp_via_imap(
     since_ts: Optional[float] = None,
     from_allowlist: Optional[list[str]] = None,
     subject_contains: str = "",
-    poll_interval_ms: int = 3000,
+    poll_interval_ms: int = 200,
     max_wait_ms: int = 90_000,
     should_stop=None,
     deadline_ts: Optional[float] = None,
     diagnostics: Optional[dict] = None,
 ) -> str:
     allow = [str(x).strip() for x in (from_allowlist or []) if str(x).strip()]
-    interval = max(1.0, int(poll_interval_ms or 3000) / 1000.0)
+    interval = max(0.2, int(poll_interval_ms or 200) / 1000.0)
     deadline = time.time() + max(0.0, int(max_wait_ms) / 1000.0)
     if deadline_ts:
         deadline = min(deadline, float(deadline_ts))

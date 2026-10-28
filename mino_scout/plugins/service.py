@@ -1,6 +1,7 @@
 """节点指令和具名插件能力。密钥只在本进程里读，不写进回执。"""
 from __future__ import annotations
 
+import hashlib
 import time
 import uuid
 from typing import Any
@@ -226,6 +227,25 @@ def _im_target(params: dict[str, Any]) -> tuple[str, str, str, dict[str, str]]:
     return channel, chat_id, sender_id, {str(k): str(v) for k, v in raw.items()}
 
 
+def _feishu_cli_bot_send(node_id: str, chat_id: str, text: str, delivery_id: str) -> dict[str, Any]:
+    """No active inbound listener: send with the app bot through the official CLI."""
+    from mino_scout.plugins.cli_bridge import call
+
+    data = call(node_id, "feishu", {
+        "action": "command",
+        "mode": "write",
+        "command": ["im", "+messages-send"],
+        "options": {
+            "chat-id": chat_id,
+            "msg-type": "text",
+            "content": {"text": text},
+            "idempotency-key": hashlib.sha256(delivery_id.encode()).hexdigest()[:48],
+        },
+    })
+    inner = data.get("data") if isinstance(data.get("data"), dict) else {}
+    return {"ok": True, "provider_message_id": str(data.get("id") or inner.get("message_id") or "")}
+
+
 def _im_send(req: P.Execute, node_id: str = "") -> dict[str, Any]:
     from mino_scout.plugins import im_bridge, im_store
 
@@ -240,7 +260,19 @@ def _im_send(req: P.Execute, node_id: str = "") -> dict[str, Any]:
     card = params.get('card') or {}
     if channel == "feishu_cli":
         from mino_scout.plugins import feishu_messages
-        operation = lambda: feishu_messages.send(chat_id, ctx, text, delivery_id)
+
+        def operation():
+            try:
+                return feishu_messages.send(chat_id, ctx, text, delivery_id)
+            except ValueError as exc:
+                # Reply path needs the inbound listener. For an explicit chat_id,
+                # fall back to the bot CLI so proactive push is not reply-only.
+                if not chat_id or str(exc) not in (
+                    "CLI 消息路由已失效，请重新确认连接",
+                    "CLI 应用已变化，拒绝向旧会话发送",
+                ):
+                    raise
+                return _feishu_cli_bot_send(node_id, chat_id, text, delivery_id)
     elif channel == 'feishu' and im_bridge.sender_capabilities(channel).get('cards') and card:
         from mino_scout.plugins import im_feishu
         operation = lambda: im_feishu.send(node_id, chat_id, sender_id, ctx, text, card, delivery_id)
@@ -426,7 +458,7 @@ def _gmail(core: Any, req: P.Execute, event: Any, started: str) -> EventResult:
             since_ts=since_ts,
             from_allowlist=[str(x) for x in allow],
             subject_contains=str(params.get("subject_contains") or ""),
-            poll_interval_ms=int(params.get("poll_interval_ms") or 3000),
+            poll_interval_ms=int(params.get("poll_interval_ms") or 200),
             max_wait_ms=int(params.get("max_wait_ms") or 90_000),
             deadline_ts=min(deadline_ts or float("inf"), time.time() + max(0.0, end - time.monotonic())),
             should_stop=stopped, diagnostics=diagnostics,

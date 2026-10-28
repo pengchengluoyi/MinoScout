@@ -907,7 +907,8 @@ Nexus 先提交 pending 再发送；丢失应答保持 unknown，仅查询原 ta
 
 ## 2026-10-22：私聊图文与受控 Meego 附件上传 v1
 
-- 飞书 CLI 仍只接收用户私聊。`text/post/image/file/audio` 保留文字并提取资源；兼容 CLI 已渲染的 `[Image: img_…]`、`![Image](img_…)`、`<file …/>` 与 `<audio …/>`，也接受原始 JSON 内容。不支持的消息、缺失资源、超过 4 个附件或下载失败必须带 `media_error` 或附件 `error` 交给 Nexus 回复，不能静默丢弃整条图文。
+- CLI 出站 IM 命令统一使用应用机器人身份（`--as bot`）；用户身份仅用于文档/表格等用户态命令。入站私聊仍按用户身份校验，入站和出站身份不混用。
+- `im.send` 的 `feishu_cli` 在活跃入站监听存在时走原回复路由；没有监听但调用方提供 `chat_id` 时，回退到 bot CLI 发送，主动推送不再被“回复型”路由卡死。入站私聊仍只接收用户私聊。`text/post/image/file/audio` 保留文字并提取资源；兼容 CLI 已渲染的 `[Image: img_…]`、`![Image](img_…)`、`<file …/>` 与 `<audio …/>`，也接受原始 JSON 内容。不支持的消息、缺失资源、超过 4 个附件或下载失败必须带 `media_error` 或附件 `error` 交给 Nexus 回复，不能静默丢弃整条图文。
 - Scout 通过当前应用的官方 CLI `im +messages-resources-download --as bot` 下载同一消息的资源，仅写私有临时目录并在读取后清理。每份附件最多 8 MB；原始字节在账号/实例/发送者隔离的附件表内保存，Nexus 只持久化 `kind/ref/name/mime/size`。图片识别是可选参考，失败不阻止上传原图；文件不自动解压、执行或当作授权。
 - `plugin.cli.meego` 的 `action=command,mode=write` 扩展可选 `attachment_ref` 和 `attachments`，二者互斥。来源 `attachment_origin` 由 Nexus 依据已绑定会话注入，目标必须是保有原件的同一节点，模型不能提供或覆盖来源。`attachment_ref` 仅用于 `attachment +upload`；`attachments=[{ref,field_key,resource_type,filename?}]` 仅用于 `workitem create`，最多 4 份，resource_type 仅 15（附件字段）或 16（富文本图片）。字段 key 必须先查询实际空间字段。
 - 节点 Meego 插件快照声明 `attachment_upload_version=1`。Nexus 只保留已知版本并在派发前校验；旧节点或未上报版本时拒绝带附件操作，不能降级成创建无附件工作项。顶层协议类不变，两仓文档同步。

@@ -38,12 +38,24 @@ def _save(home: Path, data: dict) -> None:
     tmp.chmod(0o600)
     tmp.replace(home / "mino-status.json")
 
-def ready() -> bool:
+def ready(identity: str = "") -> bool:
+    """CLI 可用性。用户态扫码或 bot 应用凭据任一已验证即可。"""
     from mino_scout.plugins.state import _item, installed
     if _item("cli", "feishu").get("import_blocked") or not installed("cli", "feishu"):
         return False
     home = root()
-    return (home / "config.json").is_file() and _read(home).get("state") == "authorized"
+    if not (home / "config.json").is_file():
+        return False
+    if _read(home).get("state") == "authorized":
+        return True
+    # bot 身份不经过用户扫码状态文件；用 auth status 验证应用凭据是否已生效。
+    if identity in ("", "bot"):
+        try:
+            info = run_json(["auth", "status", "--json", "--verify"], home=home)
+        except Exception:
+            return False
+        return info.get("identity") in ("bot", "user") and info.get("verified") is True
+    return False
 
 def _url(line: str) -> str:
     for value in re.findall(r'https://[^\s<>"\x1b]+', line):
