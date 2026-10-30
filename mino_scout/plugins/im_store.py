@@ -22,7 +22,7 @@ from typing import Any
 
 from mino_scout.config import load_config
 from mino_scout.plugins.paths import data_dir
-from mino_scout.log import SLog
+from mino_scout.tools.keep_alive.log import SLog
 
 TAG = "ImStore"
 DEFAULT_RETENTION_DAYS = 180

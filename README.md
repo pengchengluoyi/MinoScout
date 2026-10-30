@@ -1,135 +1,43 @@
-> **唯一前端硬约束（2026-10-14）**：Mino 项目只有 MinoWorkbench 一个前端，MinoConsole/MinoStudio 已取消。不得新增、开发、构建或交付旧前端；管理、配置、用例和证据界面全部在 Workbench。历史字段与安装路径名称仅为兼容，不代表旧前端仍存在。
-
 # MinoScout
 
-**执行器。** 接收 MinoNexus 下发的动作，操作真实设备，回报结果。
+执行器。接收 MinoNexus 下发的动作，操作设备，回报结果。
 
-MinoScout 是 [MiniOrangeServer](../MiniOrangeServer) 拆分出的「手脚」那一半，与 [MinoNexus](../MinoNexus)（「大脑」）配对使用。
+## 五个渠道都有的事件
 
-## 是什么 / 不是什么
-
-| 是 | 不是 |
+| 事件 | 程序在做什么 |
 |---|---|
-| 唯一碰设备的进程：adb / WDA / ClawNode / Playwright | 不做决策 —— 下一步做什么由 Nexus 定 |
-| 截图、UI 树、连通性探测的提供方 | 不调大模型 —— 没有任何 LLM 调用 |
-| 按 Nexus 给的 `executor_order` 依次尝试执行 | 不碰数据库 —— 没有 ORM、没有落库 |
-| 主动 dial Nexus 的常驻节点（反向连接） | 不读能力目录 YAML —— 能力声明在 Nexus |
-| 上报「我这台机器能干什么、挂了哪些设备」 | 不监听对外端口 |
-| Android：启动与 **adb 重连**（含手机重启后）自检默认输入法，必要时**下载并安装** ADB Keyboard 再切换；已连接设备约每 5 分钟复检是否被系统键盘改回 | 安装需设备允许 adb 侧载（`-t`）；可用环境变量改 APK 源或关闭自动安装 |
+| `launch_app` | 打开被测应用或页面。Android 用包名，iOS 和 Mac 用 bundle id，Windows 用 EXE 路径或 AUMID，Web 用地址 |
+| `close_app` | 关闭被测应用或页面 |
+| `tap_element` | 点一次。按该端的定位，不连点 |
+| `tap_xy` | 只按坐标点一次，不查控件 |
+| `input_text` | 向控件或当前焦点输入 |
+| `press_key` | 按键。iOS 只接受 `home`、`volume_up`、`volume_down` |
+| `swipe_direction` | 按 up / down / left / right 滑动，或按起止坐标滑 |
+| `swipe_element_to_element` | 从一点拖到另一点 |
+| `long_press_element` | 长按 |
+| `set_clipboard` | 写剪贴板 |
+| `get_foreground_app` | 读当前前台应用或当前页 |
+| `screenshot` | 截图 |
+| `hierarchy` | 读界面树。Mac / Windows 用辅助功能树里的文案定位控件 |
+| `exec_script` | 执行该端自己的脚本命令。Android 是设备 shell，iOS 在连接设备的本机执行并带上 `MINO_IOS_UDID`，Web 在页面里执行 JavaScript，Mac 用 zsh，Windows 用 PowerShell |
 
-**一句话边界：MinoScout 只回答两个问题 —— 「屏幕现在是什么样」和「这个动作做完了没有」。**
+## 各处单独的事件
 
-Nexus 也可调用 `POST /device/{sn}/ime/adbkeyboard`，经 Scout 执行 capability `set_input_method`。
-
-ADB Keyboard 默认从 GitHub 拉取并缓存在 Scout 配置目录的 `cache/ADBKeyboard.apk`。可选环境变量：
-
-| 变量 | 含义 |
+| 渠道 | 事件 |
 |---|---|
-| `MINO_SCOUT_ADB_KEYBOARD_AUTO_INSTALL` | 默认 `1`；设为 `0` 则未安装时只报错不下载 |
-| `MINO_SCOUT_ADB_KEYBOARD_APK_URL` | 覆盖下载 URL |
-| `MINO_SCOUT_ADB_KEYBOARD_APK_PATH` | 使用本机已有 APK，跳过下载 |
+| Android | - `install`<br>- `uninstall_app`<br>- `clear_app_cache`<br>- `get_app_version`<br>- `read_device_data`<br>- `set_input_method`<br>- `wake_screen`<br>- `dismiss_keyguard`<br>- `probe_device_state` |
+| iOS | - `install`<br>- `uninstall_app`<br>- `get_app_version` |
+| Web | - `reload_page`<br>- `open_tab`<br>- `switch_tab`<br>- `upload_file`<br>- `wait_screen_ready`<br>- `read_web_auth`<br>- `open_web_v5`<br>- `tap_target`<br>- `input_target`<br>- `read_web_target_facts` |
+| Mac | - `install` |
+| Windows | - `install` |
 
-远程专机安装（不装 Studio）：在 [Mino Studio](https://github.com/pengchengluoyi/MinoStudio) Scout 节点页 **复制远程安装命令**，在执行机粘贴；脚本来自 GitHub Release 的 `bootstrap.sh`（同 tag），Nexus 只发安装凭证。
 
-## 快速开始
+## 工具侧事件
 
-```bash
-uv sync                       # 或 pip install -e .
-mino-scout --nexus ws://mino.local:50104/node --token <pair-token>
-```
+| 工具   | 事件 |
+|------|---|
+| Scout | - `wait`<br>- `sample`<br>- `on_page`<br>- `otp_mail`<br>- `llm`<br>- `vlm`<br>- `vlm_frame` |
+| Nexus | - `account`<br>- `note`<br>- `prep`<br>- `do`<br>- `check`<br>- `fail` |
 
-也可以不传参数：Studio 会把 `{ nexus_url, token }` 写到本机配置，Scout 自己读，并在首次运行时写入 `scout_id`。
+Android 的 `install_apk` 进来后改写成 `install`。`wake_screen`、`dismiss_keyguard`、`probe_device_state` 没有单独分支，载荷带了可执行的 `low_level` 才跑。`low_level` 的 shell 只在 Android 生效。iOS 接到 `clear_app_cache` 会拒绝。Mac 的安装包是 `.app`、`.pkg`、`.dmg`。Windows 的安装包是 `.exe`、`.msi`。Scout 和 Nexus 不是设备渠道。验证码和模型在 Scout 本机完成，密钥和视觉判断用的截图不回 Nexus。`prep`、`do`、`check` 把步骤进入和离开直接写入 Nexus 会话，`fail` 把失败原因直接写入，`account` 和 `note` 也直接交给 Nexus。
 
-| OS | 配置路径 |
-|---|---|
-| macOS | `~/Library/Application Support/MinoScout/config.json` |
-| Windows | `%APPDATA%\MinoScout\config.json` |
-| Linux | `~/.config/minoscout/config.json` |
-
-`--nexus` / `--token` 覆盖文件。`nexus_url` 是 HTTP 源站，Scout 会推导 `ws(s)://…/node`。
-
-单机和跨机都连 `mino.local`（Nexus 启动时注册）。`--nexus` 或配置里的 `nexus_url` 仅在要覆盖缺省时才改。
-
-## 发布安装包
-
-安装包在 **GitHub Releases**，不进 Nexus 数据目录。
-
-1. 确认 `pyproject.toml` 的 `version`（例如 `0.1.0`）
-2. `git tag v0.1.0 && git push origin v0.1.0`
-3. Actions 工作流 `.github/workflows/release.yml` 打 zip、算 sha256、上传 Release，并挂上 `manifest.json`
-4. 稳定地址（Studio 用这个找最新包）：
-
-```
-https://github.com/<owner>/MinoScout/releases/latest/download/manifest.json
-```
-
-`<owner>` 与本仓 `github.repository` 相同。`workflow_dispatch` 会打 `dev-<sha>` 预发布，**不会**改写 `latest`。
-
-推送 `v*` tag 或手动运行工作流时，会并行构建 macOS Apple Silicon（`darwin-arm64`）、Windows x64（`win32-x64`）和 Linux x64（`linux-x64`，在 ubuntu-22.04 上冻结，要求 glibc ≥ 2.35），各自执行冻结程序自检，再上传到同一个 Release。Windows 合并包为 `MinoScout-<版本>-win32-x64.zip`，包含 `mino-scout.exe` 及运行依赖，无需另装 Python；解压后运行包内的 `install.ps1` 安装。Linux 合并包为 `MinoScout-<版本>-linux-x64.zip`，解压后运行包内的 `install.sh`，由 systemd（用户级或 root）注册服务；Web 渠道还需目标机具备 Chromium 运行库（`playwright install-deps chromium`）。每个平台还会发布 `app`、`runtime`、`browser` 三个层包，统一记录在 `manifest.json` 中。
-
-本机只打当前系统的 zip：
-
-```bash
-python scripts/build_binary.py --check                       # 冻结，目标机器不需要 Python
-python scripts/pack_release.py --out dist --binary
-```
-
-装好后由 `install.sh` / `install.ps1` 注册 launchd / Scheduled Task / systemd。
-
-### 产物是分层的
-
-每次发布出 4 个 zip：合并包（全新安装，439 MB）+ `app` / `runtime` / `browser` 三个层包。
-**只改代码的发版，节点只需要下 90 KB 的 app 层**（浏览器占安装体积的 77%，而它几乎从不变）。
-
-`manifest.json` 的顶层字段仍指向合并包，分层前的 Studio 行为不变；新增的 `layers` 带每层
-的指纹与地址，新客户端拿本机 `bin/layers.txt` 逐层比对，只下不一致的层。
-
-细节、层指纹怎么算、以及哪些地方改了会静默破坏分层 —— 见 [docs/PACKAGING.md](docs/PACKAGING.md)。
-专机用 root 装会走 LaunchDaemon / AtStartup；Studio 以当前用户装走 LaunchAgent / AtLogOn。
-Scout 是独立守护进程，关掉 Studio 不停。控制：`mino-scout status` / `mino-scout stop`。
-
-启动后 Scout 会：
-
-1. 探一遍本机通道（adb / ios_wda / playwright / ClawNode）
-2. `REGISTER` 上报 manifest 与挂载设备
-3. 常驻，等 Nexus 的 `EXECUTE`，回 `RESULT`
-
-## 怎么和 Nexus 连
-
-五条消息，定义见 [docs/PROTOCOL.md](docs/PROTOCOL.md)。要点：
-
-- **Scout 主动连 Nexus**，不监听端口 —— 穿 NAT、免开防火墙
-- Nexus 下发的 `EXECUTE` **自带全部上下文**（`executor_order` / `low_level` / `device_hint`），Scout 不回查任何东西
-- 幂等键是 `run_id + step_idx`，断连重发由 Scout 去重
-- Scout 只返回五态：`pass` / `fail` / `skipped` / `blocked` / `declined`，**任何情况下不向外抛异常**
-
-## 文档
-
-| 文档 | 内容 |
-|---|---|
-| [CLAUDE.md](CLAUDE.md) | 硬约束、目录与命名约定、改动前必读 |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 分层、一次 EXECUTE 的完整路径 |
-| [docs/PROTOCOL.md](docs/PROTOCOL.md) | 五条消息的字段级定义（与 Nexus 同一份） |
-| [docs/EXECUTORS.md](docs/EXECUTORS.md) | 四个 executor 的能力矩阵、怎么加一个 |
-| [docs/ENGINES.md](docs/ENGINES.md) | `EngineFactory`、Remote / iOS 引擎 |
-| [docs/DEVICE_SETUP.md](docs/DEVICE_SETUP.md) | adb / WDA / Playwright / ClawNode 配对的环境要求 |
-| [packaging/README.txt](packaging/README.txt) | zip 安装说明（launchd / Scheduled Task） |
-| [docs/CONVENTIONS.md](docs/CONVENTIONS.md) | 日志、异常、守门脚本约定 |
-| [docs/MIGRATION.md](docs/MIGRATION.md) | 从 MiniOrangeServer 搬哪些文件、怎么改 |
-
-## 硬约束
-
-不含 ORM、不含 LLM 调用、不读能力目录 YAML、不 import Nexus。靠代码评审守住，不再有静态脚本和 CI 校验。
-
-## 测试与正式环境
-
-| 组件 | 测试 | 正式 |
-|---|---|---|
-| Nexus | 50101 | 50104 |
-| Workbench | 60101 | 60104 |
-| Scout | 主动连接测试 Nexus 的 50101 | 主动连接正式 Nexus 的 50104 |
-
-Scout 不分配独立业务监听端口。测试与正式使用独立的数据目录、凭据和节点身份。已安装实例的配置不会因更新默认值而自动迁移。
-测试运行时通过 `--nexus ws://<测试Nexus主机>:50101/node` 指定目标，并通过 `MINO_SCOUT_HOME` 使用独立配置目录；正式目标为 `ws://<正式Nexus主机>:50104/node`。
-
-开发与正式部署隔离及启动方式见 [环境说明](docs/ENVIRONMENTS.md)。

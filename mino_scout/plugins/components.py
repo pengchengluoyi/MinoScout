@@ -14,7 +14,7 @@ from mino_scout.plugins import progress as PP
 
 
 def chromium_root():
-    from mino_scout.playwright_hub import browsers_dir
+    from mino_scout.platform.web.playwright_hub import browsers_dir
     return Path(os.environ.get('PLAYWRIGHT_BROWSERS_PATH') or browsers_dir())
 
 
@@ -45,8 +45,8 @@ def chromium(action):
 
 
 def adb_keyboard(action):
-    from mino_scout.adb_ime import cached_apk_path, apk_download_url, DEFAULT_APK_URL, resolve_local_apk
-    from mino_scout.http_fetch import fetch_json, fetch_bytes
+    from mino_scout.platform.android.adb_ime import cached_apk_path, apk_download_url, DEFAULT_APK_URL, resolve_local_apk
+    from mino_scout.tools.update.http_fetch import fetch_json, fetch_bytes
     from mino_scout.config import config_dir
     if action == 'install' and resolve_local_apk() is not None:
         return '本机已有可用 APK，无需重复下载；设备安装状态单独显示'
@@ -101,6 +101,9 @@ def install(node_id, tool_id, action, lock):
         return chromium(action)
     if tool_id == 'adb.keyboard':
         return adb_keyboard(action)
+    if tool_id == 'appium':
+        from mino_scout.tools.update.channel_packages import install_appium
+        return install_appium(action)
     from mino_scout.plugins.install import install as install_plugin
     from mino_scout.plugins.state import installed
     kind, plugin_id = ('im', 'langbot') if tool_id == 'langbot' else ('cli', tool_id.split('.')[1])

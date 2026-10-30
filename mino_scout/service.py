@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from mino_scout.config import config_dir, config_path, load_config, resolve_runtime, resolve_scout_id
-from mino_scout.log import SLog
+from mino_scout.tools.keep_alive.log import SLog
 
 TAG = "Service"
 
@@ -234,7 +234,7 @@ def try_start_service(*, wait_sec: float = 4.0) -> int:
 
     from mino_scout.config import development
     if development():
-        from mino_scout.development_runtime import start
+        from mino_scout.tools.update.development_runtime import start
         return start(wait_sec=wait_sec)
 
     started = False
@@ -283,7 +283,7 @@ def try_start_service(*, wait_sec: float = 4.0) -> int:
 
     if not started:
         SLog.i(TAG, "未找到系统服务，后台启动 mino-scout run")
-        from mino_scout.process_control import spawn_run
+        from mino_scout.tools.keep_alive.process_control import spawn_run
         spawn_run()
         deadline = time.time() + max(0.5, wait_sec)
         while time.time() < deadline:
@@ -305,7 +305,7 @@ def collect_status() -> dict[str, Any]:
     layers_file = config_dir() / "bin" / "layers.txt"
     if layers_file.is_file():
         try:
-            from mino_scout.install_plan import parse_layers_txt
+            from mino_scout.tools.update.install_plan import parse_layers_txt
 
             layers = parse_layers_txt(layers_file.read_text(encoding="utf-8"))
         except Exception:
@@ -314,14 +314,14 @@ def collect_status() -> dict[str, Any]:
     side: dict[str, Any] = {}
     if running:
         try:
-            from mino_scout.runtime_sidecar import read_runtime_sidecar
+            from mino_scout.tools.keep_alive.runtime_sidecar import read_runtime_sidecar
 
             side = read_runtime_sidecar(expect_pid=pid) or {}
         except Exception:
             side = {}
 
     try:
-        from mino_scout.app_version import resolve_status_versions
+        from mino_scout.tools.update.app_version import resolve_status_versions
 
         ver_bundle = resolve_status_versions(
             config_version=str(cfg.get("version") or ""),
@@ -346,7 +346,7 @@ def collect_status() -> dict[str, Any]:
     out["configured_identity"] = runtime_identity()
     # A status command describes itself separately from the live daemon.
     out["running_identity"] = side.get("runtime_identity") if running else None
-    from mino_scout.runtime_sidecar import connection_status, read_update_status
+    from mino_scout.tools.keep_alive.runtime_sidecar import connection_status, read_update_status
     out["connection"] = connection_status(side, running=running)
     update = read_update_status()
     if update:
@@ -363,7 +363,7 @@ def collect_status() -> dict[str, Any]:
         out["installed_layers"] = layers
     if running:
         try:
-            from mino_scout.power import get_guard
+            from mino_scout.tools.keep_alive.power import get_guard
 
             out["power"] = get_guard().status()
         except Exception:
@@ -375,7 +375,7 @@ def schedule_reexec(*, delay_sec: float = 1.5) -> dict[str, Any]:
     """向后兼容：委托 reexec_spawn（热更后请优先 import reexec_spawn）。"""
     from importlib import import_module
 
-    return import_module("mino_scout.reexec_spawn").schedule_reexec(delay_sec=delay_sec)
+    return import_module("mino_scout.tools.update.reexec_spawn").schedule_reexec(delay_sec=delay_sec)
 
 
 def request_stop(*, timeout_sec: float = 15.0) -> dict[str, Any]:
@@ -388,7 +388,7 @@ def request_stop(*, timeout_sec: float = 15.0) -> dict[str, Any]:
     created_at = 0.0
     if os.name == "nt":
         import psutil
-        from mino_scout.process_control import request_local_stop
+        from mino_scout.tools.keep_alive.process_control import request_local_stop
         try:
             created_at = psutil.Process(pid).create_time()
             request_local_stop(pid)
@@ -405,7 +405,7 @@ def request_stop(*, timeout_sec: float = 15.0) -> dict[str, Any]:
 
     SLog.w(TAG, f"SIGTERM 超时，改发 SIGKILL pid={pid}")
     if os.name == "nt":
-        from mino_scout.process_control import terminate_windows
+        from mino_scout.tools.keep_alive.process_control import terminate_windows
         terminate_windows(pid, created_at)
     else:
         _signal(pid, getattr(signal, "SIGKILL", signal.SIGTERM))

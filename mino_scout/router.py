@@ -12,8 +12,8 @@ from mino_scout.executors.base import (
     make_event_result,
     now_iso,
 )
-from mino_scout.log import SLog
-from mino_scout.execution_boundary import normalize_ui_result, ui_write
+from mino_scout.tools.keep_alive.log import SLog
+from mino_scout.runtime.execution_boundary import normalize_ui_result, ui_write
 from mino_scout.schemas import CapturedScreen, EventResult, PlanEvent
 
 TAG = "Router"

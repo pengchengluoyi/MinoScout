@@ -739,7 +739,6 @@ Client 依据真实 schema 适配 project_path/projectPath。普通 Run 列表�
 check 返回真实 support.stop/restart 和 restart_mode=run_control_mcp/debugger_mcp/run_control_required/unsupported_configuration；普通 Run 控制不受 canDebug 限制。仅调试插件就绪但实例为普通 Run 时必须返回 restart=false，不能先宣称支持再要求用户手工停止。缺能力返回 awaiting_developer/ide_run_control_required，提示安装社区插件及复用已保存原生连接，不下载 Mino 自写 ZIP。
 新增 action=stop；Scout features 显式声明 stop/debugger_mcp/run_control_mcp，Nexus 对旧 Scout 拒绝 stop。停止、重启与启动使用同一执行权限、配置 revision、参数确认及互斥规则。
 配置级 runtime.scope=configuration，instances 可携带 session_id、debug_state、execution_mode、pid。普通 Run 以 IDE 返回的配置会话识别，调试模式匹配 runConfigurationName。停止后不将列表中隐藏 terminating 会话视为进程已退出；核对旧进程身份或完整项目会话/进程快照实际减少，再启动同一配置并确认新 session_id。普通 Run 无需先手工停止或改为 Debug；已运行时 execute 只复用，不重复启动。
-PyCharm 261.22158.340 与社区 MCP Run Control 原版 0.1.2 的 buildSessionId 接口不兼容；本地兼容版本明确标记为 0.1.2-local261.1，构建与来源保存在 MinoScout/integrations/mcp-run-control，Workbench 提供 /ide/mcp-run-control-0.1.2-local261.1.zip。该适配保留上游工具逻辑，以本地会话 ID 辅助类替换缺失 API 调用，保留原版备份，不冒充上游原版。工具是否可用必须以活动 Run 实例的真实调用确认。
 副作用调用只发一次；超时或丢回执记 unknown，Scout 持久原操作阶段、旧会话及进程标识。读取原回执仅做会话状态查询，不重新停止或启动。Nexus 中断恢复后自动读取原停止/重启回执，核对 owner 与 digest，不清空不确定结果。未配置 HTTP 地址只证明进程/会话存在，不宣称服务或业务验证通过。不得通过终端 kill/SIGTERM 冒充 IDE 重启。HTTP/SSE 复用现有 httpx，无新增运行依赖。
 
 V6 B APK 增补：action=install 只接受绑定中的 apk_path/android_serial/apk_package/apk_version_code。
@@ -930,7 +929,7 @@ HTTP POST `/runtime/nodes/{node_id}/configuration/export` 与 `/configuration/im
 
 ## 2026-10-21：恢复 Scout 在线升级与下载中心合同 v2
 
-本节替代此前“升级与回退功能移除”和下载中心核心只读的规定。Workbench、Nexus 和 Scout 支持由用户主动触发的 Scout 固定版本升级，以及 cli.feishu、cli.meego、langbot、chromium、adb.keyboard 的 install/update。普通业务请求不隐式安装或更新。
+本节替代此前“升级与回退功能移除”和下载中心核心只读的规定。Workbench、Nexus 和 Scout 支持由用户主动触发的 Scout 固定版本升级，以及 cli.feishu、cli.meego、langbot、chromium、adb.keyboard、appium 的 install/update。普通业务请求不隐式安装或更新。
 
 REGISTER/HEARTBEAT 的 tool_tasks_version=2 仍使用现有字段；Nexus 保留识别 v1 首次插件安装，v1 不接收新增组件或 update。node.tools 返回 version=2、installable、updatable 与真实已安装版本；HTTP 工具状态返回 contract_version。node.tool_task_submit 参数 action=install|update，RESULT 回执必须匹配 task_id/tool_id/action。同一操作编号不得换参数，未知应答只查询或显式重试同一编号。组件任务与 Scout 更新互斥，刷新和切换账号不能重放安装。
 
@@ -941,3 +940,26 @@ CLI 新包在独立暂存目录校验后替换，原目录和授权保留；失�
 源码节点的 scout.core 条目同时上报 runtime_environment、running_version、source_version、source_changed、restart_required；旧节点未报的源码版本保持未知，不能以发布版本补填。运行版本固定于进程启动，本地源码版本只读该进程模块所在目录的 VERSION，不读取其他安装或配置目录中的 bin。源码模式不展示安装包升级比较，代码或 VERSION 变更提示重启生效；正式节点仍使用固定安装包升级。
 
 ADB Keyboard 的电脑 APK 缓存与手机已安装事实独立：缓存缺失不表示已安装设备不可用。界面使用“下载 APK / 更新 APK 缓存”，不将缓存操作标成手机安装；无任务时不展示安装步骤。install 发现现有可用 APK 时直接复用，只有显式 update 才重新下载并校验缓存。
+
+## 脚本运行载荷（Nexus → Scout）
+
+这一包放在既有 `EXECUTE` 的 `params` 中，`capability_id` 为 `script.run`。`params` 只有下表字段，不另加版本号。
+
+### 2.1 脚本运行载荷（Nexus → Scout）
+
+| 字段 | 含义 |
+|---|---|
+| `run_id` | Nexus 已准入的任务号 |
+| `session_id` | 写入 `session_events` 的会话 |
+| `case_id` | 用例 id |
+| `sn` | 本趟设备 |
+| `platform` | `android` / `ios` / `web` / `mac` / `win` |
+| `script_path` | 仓库内相对路径，必须是 `.py` |
+| `files` | `{相对路径: 文本}`。用例 `.py`、根上的 `pretest.py` / `posttest.py`（有才带）、`scripts/**/*.py`、`pages/**/*.yaml` |
+
+约束：
+
+- 路径必须落在仓库内，禁止 `..` 和绝对路径。单文件不超过 256KB，整包不超过 4MB，文件数不超过 256。
+- 可执行的只有用例和 `scripts/` 的 `.py`。`pages/` 只放 YAML。不含 `requirements.txt` 的安装动作，Scout 不因这次运行执行 pip。
+- Scout 看不到 Nexus 的 `case_workspaces` 绝对路径。禁止把本机路径当作节点上的路径。
+- 令牌无效、设备与 `sn` 不符、节点未登记该渠道：整次 `declined`，不执行脚本。

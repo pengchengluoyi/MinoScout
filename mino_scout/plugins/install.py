@@ -19,8 +19,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from mino_scout.http_fetch import download_file, fetch_bytes, fetch_json
-from mino_scout.log import SLog
+from mino_scout.tools.update.http_fetch import download_file, fetch_bytes, fetch_json
+from mino_scout.tools.keep_alive.log import SLog
 from mino_scout.plugins import progress as PP
 from mino_scout.plugins.host_exec import HostExecError, run_entry
 from mino_scout.plugins.state import clear_plugin_secrets, plugin_dir, spec
@@ -52,7 +52,7 @@ def _os_arch() -> tuple[str, str]:
 
 
 def _manifest_plugin(kind: str, plugin_id: str) -> dict[str, Any] | None:
-    from mino_scout.self_update import manifest_url_from_config
+    from mino_scout.tools.update.self_update import manifest_url_from_config
 
     url = manifest_url_from_config()
     if not url:
@@ -255,7 +255,7 @@ def install(node_id: str, kind: str, plugin_id: str, *, _held_lock=None, update=
         raise PluginInstallError("这个插件不需要单独安装")
     if kind not in ("cli", "mcp", "im"):
         raise PluginInstallError("只有 CLI、MCP 和对话渠道层按需安装")
-    from mino_scout import update_progress as UP
+    from mino_scout.tools.update import update_progress as UP
 
     if UP.snapshot().get("active"):
         raise PluginInstallError("Scout 正在更新，等它结束再安装插件")

@@ -252,7 +252,7 @@ def runtime_identity() -> dict[str, Any]:
     do not select the storage namespace; neither runtime may cross environments.
     """
     from urllib.parse import urlsplit
-    from mino_scout.app_version import process_build_identity
+    from mino_scout.tools.update.app_version import process_build_identity
     ws, _ = resolve_runtime()
     target = urlsplit(ws)
     host = target.hostname or ""

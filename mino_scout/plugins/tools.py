@@ -13,9 +13,9 @@ from mino_scout.plugins.state import installed, configured, plugin_dir
 
 
 def snapshot(core):
-    from mino_scout.app_version import runtime_version_facts
-    from mino_scout.adb_ime import resolve_local_apk
-    from mino_scout.install_plan import runtime_chromium_revision
+    from mino_scout.tools.update.app_version import runtime_version_facts
+    from mino_scout.platform.android.adb_ime import resolve_local_apk
+    from mino_scout.tools.update.install_plan import runtime_chromium_revision
     from mino_scout.plugins import langbot_host
     ready = bool(getattr(core, '_plugins_ready', False))
     versions = runtime_version_facts()
@@ -23,7 +23,7 @@ def snapshot(core):
     items = [dict(tool_id='scout.core', label='Scout 核心', purpose='源码节点运行' if source else '节点运行', state='installed', version=versions['running_version'],
                   **versions, detail='源码修改后重启节点生效；运行版本和本地源码版本分别显示。' if source else '支持固定版本在线升级；下载校验后切换安装，重新连接并核对运行版本。')]
     revision = runtime_chromium_revision(config_dir() / 'bin')
-    from mino_scout.playwright_hub import browsers_dir
+    from mino_scout.platform.web.playwright_hub import browsers_dir
     root_override = os.environ.get('PLAYWRIGHT_BROWSERS_PATH')
     browser_root = Path(root_override) if root_override else browsers_dir()
     if not root_override and not browser_root.is_dir():
@@ -72,6 +72,8 @@ def snapshot(core):
             python_ok = subprocess.run([langbot_host._base_python(), '-c', 'import sys; sys.exit(0 if (3,11)<=sys.version_info[:2]<(4,0) else 1)'], capture_output=True, timeout=3).returncode == 0
         except (OSError, RuntimeError, subprocess.TimeoutExpired):
             pass
+    from mino_scout.tools.update.channel_packages import appium_item
+    items.append(appium_item(ready))
     items.append(dict(tool_id='langbot', label='LangBot', purpose='飞书、钉钉、企业微信共用对话宿主', state='installed' if present else 'unknown' if not ready else 'missing' if python_ok else 'missing_python',
                       installable=ready and python_ok and not present, updatable=ready and python_ok and bool(present), version=langbot_version, config_key='im:langbot:lark',
                       detail='安装一个共享宿主，飞书、钉钉、企业微信渠道分别配置。使用独立环境，不升级系统 Python。' if python_ok or not ready else '缺少可用的系统 Python 3.11+；请手动准备 Python。'))

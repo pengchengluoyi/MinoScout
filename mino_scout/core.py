@@ -21,12 +21,12 @@ from pathlib import Path
 from dataclasses import replace
 from typing import Any, Optional
 
-from mino_scout import protocol as P
+from mino_scout.server_comm import protocol as P
 from mino_scout import screen as SCREEN
 from mino_scout.executors.base import DeviceRef, Executor, make_event_result, now_iso
-from mino_scout.log import SLog, current_run_id, current_step_idx
+from mino_scout.tools.keep_alive.log import SLog, current_run_id, current_step_idx
 from mino_scout.router import Router
-from mino_scout.execution_boundary import ui_write, started as execution_started
+from mino_scout.runtime.execution_boundary import ui_write, started as execution_started
 from mino_scout.schemas import CapturedScreen, EventResult, EventStatus, PlanEvent
 
 TAG = "ScoutCore"
@@ -110,7 +110,7 @@ class ScoutCore:
         # (run_id, step_idx) -> (完成时刻, EventResult)
         self._done: dict[tuple[str, int], tuple[float, EventResult]] = {}
         self._active_runs: set[str] = set()
-        from mino_scout.fixed_update import loaded_build
+        from mino_scout.tools.update.fixed_update import loaded_build
         self._loaded_build = loaded_build()
         self._update_busy = False
         self._update_io = 0
@@ -130,10 +130,10 @@ class ScoutCore:
         self._adb_ime_last_check: dict[str, float] = {}
         self._adb_ime_facts: dict[str, dict] = {}
         self._device_workload: dict[str, P.DeviceWorkload] = {}
-        from mino_scout.request_guard import RequestGuard
-        from mino_scout.web_v5 import WebV5Runtime
+        from mino_scout.runtime.request_guard import RequestGuard
+        from mino_scout.platform.web.web_v5 import WebV5Runtime
         self._requests = RequestGuard()
-        from mino_scout.execution_binding import BindingGuard
+        from mino_scout.runtime.execution_binding import BindingGuard
         self.binding_guard = BindingGuard()
         self._web_v5 = WebV5Runtime()
 
@@ -150,6 +150,8 @@ class ScoutCore:
                     summary="execution_mode_unsupported", raw_response={"execution": {
                         "execution_started": "no", "phase": "admission",
                         "reason_code": "execution_mode_unsupported"}})
+        if _canonical_cap(req.capability_id) == "script_run":
+            return self._run_script(req)
         if req.capability_id == "node.source_read":
             from mino_scout.case_sources import dispatch
             return dispatch(self, req)
@@ -170,7 +172,7 @@ class ScoutCore:
 
 
     def _fixed_update(self, req):
-        from mino_scout import fixed_update as updates
+        from mino_scout.tools.update import fixed_update as updates
         from mino_scout.plugins import tool_tasks
         params = req.params or {}
         opid = str(params.get("operation_id") or "")
@@ -218,8 +220,8 @@ class ScoutCore:
 
 
     def _execute_guarded(self, req: P.Execute) -> EventResult:
-        from mino_scout.secret_redaction import register_inputs, sanitize
-        from mino_scout.web_v5 import CLEANUP, READS, WRITES
+        from mino_scout.runtime.secret_redaction import register_inputs, sanitize
+        from mino_scout.platform.web.web_v5 import CLEANUP, READS, WRITES
         register_inputs(req.params)
         register_inputs(req.device_hint)
         if req.capability_id == "write_stop_status":
@@ -236,7 +238,7 @@ class ScoutCore:
                     evidence.update(lane_terminated=terminated, stop_confirmed=terminated,
                                     reason_code="lane_process_terminated" if terminated else "lane_quarantined")
             elif shaped and req.params.get("mode") == "retired_generation":
-                from mino_scout.process_retirement import retired_evidence
+                from mino_scout.runtime.process_retirement import retired_evidence
                 evidence = retired_evidence(self._requests, req.run_id, ref["step_idx"], req.sn)
             else:
                 evidence = {"stop_confirmed": False, "reason_code": "process_or_action_mismatch"}
@@ -352,7 +354,7 @@ class ScoutCore:
         self, req: P.Execute, retired: threading.Event, holder: dict[str, int]
     ) -> EventResult:
         """Playwright 同步 API 绑在这条线程上。超时后调用方会换一条线程，这里只关自己的浏览器。"""
-        from mino_scout.playwright_hub import get_hub
+        from mino_scout.platform.web.playwright_hub import get_hub
 
         holder["ident"] = threading.get_ident()
         get_hub().note_lane(str(req.run_id or ""))
@@ -370,7 +372,7 @@ class ScoutCore:
 
     def _retire_playwright_shard(self, req: P.Execute, owner: int | None) -> None:
         """卡住的 worker 不能杀。换一个空池，后续指令不再排在它后面空等。"""
-        from mino_scout.playwright_hub import get_hub
+        from mino_scout.platform.web.playwright_hub import get_hub
 
         rid = str(req.run_id or "").strip()
         n = len(self._pw_shards) or 1
@@ -449,6 +451,20 @@ class ScoutCore:
                 "execution_binding": {"binding_id": req.binding_id, "binding_revision": req.binding_revision,
                     "operation_ref": req.operation_ref}})
 
+    def _run_script(self, req: P.Execute) -> EventResult:
+        from mino_scout.server_comm import script_dispatch
+
+        stop = threading.Event()
+        if _use_playwright_thread(req):
+            timeout = float(req.timeout_sec or 0) or 30.0
+            future = self._playwright_executor(req).submit(script_dispatch.accept, self, req, stop)
+            try:
+                return future.result(timeout=timeout)
+            except TimeoutError:
+                stop.set()
+                return script_dispatch.timeout_result(req)
+        return script_dispatch.accept(self, req, stop)
+
     def _dispatch(self, req: P.Execute) -> EventResult:
         # Recheck after the executor queue, immediately before native dispatch.
         rejected = self._binding_rejection(req)
@@ -480,7 +496,7 @@ class ScoutCore:
             )
         if req.platform in {"mac", "win"} or req.sn.startswith(("mac:", "win:")):
             import platform
-            from mino_scout.platform_contract import native_request_platform
+            from mino_scout.runtime.platform_contract import native_request_platform
             try:
                 native_request_platform({"platform": req.platform, "sn": req.sn, "device_hint": req.device_hint},
                                         node_id=self.node_id, host_system=platform.system())
@@ -490,8 +506,6 @@ class ScoutCore:
                     raw_response={"execution": {"execution_started": "no", "phase": "resolve", "reason_code": "native_identity_conflict"}})
         if req.sn.startswith("desktop:") and (req.sn != f"desktop:{self.node_id}:console" or req.platform != "desktop"):
             return make_event_result(_event_from_execute(req), status=EventStatus.BLOCKED, executor_used="core", started_at=now_iso(), elapsed_ms=0, error="Desktop 目标或平台不匹配", summary="Desktop 目标或平台不匹配")
-        if req.platform in {"desktop", "mac", "win"} and cap == "hierarchy":
-            return make_event_result(_event_from_execute(req), status=EventStatus.BLOCKED, executor_used="desktop", started_at=now_iso(), elapsed_ms=0, error="Desktop 首版仅开放 visual 执行", summary="Desktop 首版仅开放 visual 执行")
         if cap == "probe":
             return self._dispatch_probe(req)
         if cap == "screenshot":
@@ -567,7 +581,7 @@ class ScoutCore:
 
             return handle_node_plugin(self, req, cmd, event, started)
         if cmd == "log_tail":
-            from mino_scout.local_logs import tail_logs
+            from mino_scout.tools.keep_alive.local_logs import tail_logs
 
             lines = int((req.params or {}).get("lines") or 200)
             body = tail_logs(lines=lines)
@@ -603,7 +617,7 @@ class ScoutCore:
         summary = f"probe {sn}: {channels or '未发现该设备'}"
         payload = {
             "channels": channels,
-            "contracts": __import__("mino_scout.web_v5", fromlist=["CONTRACTS"]).CONTRACTS,
+            "contracts": __import__("mino_scout.platform.web.web_v5", fromlist=["CONTRACTS"]).CONTRACTS,
             "executors": {e.id: e.available for e in execs},
             "extra": {"channels": channels, "executors": {e.id: e.available for e in execs}},
         }
@@ -699,10 +713,10 @@ class ScoutCore:
         run_id: str = "",
         hierarchy_params: dict[str, Any] | None = None,
     ) -> tuple[EventStatus, dict[str, Any]]:
-        from mino_scout import hierarchy as H
+        from mino_scout.platform.android import hierarchy as H
 
         if device.is_web:
-            from mino_scout.dom_hierarchy import dump_dom_nodes
+            from mino_scout.platform.web.dom_hierarchy import dump_dom_nodes
 
             dump = dump_dom_nodes(
                 sn=str(device.sn or ""),
@@ -735,7 +749,7 @@ class ScoutCore:
                 "elapsed_ms": int(dump.elapsed_ms or 0),
             }
         if str(device.platform or "") == "ios":
-            from mino_scout.wda_session import WdaError, client_for
+            from mino_scout.platform.ios.wda_session import WdaError, client_for
 
             try:
                 xml = client_for(device.udid or device.sn).source()
@@ -747,6 +761,20 @@ class ScoutCore:
                 "summary": "已读取 iOS 界面结构",
                 "extra": {"hierarchy_text": xml, "text": xml[:4000]},
             }
+        if str(device.platform or "") in {"mac", "win", "desktop"}:
+            import platform as host_platform
+
+            from mino_scout.executors.desktop import DesktopUnavailable, get_desktop_runtime
+
+            mac_host = str(device.platform or "") == "mac" or (str(device.platform or "") == "desktop" and host_platform.system() == "Darwin")
+            if mac_host:
+                from mino_scout.platform.mac.actions import hierarchy as read_tree
+            else:
+                from mino_scout.platform.win.actions import hierarchy as read_tree
+            try:
+                return EventStatus.PASS, read_tree(get_desktop_runtime(), dict(device.extra or {}), str((device.extra or {}).get("run_id") or ""))
+            except DesktopUnavailable as exc:
+                return EventStatus.FAIL, {"error": str(exc), "source": "mac" if mac_host else "win"}
         if not device.adb_serial or device.adb_serial.startswith("claw-"):
             return EventStatus.FAIL, {
                 "error": "hierarchy 目前只支持 adb 通道（remote/ios_wda 待 E3 搬迁）",
@@ -818,7 +846,7 @@ class ScoutCore:
         *,
         reason: str = "",
     ) -> list[dict[str, Any]]:
-        from mino_scout.adb_ime import ensure_adb_keyboard
+        from mino_scout.platform.android.adb_ime import ensure_adb_keyboard
 
         if "adb" not in self.executors:
             return []
@@ -842,7 +870,7 @@ class ScoutCore:
 
     def ensure_adb_keyboard_drift_check(self, devices: list[P.DeviceManifest]) -> list[dict[str, Any]]:
         """adb 仍在线但 default IME 被改走时拉回 ADB Keyboard（节流）。"""
-        from mino_scout.adb_ime import ADB_KEYBOARD_IME_ID, current_default_ime, ensure_adb_keyboard
+        from mino_scout.platform.android.adb_ime import ADB_KEYBOARD_IME_ID, current_default_ime, ensure_adb_keyboard
 
         if "adb" not in self.executors:
             return []
@@ -901,7 +929,7 @@ class ScoutCore:
             if run_id:
                 self._cancelled_runs[str(run_id)] = time.time()
         SLog.i(TAG, f"cancel run={run_id}，清掉 {len(keys)} 条幂等缓存")
-        from mino_scout.desktop import get_desktop_runtime
+        from mino_scout.executors.desktop import get_desktop_runtime
         get_desktop_runtime().cancel(run_id)
         rid = str(run_id or "").strip()
         if rid:
@@ -933,7 +961,7 @@ class ScoutCore:
                 shard.submit(_stop_playwright_hub).result(timeout=8.0)
         except Exception as exc:
             SLog.w(TAG, f"playwright 退出清理: {exc}")
-        from mino_scout.desktop import get_desktop_runtime
+        from mino_scout.executors.desktop import get_desktop_runtime
         get_desktop_runtime().shutdown()
 
     # ---------------- 状态 ----------------
@@ -950,7 +978,7 @@ class ScoutCore:
             if self._asleep:
                 return True, "已休眠"
             self._asleep = True
-        from mino_scout.power import HOLDER_NEXUS, get_guard
+        from mino_scout.tools.keep_alive.power import HOLDER_NEXUS, get_guard
 
         get_guard().release(HOLDER_NEXUS)
         threading.Thread(
@@ -971,13 +999,13 @@ class ScoutCore:
         """重新抑制睡眠。浏览器等下一次任务再开。"""
         with self._lock:
             self._asleep = False
-        from mino_scout.power import HOLDER_NEXUS, get_guard
+        from mino_scout.tools.keep_alive.power import HOLDER_NEXUS, get_guard
 
         get_guard().acquire(HOLDER_NEXUS)
         return True, "已启动"
 
     def heartbeat(self) -> P.Heartbeat:
-        from mino_scout.app_version import report_scout_version
+        from mino_scout.tools.update.app_version import report_scout_version
 
         self._evict_idle_runs()
         with self._lock:
@@ -988,7 +1016,7 @@ class ScoutCore:
             )
         capacity = self._web_v5.capacity()
         workload.append(P.DeviceWorkload(sn=f"web{self.node_id}", **capacity))
-        from mino_scout.input_contract import runtime_input_capabilities
+        from mino_scout.runtime.input_contract import runtime_input_capabilities
         from mino_scout.plugins.state import status_list
         from mino_scout.config import development
 
@@ -1076,7 +1104,7 @@ class ScoutCore:
 
 
 def _release_playwright_run(run_id: str) -> None:
-    from mino_scout.playwright_hub import get_hub
+    from mino_scout.platform.web.playwright_hub import get_hub
 
     get_hub().release_run(run_id)
 
@@ -1084,12 +1112,17 @@ def _release_playwright_run(run_id: str) -> None:
 # ---------------- 载荷 ↔ 内部模型 ----------------
 
 
+_CAP_ALIASES = {"script.run": "script_run"}
+
+
 def _canonical_cap(capability_id: str) -> str:
-    return str(capability_id or "").strip()
+    """能力名归一。Nexus 按协议 docs/PROTOCOL.md 发 script.run，Scout 内部分支叫 script_run。"""
+    text = str(capability_id or "").strip()
+    return _CAP_ALIASES.get(text, text)
 
 
 def _normalize_platform(raw: str) -> str:
-    from mino_scout.platform_contract import target_platform
+    from mino_scout.runtime.platform_contract import target_platform
     return target_platform(raw)
 
 
@@ -1109,10 +1142,10 @@ def _device_from_execute(req: P.Execute, *, node_id: str = "") -> DeviceRef:
     hint = dict(req.device_hint or {})
     if req.platform in {"mac", "win"} or str(req.sn).startswith(("mac:", "win:")):
         import platform as host_platform
-        from mino_scout.platform_contract import native_request_platform
+        from mino_scout.runtime.platform_contract import native_request_platform
         native_request_platform({"platform": req.platform, "sn": req.sn, "device_hint": hint},
                                 node_id=node_id, host_system=host_platform.system())
-    from mino_scout.platform_contract import execute_platform
+    from mino_scout.runtime.platform_contract import execute_platform
     platform = execute_platform({"platform":req.platform,"device_hint":hint})
     sn = str(req.sn or req.device_id or hint.get("sn") or hint.get("device_id") or "").strip()
     device_id = str(req.device_id or sn).strip()
@@ -1197,7 +1230,7 @@ def _event_result_to_observe_fields(ev: EventResult) -> dict[str, Any]:
 
 
 def _stop_playwright_hub() -> None:
-    from mino_scout.playwright_hub import get_hub
+    from mino_scout.platform.web.playwright_hub import get_hub
 
     get_hub().shutdown_thread()
 
@@ -1211,7 +1244,7 @@ def _adb_serial_guess(sn: str) -> str:
     真实映射由 Nexus 在 `EXECUTE.device_hint.adb_serial` 里给。这里只是
     没带 hint 时的兜底。
     """
-    from mino_scout.playwright_hub import is_web_slot
+    from mino_scout.platform.web.playwright_hub import is_web_slot
 
     if not sn or sn.startswith("claw-") or is_web_slot(sn):
         return ""
@@ -1232,7 +1265,7 @@ def _use_playwright_thread(req: P.Execute) -> bool:
     hint_plat = str(hint.get("platform") or "").strip().lower()
     if plat in ("web", "browser", "playwright") or hint_plat in ("web", "browser", "playwright"):
         return True
-    from mino_scout.playwright_hub import is_web_slot
+    from mino_scout.platform.web.playwright_hub import is_web_slot
 
     return is_web_slot(
         str(req.sn or req.device_id or hint.get("sn") or ""),
@@ -1263,13 +1296,13 @@ def _discover_devices(executors: dict[str, Executor], *, scout_id: str) -> list[
 
     remote(ClawNode) / iOS 的发现依赖 EngineFactory 与 clawnode/ 模块（E3），未搬。
     """
-    from mino_scout.desktop import get_desktop_runtime
+    from mino_scout.executors.desktop import get_desktop_runtime
     native = get_desktop_runtime().manifest(scout_id)
     out: list[P.DeviceManifest] = [native] if native is not None else []
     if "adb" in executors:
         out.extend(_discover_adb_devices())
     if "ios_wda" in executors:
-        from mino_scout.wda_session import list_attached_devices
+        from mino_scout.platform.ios.wda_session import list_attached_devices
 
         for row in list_attached_devices():
             out.append(P.DeviceManifest(
@@ -1277,7 +1310,7 @@ def _discover_devices(executors: dict[str, Executor], *, scout_id: str) -> list[
                 channels={"ios": row.get("state") or "disconnected"},
             ))
     if "playwright" in executors:
-        from mino_scout.playwright_hub import PROBE_OK_STATE, probe_playwright, web_slot_sn
+        from mino_scout.platform.web.playwright_hub import PROBE_OK_STATE, probe_playwright, web_slot_sn
 
         # probe_playwright() 的成功态是 "available"（见 playwright_hub），
         # 映射到协议的 channels 取值 connected/disconnected。

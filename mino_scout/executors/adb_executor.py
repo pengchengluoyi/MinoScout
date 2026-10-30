@@ -3,10 +3,10 @@
 """ADB 执行通道：通过 subprocess 调 adb 直接操作真机。
 
 支持的 capability：
-  - launch_app / close_app / press_key / wait_ms
+  - launch_app / close_app / press_key / uninstall_app
   - swipe_direction / install_apk / read_device_data / set_clipboard
   - get_app_version / get_foreground_app
-  - tap_element / multi_tap / input_text (需 VLM 在 ctx.screen 上先定位)
+  - tap_element / input_text (需 VLM 在 ctx.screen 上先定位)
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import subprocess
 import time
 from typing import Any, Optional
 
-from mino_scout.log import SLog
+from mino_scout.tools.keep_alive.log import SLog
 
 from mino_scout.schemas import EventResult, EventStatus, PlanEvent
 from mino_scout.executors.base import (
@@ -111,20 +111,20 @@ _SUPPORTED_CAPS: set[str] = {
     "close_app",
     "kill_app",
     "press_key",
-    "wait_ms",
     "swipe_direction",
     "swipe_element_to_element",
-    "install_apk",
+    "install",
     "read_device_data",
     "get_app_version",
     "get_foreground_app",
     "set_clipboard",
     "tap_element",
-    "multi_tap",
+    "tap_xy",
     "long_press_element",
     "input_text",
     "exec_script",
     "set_input_method",
+    "uninstall_app",
 }
 
 
@@ -201,7 +201,7 @@ class AdbExecutor:
     ):
         """expect=(package, resource_id, bounds)：多个 EditText 同时报 focused 时（旧框焦点残留），
         优先取与点击时记录一致的那个，而不是树里的第一个。"""
-        from mino_scout.hierarchy import dump_ui_nodes
+        from mino_scout.platform.android.hierarchy import dump_ui_nodes
 
         dump = dump_ui_nodes(serial, force_fresh=True)
         if not dump.ok:
@@ -211,7 +211,7 @@ class AdbExecutor:
     @staticmethod
     def _input_target_before_tap(serial: str, point: tuple[int, int]):
         """点击前按设备坐标绑定唯一可写框，不能用键盘出现后的 bounds 反查旧点击。"""
-        from mino_scout.hierarchy import dump_ui_nodes
+        from mino_scout.platform.android.hierarchy import dump_ui_nodes
 
         try:
             dump = dump_ui_nodes(serial, force_fresh=True)
@@ -235,7 +235,7 @@ class AdbExecutor:
 
     def _record_focus_after_tap(self, event, ctx, serial: str, target) -> None:
         """只记录点击前已绑定且点击后确有焦点的同一输入框；标识冲突仍不发引用。"""
-        from mino_scout.hierarchy import dump_ui_nodes
+        from mino_scout.platform.android.hierarchy import dump_ui_nodes
 
         if not ctx.run_id or target is None:
             return
@@ -284,6 +284,8 @@ class AdbExecutor:
         return True, ""
 
     def supports(self, capability_id: str, low_level: Optional[dict[str, Any]] = None) -> bool:
+        if capability_id == "install_apk":
+            capability_id = "install"
         return capability_id == "clear_app_cache" or capability_id in _SUPPORTED_CAPS or _runnable_low_level(low_level)
 
     def execute(self, event: PlanEvent, ctx: ExecutorContext) -> EventResult:
@@ -292,11 +294,13 @@ class AdbExecutor:
         cap = event.capability_id
         if cap == "kill_app":
             cap = "close_app"
+        if cap == "install_apk":
+            cap = "install"
         focus_key = (str(ctx.device.sn or ""), str(ctx.run_id or ""))
         # 只读取证不改变焦点，不能清掉点击留下的焦点引用：
         # Nexus 在 tap 与 input_text 之间会按 run_id 多次下发 probe_device_state（recovery_evidence）。
         if cap not in (
-            "tap_element", "input_text", "wait_ms", "get_foreground_app",
+            "tap_element", "input_text", "get_foreground_app",
             "probe_device_state", "read_device_data", "get_app_version",
         ):
             self._focus_actions.pop(focus_key, None)
@@ -317,7 +321,7 @@ class AdbExecutor:
                 )
 
             if cap == "clear_app_cache":
-                from mino_scout.executors.app_cache import clear_app_cache
+                from mino_scout.platform.android.app_cache import clear_app_cache
                 package = str((event.params or {}).get("package")
                               or ctx.device.extra.get("target_package", "") or "").strip()
                 raw = clear_app_cache(package, lambda *args: self._adb_shell(serial, *args))
@@ -331,15 +335,15 @@ class AdbExecutor:
                 return self._launch_app(event, ctx, serial, started_at, t0)
             if cap == "close_app":
                 return self._close_app(event, ctx, serial, started_at, t0)
+            if cap == "uninstall_app":
+                return self._uninstall_app(event, ctx, serial, started_at, t0)
             if cap == "press_key":
                 return self._press_key(event, ctx, serial, started_at, t0)
-            if cap == "wait_ms":
-                return self._wait_ms(event, ctx, started_at, t0)
             if cap == "swipe_direction":
                 return self._swipe_direction(event, ctx, serial, started_at, t0)
             if cap == "swipe_element_to_element":
                 return self._swipe_element_to_element(event, ctx, serial, started_at, t0)
-            if cap == "install_apk":
+            if cap == "install":
                 return self._install_apk(event, ctx, serial, started_at, t0)
             if cap == "read_device_data":
                 return self._read_device_data(event, ctx, serial, started_at, t0)
@@ -349,12 +353,12 @@ class AdbExecutor:
                 return self._get_foreground_app(event, ctx, serial, started_at, t0)
             if cap == "set_clipboard":
                 return self._set_clipboard(event, ctx, serial, started_at, t0)
+            if cap == "tap_xy":
+                return self._tap_xy(event, ctx, serial, started_at, t0)
             if cap == "tap_element":
                 self._focus_actions.pop(focus_key, None)
                 result = self._tap_element(event, ctx, serial, started_at, t0)
                 return result
-            if cap == "multi_tap":
-                return self._multi_tap(event, ctx, serial, started_at, t0)
             if cap == "long_press_element":
                 return self._long_press_element(event, ctx, serial, started_at, t0)
             if cap == "input_text":
@@ -491,14 +495,21 @@ class AdbExecutor:
             elapsed_ms=elapsed, summary=f"按键 {keycode} 失败", error=err or out,
         )
 
-    def _wait_ms(self, event, ctx, started_at, t0):
-        ms = int((event.params or {}).get("duration_ms") or (event.params or {}).get("ms") or 500)
-        ms = max(0, min(ms, 60_000))
-        time.sleep(ms / 1000.0)
+    def _uninstall_app(self, event, ctx, serial, started_at, t0):
+        pkg = str((event.params or {}).get("package") or (event.params or {}).get("bundle") or "").strip()
+        if not pkg:
+            return self._fail(event, started_at, t0, "uninstall_app 缺 params.package")
+        rc, out, err = self._adb(serial, "uninstall", pkg)
+        elapsed = int((time.time() - t0) * 1000)
+        if rc == 0 and "Success" in out:
+            return make_event_result(
+                event, status=EventStatus.PASS, executor_used=self.id, started_at=started_at,
+                elapsed_ms=elapsed, summary=f"已卸载 {pkg}",
+                raw_response={"execution": {"execution_started": "yes", "phase": "completed", "source": "adb.native.v1"}},
+            )
         return make_event_result(
-            event, status=EventStatus.PASS, executor_used=self.id, started_at=started_at,
-            elapsed_ms=int((time.time() - t0) * 1000), summary=f"等待 {ms}ms",
-            raw_response={"execution": {"execution_started": "no", "phase": "completed", "source": "adb.native.v1"}},
+            event, status=EventStatus.FAIL, executor_used=self.id, started_at=started_at,
+            elapsed_ms=elapsed, summary=f"卸载 {pkg} 失败", error=err or out or f"rc={rc}",
         )
 
     def _swipe_direction(self, event, ctx, serial, started_at, t0):
@@ -586,7 +597,7 @@ class AdbExecutor:
         # 对齐 ClawNode：支持 url（内部下载到本地再 install），也兼容本地 path
         if not path and url:
             try:
-                from mino_scout.executors.adb_command import _download_apk
+                from mino_scout.platform.android.adb_command import _download_apk
 
                 path = _download_apk(url, params.get("file_name") or "")
                 tmp_path = path
@@ -617,7 +628,7 @@ class AdbExecutor:
 
     def _exec_script(self, event, ctx, serial, started_at, t0):
         """adb 版 EXEC_SCRIPT：委托 adb_script（dsl/shell；js→not_supported），与 ClawNode 协议一致。"""
-        from mino_scout.executors.adb_script import run_adb_script
+        from mino_scout.platform.android.adb_script import run_adb_script
 
         res = run_adb_script(serial, event.params or {})
         elapsed = int((time.time() - t0) * 1000)
@@ -771,7 +782,7 @@ class AdbExecutor:
         )
 
     def _get_app_version(self, event, ctx, serial, started_at, t0):
-        from mino_scout.probe.app_query import parse_package_version, version_dump_shell
+        from mino_scout.platform.android.app_query import parse_package_version, version_dump_shell
 
         pkg = str((event.params or {}).get("package") or ctx.device.extra.get("target_package", "") or "").strip()
         if not pkg:
@@ -798,7 +809,7 @@ class AdbExecutor:
         )
 
     def _get_foreground_app(self, event, ctx, serial, started_at, t0):
-        from mino_scout.probe.app_query import FOREGROUND_SHELL, parse_foreground
+        from mino_scout.platform.android.app_query import FOREGROUND_SHELL, parse_foreground
 
         rc, out, err = self._adb_sh_script(serial, FOREGROUND_SHELL, timeout_sec=20.0)
         elapsed = int((time.time() - t0) * 1000)
@@ -839,6 +850,29 @@ class AdbExecutor:
             elapsed_ms=elapsed, summary=f"剪贴板设置 {len(text)} 字",
         )
 
+    def _tap_xy(self, event, ctx, serial, started_at, t0):
+        raw = event.params or {}
+        if raw.get("x") is None or raw.get("y") is None:
+            return self._fail(event, started_at, t0, "tap_xy 缺坐标")
+        try:
+            x, y = int(raw["x"]), int(raw["y"])
+        except (TypeError, ValueError):
+            return self._fail(event, started_at, t0, "tap_xy 坐标无效")
+        ok, inject, extra = self._inject_tap(serial, x, y, scale=True)
+        elapsed = int((time.time() - t0) * 1000)
+        self._invalidate_hierarchy(serial)
+        if ok:
+            return make_event_result(
+                event, status=EventStatus.PASS, executor_used=self.id, started_at=started_at,
+                elapsed_ms=elapsed, summary=f"点击坐标 ({x},{y})",
+                raw_response={**extra, "inject": inject, "execution": {"execution_started": "yes", "phase": "completed", "source": "adb.native.v1"}},
+            )
+        return make_event_result(
+            event, status=EventStatus.FAIL, executor_used=self.id, started_at=started_at,
+            elapsed_ms=elapsed, summary=f"点击坐标 ({x},{y}) 失败",
+            error=str(extra.get("error") or extra.get("stderr") or inject), raw_response=extra,
+        )
+
     def _tap_element(self, event, ctx, serial, started_at, t0):
         # 坐标来源：语义锚点优先（稳定、可复用），模型给的坐标兜底
         x, y, audit, how = self._point_for(event, serial)
@@ -859,9 +893,7 @@ class AdbExecutor:
             )
         point = self._map_to_display(serial, x, y) if how in ("xy", "fallback_xy") else (x, y)
         focus_target = self._input_target_before_tap(serial, point)
-        ok, inject, extra = self._inject_tap(
-            serial, x, y, scale=how in ("xy", "fallback_xy"),
-        )
+        ok, inject, extra = self._inject_tap(serial, x, y, scale=how in ("xy", "fallback_xy"))
         elapsed = int((time.time() - t0) * 1000)
         label = self._point_label(how, audit, x, y)
         audit = {**audit, "inject": inject, **extra}
@@ -877,44 +909,6 @@ class AdbExecutor:
             elapsed_ms=elapsed, summary=f"点击 {label} 失败",
             error=str(extra.get("error") or extra.get("stderr") or inject),
             raw_response=audit,
-        )
-
-    def _multi_tap(self, event, ctx, serial, started_at, t0):
-        from mino_scout.executors.multi_tap import parse_multi_tap
-
-        parsed, err = parse_multi_tap(event.params)
-        if err:
-            return self._fail(event, started_at, t0, err)
-        _, _, count, interval = parsed
-        policy = str((event.params or {}).get("point_policy") or "").strip().lower()
-        scale = True
-        if policy in ("coordinate", "node"):
-            x, y, _audit, how = self._point_for(event, serial)
-            if x is None or y is None:
-                # 同上：锚点未命中且没有任何坐标，才是真的没法执行。
-                if policy == "node":
-                    return self._fail(event, started_at, t0, "DOM 连点无锚点也无坐标")
-                return self._fail(event, started_at, t0, "视觉连点缺少坐标")
-            scale = how in ("xy", "fallback_xy")
-        else:
-            x, y = parsed[0], parsed[1]
-        for i in range(count):
-            ok, inject, extra = self._inject_tap(serial, x, y, settle=False, scale=scale)
-            if not ok:
-                self._invalidate_hierarchy(serial)
-                return self._fail(
-                    event, started_at, t0,
-                    f"连点 ({x},{y}) 第 {i + 1}/{count} 次失败 via {inject}"
-                    f"：{extra.get('error') or extra.get('stderr') or ''}",
-                )
-            if i + 1 < count:
-                time.sleep(interval / 1000.0)
-        self._invalidate_hierarchy(serial)
-        elapsed = int((time.time() - t0) * 1000)
-        return make_event_result(
-            event, status=EventStatus.PASS, executor_used=self.id, started_at=started_at,
-            elapsed_ms=elapsed, summary=f"连点 ({x},{y}) ×{count} 间隔{interval}ms",
-            raw_response={"execution": {"execution_started": "yes", "phase": "completed", "source": "adb.native.v1"}},
         )
 
     def _point_label(self, how: str, audit: dict, x: int, y: int) -> str:
@@ -934,7 +928,7 @@ class AdbExecutor:
     def _invalidate_hierarchy(self, serial: str) -> None:
         """动作后屏幕会变，主动失效层级缓存，避免下一步拿到旧快照。"""
         try:
-            from mino_scout import hierarchy as H
+            from mino_scout.platform.android import hierarchy as H
 
             H.invalidate_cache(serial)
         except Exception:  # pragma: no cover
@@ -964,7 +958,7 @@ class AdbExecutor:
         )
 
     def _set_input_method(self, event, ctx, serial, started_at, t0):
-        from mino_scout.adb_ime import (
+        from mino_scout.platform.android.adb_ime import (
             ensure_adb_keyboard,
             restore_system_input_method,
             resolve_target_ime,
@@ -1056,7 +1050,7 @@ class AdbExecutor:
         返回 (x, y, audit)。解析不到时 x/y 为 None，调用方回落到模型给的坐标。
         audit 会进 raw_response，便于回放时看清"这一下点的到底是哪个元素"。
         """
-        from mino_scout import hierarchy as H
+        from mino_scout.platform.android import hierarchy as H
 
         params = H.lift_text_anchor(event.params or {})
         dump = H.dump_ui_nodes(serial)
@@ -1157,7 +1151,7 @@ class AdbExecutor:
         不能把 `input tap` rc=0 当成点上了：Android 14+ / vivo / 小米上这是常见假成功。
         scale=True：坐标来自截图/模型，按 wm size 换算。层级锚点已经是设备坐标，不要再乘。
         """
-        from mino_scout import hierarchy as H
+        from mino_scout.platform.android import hierarchy as H
 
         if scale:
             x, y = self._map_to_display(serial, x, y)
@@ -1196,7 +1190,7 @@ class AdbExecutor:
 
     def _run_declared_low_level(self, event, ctx, serial, started_at, t0):
         """按 capability yaml 的 low_level 声明执行（无 Python 分支时的通路）。"""
-        from mino_scout.executors.low_level import run_low_level
+        from mino_scout.platform.android.low_level import run_low_level
 
         # 上游只从 ctx.selected_impl 取（router 从能力目录塞进去的）。
         # 拆分后 Nexus 把 low_level 直接放在 EXECUTE 载荷里，优先用它。
@@ -1214,7 +1208,7 @@ class AdbExecutor:
             # 整串交给 adb shell（命令已过白名单，不含重定向/管道到 sh）
             return self._adb_shell(serial, cmd)
 
-        from mino_scout.execution_boundary import READS
+        from mino_scout.runtime.execution_boundary import READS
         outcome = run_low_level(
             low, dict(event.params or {}), _shell,
             log_prefix=f"[{ctx.run_id}] cap={cap} ",
@@ -1242,7 +1236,7 @@ class AdbExecutor:
             ),
         }
         try:
-            from mino_scout.hierarchy import dump_ui_nodes
+            from mino_scout.platform.android.hierarchy import dump_ui_nodes
 
             dump = dump_ui_nodes(serial, force_fresh=True)
             if not dump.ok:

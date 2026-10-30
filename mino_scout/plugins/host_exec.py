@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from mino_scout.log import SLog
+from mino_scout.tools.keep_alive.log import SLog
 from mino_scout.plugins.state import spec
 
 TAG = "PluginExec"

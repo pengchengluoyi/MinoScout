@@ -9,7 +9,7 @@ import time
 from typing import Any
 from urllib.parse import urlparse
 
-from mino_scout.log import SLog
+from mino_scout.tools.keep_alive.log import SLog
 
 from mino_scout.schemas import EventResult, EventStatus, PlanEvent
 from mino_scout.executors.base import (
@@ -17,14 +17,16 @@ from mino_scout.executors.base import (
     _now_iso,
     make_event_result,
 )
-from mino_scout.playwright_hub import get_hub, goto_url, headed_from_hint, pick_goto_url
-from mino_scout.playwright_context import resolve_locator_scope
-from mino_scout.playwright_coords import resolve_viewport_xy, to_viewport_xy
-from mino_scout.playwright_locators import (
+from mino_scout.platform.web.playwright_hub import get_hub, goto_url, headed_from_hint, pick_goto_url
+from mino_scout.platform.web.playwright_context import resolve_locator_scope
+from mino_scout.platform.web.playwright_coords import resolve_viewport_xy, to_viewport_xy
+from mino_scout.platform.web.playwright_locators import (
     css_selector_from_params,
+    exact_visible_pattern,
     locator_from_params,
+    unique_exact_text,
 )
-from mino_scout.web_focus import locate_editable_at
+from mino_scout.platform.web.web_focus import locate_editable_at
 
 TAG = "PlaywrightExecutor"
 
@@ -83,9 +85,9 @@ _SUPPORTED_CAPS: set[str] = {
     "close_app",
     "kill_app",
     "press_key",
-    "wait_ms",
     "tap_element",
-    "multi_tap",
+    "tap_xy",
+    "exec_script",
     "long_press_element",
     "input_text",
     "swipe_direction",
@@ -97,6 +99,7 @@ _SUPPORTED_CAPS: set[str] = {
     "open_tab",
     "upload_file",
     "reload_page",
+    "set_clipboard",
 }
 
 
@@ -229,10 +232,10 @@ class PlaywrightExecutor:
 
     # 与 Nexus 能力目录同词表：只声明"我能执行哪些事件"。
     # Web 端按名字点/填，不先 VLM locate —— 所以 cost 比 VLM 路径低。
-    provides = tuple(sorted(_SUPPORTED_CAPS | {"screenshot", "hierarchy", "open_url"}))
+    provides = tuple(sorted(_SUPPORTED_CAPS | {"screenshot", "hierarchy"}))
 
     def probe(self) -> tuple[bool, str]:
-        from mino_scout.playwright_hub import PROBE_OK_STATE, probe_playwright
+        from mino_scout.platform.web.playwright_hub import PROBE_OK_STATE, probe_playwright
 
         # 注意：probe_playwright() 成功时返回 "available"（= 包和 Chromium 都在，
         # 但没有长期占着浏览器），**不是 "connected"**。写成 connected 会让
@@ -243,9 +246,7 @@ class PlaywrightExecutor:
         return False, str(detail.get("reason") or "playwright 不可用")
 
     def supports(self, capability_id: str, low_level=None) -> bool:
-        # 签名带 low_level 是 Protocol 要求（base.Executor.supports）。
-        # Playwright 侧刻意**不**支持 low_level —— 那套是 shell 命令契约（adb 专属），
-        # Web 端的等价物是按名字点/填，没有"跑一条 shell"的概念。
+        del low_level
         return capability_id in _SUPPORTED_CAPS
 
     def execute(self, event: PlanEvent, ctx: ExecutorContext) -> EventResult:
@@ -263,21 +264,12 @@ class PlaywrightExecutor:
                 started_at=started_at, elapsed_ms=0,
                 summary="playwright 只服务 web 槽，让位给真机通道",
             )
-        if cap not in ("tap_element", "input_text", "wait_ms", "wait_screen_ready",
+        if cap not in ("tap_element", "input_text", "wait_screen_ready",
                        "get_foreground_app", "read_web_auth"):
             self._forget_focus(focus_key)
         hub = get_hub()
         headed = headed_from_hint(ctx.device.extra)
         try:
-            if cap == "wait_ms":
-                p = event.params or {}
-                try:
-                    ms = int(p.get("duration_ms") or p.get("ms") or 0)
-                except (TypeError, ValueError):
-                    return self._fail(event, started_at, t0, "wait_ms 时长无效")
-                ms = max(0, min(ms, 120_000))
-                time.sleep(ms / 1000.0)
-                return self._ok(event, started_at, t0, f"等待 {ms}ms", execution_started="no")
             if cap == "launch_app":
                 p = event.params or {}
                 url = pick_goto_url(
@@ -326,20 +318,51 @@ class PlaywrightExecutor:
                 return self._open_tab(event, hub, sn, run_id, started_at, t0)
             if cap == "upload_file":
                 return self._upload_file(event, page, started_at, t0)
+            if cap == "set_clipboard":
+                text = str((event.params or {}).get("text") or "")
+                if not text:
+                    return self._fail(event, started_at, t0, "set_clipboard 缺 text")
+                try:
+                    page.context.grant_permissions(["clipboard-read", "clipboard-write"])
+                except Exception:
+                    pass
+                page.evaluate("(value) => navigator.clipboard.writeText(value)", text)
+                return self._ok(event, started_at, t0, f"剪贴板写入 {len(text)} 字", execution_started="yes")
             if cap == "reload_page":
                 try:
                     page.reload(wait_until="domcontentloaded", timeout=15_000)
                     return self._ok(event, started_at, t0, "已刷新当前页面", execution_started="yes")
                 except Exception as exc:
                     return self._fail(event, started_at, t0, f"刷新页面失败: {exc}")
+            if cap == "tap_xy":
+                try:
+                    x, y = resolve_viewport_xy(event.params or {}, page)
+                except ValueError:
+                    return self._fail(event, started_at, t0, "tap_xy 缺坐标")
+                page.mouse.click(x, y)
+                return self._ok(event, started_at, t0, f"点击坐标 ({x},{y})", execution_started="yes")
+            if cap == "exec_script":
+                script = str((event.params or {}).get("script") or "").strip()
+                if not script:
+                    return self._fail(event, started_at, t0, "exec_script 缺 script")
+                try:
+                    timeout = int((event.params or {}).get("timeout_ms") or 30000)
+                except (TypeError, ValueError):
+                    timeout = 30000
+                page.set_default_timeout(max(1000, min(timeout, 60000)))
+                value = page.evaluate("(source) => eval(source)", script)
+                text = "" if value is None else str(value)[:2000]
+                return make_event_result(
+                    event, status=EventStatus.PASS, executor_used=self.id, started_at=started_at,
+                    elapsed_ms=int((time.time() - t0) * 1000), summary="已执行页面脚本",
+                    raw_response={"stdout": text, "execution": {"execution_started": "yes", "phase": "completed", "source": "playwright.native.v1"}},
+                )
             if cap == "tap_element":
                 self._forget_focus(focus_key)
                 result = self._tap(event, page, started_at, t0)
                 if result.status == EventStatus.PASS:
                     self._remember_focus_page(focus_key, page)
                 return result
-            if cap == "multi_tap":
-                return self._multi_tap(event, page, started_at, t0)
             if cap == "long_press_element":
                 return self._long_press(event, page, started_at, t0)
             if cap == "input_text":
@@ -404,7 +427,7 @@ class PlaywrightExecutor:
             return self._fail(event, started_at, t0, f"PlaywrightExecutor 不处理 {cap}")
         except Exception as exc:
             SLog.e(TAG, f"execute exception cap={cap} sn={sn}: {exc}")
-            if cap in {"tap_element", "long_press_element", "multi_tap", "input_text", "press_key", "swipe_direction", "swipe_element_to_element"}:
+            if cap in {"tap_element", "long_press_element", "input_text", "press_key", "swipe_direction", "swipe_element_to_element", "set_clipboard"}:
                 return make_event_result(event, status=EventStatus.BLOCKED, executor_used=self.id,
                     started_at=started_at, elapsed_ms=int((time.time()-t0)*1000),
                     summary="设备写动作结果不确定，请先观察确认", error=f"exception: {exc}",
@@ -756,79 +779,14 @@ class PlaywrightExecutor:
         name = _anchor_name(params)
         if not name:
             return None
-        try:
-            loc = page.get_by_text(name, exact=True)
-            count = int(loc.count())
-        except Exception:
-            return None
-        if count != 1:
+        loc, count = unique_exact_text(page, name)
+        if count > 1:
+            return self._fail(event, started_at, t0, f"文案「{name[:40]}」命中 {count} 处，无法唯一点击")
+        if loc is None:
             return None
         loc.click()
         self._settle_page(page)
         return self._ok(event, started_at, t0, f"点击「{name[:40]}」", execution_started="yes")
-
-    def _multi_tap(self, event: PlanEvent, page, started_at: str, t0: float) -> EventResult:
-        params = event.params or {}
-        if str(params.get("point_policy") or "").strip().lower() == "node":
-            anchored = self._repeat_node(event, page, started_at, t0, params)
-            if anchored is not None:
-                return anchored
-            xy = self._fallback_xy(params, page)
-            if xy is None:
-                return self._fail(event, started_at, t0, "DOM 连点锚点未命中且未给坐标")
-            from mino_scout.executors.multi_tap import parse_multi_tap
-
-            parsed, err = parse_multi_tap({**params, "x": xy[0], "y": xy[1]})
-            if err:
-                return self._fail(event, started_at, t0, err)
-            _, _, count, interval = parsed
-            x, y = xy
-            for i in range(count):
-                page.mouse.click(x, y)
-                if i + 1 < count:
-                    time.sleep(interval / 1000.0)
-            return self._ok(
-                event, started_at, t0,
-                f"连点 ({x},{y}) ×{count}[锚点未命中，回落坐标]",
-                execution_started="yes",
-            )
-        from mino_scout.executors.multi_tap import parse_multi_tap
-
-        parsed, err = parse_multi_tap(params)
-        if err:
-            return self._fail(event, started_at, t0, err)
-        _, _, count, interval = parsed
-        try:
-            x, y = resolve_viewport_xy(params, page)
-        except ValueError:
-            return self._fail(event, started_at, t0, "multi_tap 缺坐标")
-        for i in range(count):
-            page.mouse.click(x, y)
-            if i + 1 < count:
-                time.sleep(interval / 1000.0)
-        return self._ok(event, started_at, t0, f"连点 ({x},{y}) ×{count} 间隔{interval}ms", execution_started="yes")
-
-    def _repeat_node(self, event, page, started_at, t0, params) -> EventResult:
-        from mino_scout.executors.multi_tap import parse_multi_tap
-
-        parsed, err = parse_multi_tap({**params, "x": params.get("x") or 0, "y": params.get("y") or 0})
-        if err:
-            return self._fail(event, started_at, t0, err)
-        _, _, count, interval = parsed
-        name = _anchor_name(params)
-        if not name:
-            return None
-        try:
-            loc = page.get_by_text(name, exact=True)
-            if int(loc.count()) != 1:
-                return None
-        except Exception:
-            return None
-        for i in range(count):
-            loc.click()
-            if i + 1 < count:
-                time.sleep(interval / 1000.0)
-        return self._ok(event, started_at, t0, f"连点「{name[:40]}」×{count}", execution_started="yes")
 
     def _long_press(self, event: PlanEvent, page, started_at: str, t0: float) -> EventResult:
         params = event.params or {}
@@ -836,12 +794,14 @@ class PlaywrightExecutor:
             name = _anchor_name(params)
             box = None
             if name:
-                try:
-                    loc = page.get_by_text(name, exact=True)
-                    if int(loc.count()) == 1:
+                loc, hits = unique_exact_text(page, name)
+                if hits > 1:
+                    return self._fail(event, started_at, t0, f"文案「{name[:40]}」命中 {hits} 处，无法唯一长按")
+                if loc is not None:
+                    try:
                         box = loc.bounding_box()
-                except Exception:
-                    box = None
+                    except Exception:
+                        box = None
             if not box:
                 xy = self._fallback_xy(params, page)
                 if xy is None:
@@ -879,7 +839,7 @@ class PlaywrightExecutor:
         params = event.params or {}
         text = str(params.get("text") or "")
         login_field = _login_field_from_params(params)
-        from mino_scout.secret_redaction import remember
+        from mino_scout.runtime.secret_redaction import remember
         if login_field in {"password", "otp"} or params.get("sensitive"):
             remember(text)
             event.params["sensitive"] = True
@@ -888,12 +848,13 @@ class PlaywrightExecutor:
         if policy == "node":
             name = _anchor_name(params)
             loc = None
-            if name:
+            pattern = exact_visible_pattern(name)
+            if pattern is not None:
                 try:
                     for cand in (
-                        page.get_by_role("textbox", name=name, exact=True),
-                        page.get_by_label(name, exact=True),
-                        page.get_by_placeholder(name, exact=True),
+                        page.get_by_role("textbox", name=pattern),
+                        page.get_by_label(pattern),
+                        page.get_by_placeholder(pattern),
                     ):
                         if int(cand.count()) == 1:
                             loc = cand
@@ -956,7 +917,7 @@ class PlaywrightExecutor:
         try:
             target, _ = self._focused_element(page)
             if target is not None and target.evaluate("e => e.type === 'password'"):
-                from mino_scout.secret_redaction import remember
+                from mino_scout.runtime.secret_redaction import remember
                 remember(text)
                 event.params["sensitive"] = True
             reason = "no_active_element" if target is None else target.evaluate("""element => {
@@ -1024,7 +985,7 @@ class PlaywrightExecutor:
     ) -> bool:
         """把字写进定位到的控件本身。成功只认框里包含完整文本。"""
         expected = str(text or "")
-        from mino_scout.secret_redaction import remember
+        from mino_scout.runtime.secret_redaction import remember
         if field in {"password", "otp"} or target.evaluate("e => e.type === 'password'"):
             remember(expected)
         if not expected.strip():

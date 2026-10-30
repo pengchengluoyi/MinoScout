@@ -17,14 +17,13 @@ import signal
 import sys
 
 from mino_scout.core import SCOUT_VERSION, ScoutCore
-from mino_scout.log import SLog
+from mino_scout.tools.keep_alive.log import SLog
 from mino_scout.service import (
     clear_pid,
     cmd_public_status,
     collect_status,
     request_stop,
     try_start_service,
-    write_pid,
 )
 
 TAG = "CLI"
@@ -45,7 +44,7 @@ def build_core() -> ScoutCore:
     except ImportError as exc:
         SLog.w(TAG, f"playwright executor 未装载: {exc}")
 
-    from mino_scout.executors.desktop_executor import DesktopExecutor
+    from mino_scout.executors.desktop import DesktopExecutor
     executors["desktop"] = DesktopExecutor()
     from mino_scout.executors.wda_executor import WdaExecutor
     executors["ios_wda"] = WdaExecutor()
@@ -95,7 +94,7 @@ def cmd_stop() -> int:
 
 
 def cmd_heavy_deps() -> int:
-    from mino_scout.heavy_deps import install_heavy_deps
+    from mino_scout.tools.update.heavy_deps import install_heavy_deps
 
     core = build_core()
     try:
@@ -110,7 +109,7 @@ def cmd_heavy_deps() -> int:
 
 
 def cmd_update(argv: list[str]) -> int:
-    from mino_scout.fixed_update import submit
+    from mino_scout.tools.update.fixed_update import submit
     ap = argparse.ArgumentParser(prog="mino-scout update")
     ap.add_argument("--build-id", required=True)
     ap.add_argument("--release-tag", required=True)
@@ -128,7 +127,7 @@ def cmd_update(argv: list[str]) -> int:
 
 def cmd_configure(argv: list[str]) -> int:
     if argv and argv[0] == "closed-lid":
-        from mino_scout.lid_sleep import configure
+        from mino_scout.tools.keep_alive.lid_sleep import configure
         try:
             if len(argv) != 2:
                 raise ValueError("用法: mino-scout configure closed-lid on|off|status")
@@ -156,7 +155,7 @@ def cmd_configure(argv: list[str]) -> int:
     if len(argv) < 2 or not str(argv[1]).strip():
         print("缺少 Nexus 地址", file=sys.stderr)
         return 2
-    from mino_scout.config import config_path, set_nexus_url
+    from mino_scout.config import set_nexus_url
 
     path = set_nexus_url(argv[1])
     print(json.dumps({"ok": True, "config": str(path), "nexus_url": str(argv[1]).strip()}, ensure_ascii=False))
@@ -180,13 +179,13 @@ def cmd_default() -> int:
 
 
 def cmd_run() -> int:
-    from mino_scout.fixed_update import startup_allowed
+    from mino_scout.tools.update.fixed_update import startup_allowed
     if not startup_allowed():
         print("有未完成的更新维护操作，请使用 update-status 查询并从保留目录恢复", file=sys.stderr)
         return 3
     from mino_scout.config import config_path, resolve_runtime
-    from mino_scout.playwright_hub import apply_browsers_path, install_playwright_closed_quiet
-    from mino_scout.stale_process import ensure_process_matches_app_layer
+    from mino_scout.platform.web.playwright_hub import apply_browsers_path, install_playwright_closed_quiet
+    from mino_scout.tools.update.stale_process import ensure_process_matches_app_layer
 
     nexus, token = resolve_runtime()
     if not token:
@@ -202,7 +201,7 @@ def cmd_run() -> int:
     core = build_core()
 
     from mino_scout.service import daemon_run_lock
-    from mino_scout.transport.node import NodeTransport
+    from mino_scout.server_comm.transport.node import NodeTransport
 
     with daemon_run_lock() as sole:
         if not sole:
@@ -220,7 +219,7 @@ def cmd_run() -> int:
                 core.shutdown()
             except Exception:
                 pass
-            from mino_scout.power import get_guard
+            from mino_scout.tools.keep_alive.power import get_guard
 
             get_guard().sync([])
             clear_pid(only_if=_os_getpid())
@@ -247,7 +246,7 @@ def _os_getpid() -> int:
 def main(argv: list[str] | None = None) -> int:
     import multiprocessing
     multiprocessing.freeze_support()
-    from mino_scout.config import config_path, configure_proxy_bypass
+    from mino_scout.config import configure_proxy_bypass
 
     configure_proxy_bypass()
 
@@ -301,13 +300,13 @@ def main(argv: list[str] | None = None) -> int:
     if sub == "update":
         return cmd_update(raw[1:])
     if sub == "update-helper" and len(raw) == 2:
-        from mino_scout.fixed_update import helper
+        from mino_scout.tools.update.fixed_update import helper
         return helper(raw[1])
     if sub == "update-recover" and len(raw) == 2:
-        from mino_scout.fixed_update import helper
+        from mino_scout.tools.update.fixed_update import helper
         return helper(raw[1], recover=True)
     if sub == "update-status" and len(raw) == 2:
-        from mino_scout.fixed_update import status
+        from mino_scout.tools.update.fixed_update import status
         print(json.dumps(status(raw[1]), ensure_ascii=False, indent=2))
         return 0
     if sub == "heavy-deps":

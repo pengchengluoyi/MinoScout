@@ -13,7 +13,7 @@ from urllib.parse import quote, urljoin
 
 import httpx
 
-from mino_scout.log import SLog
+from mino_scout.tools.keep_alive.log import SLog
 from mino_scout.plugins.state import plain_value, remember_plain, remember_secret, secret_value
 
 TAG = "Wechat"
@@ -234,7 +234,7 @@ def _apply_confirmed(data: dict[str, Any]) -> None:
 
 
 def _poll_loop() -> None:
-    from mino_scout.power import get_guard
+    from mino_scout.tools.keep_alive.power import get_guard
 
     get_guard().acquire(_HOLDER_IM)
     try:

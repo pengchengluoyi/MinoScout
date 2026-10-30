@@ -35,7 +35,7 @@ class DeviceRef:
 
     @property
     def is_web(self) -> bool:
-        from mino_scout.playwright_hub import is_web_slot
+        from mino_scout.platform.web.playwright_hub import is_web_slot
 
         return is_web_slot(self.sn, self.platform)
 
@@ -146,7 +146,7 @@ def make_event_result(
     字段填法与上游 `base.make_event_result` 一致，额外多一个 `attempts`
     （fallback 链记录，回填进协议的 `RESULT.attempts`）。
     """
-    from mino_scout.secret_redaction import sanitize
+    from mino_scout.runtime.secret_redaction import sanitize
     return EventResult(
         seq=event.seq,
         capability_id=event.capability_id,

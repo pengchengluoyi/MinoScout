@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 from typing import Any, Callable
 
-from mino_scout.log import SLog
+from mino_scout.tools.keep_alive.log import SLog
 from mino_scout.plugins import im_store
 
 TAG = "ImBridge"

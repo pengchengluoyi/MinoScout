@@ -1,0 +1,104 @@
+"""脚本向 Nexus 写入账号、步骤、失败和证据。验证码和模型在本节点完成。"""
+from __future__ import annotations
+
+from typing import Any
+
+
+def account(case):
+    from types import SimpleNamespace
+
+    from mino_scout.runtime.script_exec import ScriptAbort
+
+    case._guard()
+    data = case._callback("script.callback", {"op": "account"}, 15)
+    identity = str(data.get("id") or data.get("account_id") or "").strip()
+    if not identity:
+        raise ScriptAbort("这条用例没有租到账号", reason_code="resource_account_missing")
+    case._mail_to = str(data.get("email") or "")
+    return SimpleNamespace(
+        id=identity,
+        email=case._mail_to,
+        phone=str(data.get("phone") or ""),
+        username=str(data.get("username") or ""),
+        password=str(data.get("password") or ""),
+        otp=str(data.get("otp") or ""),
+        ident=str(data.get("ident") or ""),
+    )
+
+
+def otp_mail(case) -> str:
+    import time
+
+    from mino_scout.plugins.gmail_otp import GmailOtpError, fetch_otp_via_imap
+    from mino_scout.plugins.state import plain_value, secret_value
+    from mino_scout.runtime.script_exec import ScriptAbort
+
+    case._guard()
+    node_id = str(getattr(case.core, "node_id", "") or "")
+    inbox = plain_value("mail", "gmail", "inbox_address")
+    password = secret_value(node_id, "mail", "gmail", "app_password")
+    if not inbox or not password:
+        raise ScriptAbort("请在这台 Scout 节点的收信里填写 Gmail 收件箱和应用专用密码", reason_code="otp_environment_unavailable")
+    started = float(getattr(case, "_started", 0) or 0)
+    remain_ms = 30_000
+    if case.deadline:
+        remain_ms = max(0, int((case.deadline - time.monotonic()) * 1000))
+    if remain_ms <= 0:
+        raise ScriptAbort("没有取到验证码", reason_code="otp_environment_unavailable")
+
+    def stopped() -> bool:
+        case._guard()
+        return False
+
+    try:
+        code = fetch_otp_via_imap(
+            inbox_address=inbox,
+            app_password=password,
+            to_address=str(getattr(case, "_mail_to", "") or ""),
+            since_ts=started or None,
+            max_wait_ms=min(30_000, remain_ms),
+            should_stop=stopped,
+        )
+    except GmailOtpError as exc:
+        raise ScriptAbort(str(exc), reason_code="otp_environment_unavailable") from exc
+    if not str(code or "").strip():
+        raise ScriptAbort("没有取到验证码", reason_code="otp_environment_unavailable")
+    return str(code).strip()
+
+
+def llm(case, prompt: str, text: str = "", schema: dict | None = None) -> Any:
+    from mino_scout.server_comm.model_call import complete
+
+    case._guard()
+    return complete(case, prompt, text=text, schema=schema)
+
+
+def vlm(case, prompt: str, verdict: str = "") -> str:
+    from mino_scout.server_comm.model_call import see
+
+    case._guard()
+    if case._shot is None or not getattr(case._shot, "has_image", lambda: False)():
+        case.screenshot()
+    return see(case, prompt, verdict=verdict)
+
+
+def vlm_frame(case, index: int, prompt: str, verdict: str = "") -> str:
+    from mino_scout.runtime.script_exec import ScriptAbort
+    from mino_scout.server_comm.model_call import see
+
+    case._guard()
+    try:
+        case._shot = case._frames[int(index)]
+    except (IndexError, TypeError, ValueError) as exc:
+        raise ScriptAbort(f"没有第 {index} 帧", reason_code="observation_missing") from exc
+    return see(case, prompt, verdict=verdict, index=int(index))
+
+
+def note(case, text: str, **fields: Any) -> None:
+    from mino_scout.runtime.script_exec import _HIDDEN
+
+    case._guard()
+    body = str(text or "")[:500]
+    safe = {str(key): value for key, value in fields.items()
+            if str(key) not in _HIDDEN and (isinstance(value, (str, int, float, bool)) or value is None)}
+    case._callback("script.callback", {"op": "note", "text": body, "fields": safe}, 15)

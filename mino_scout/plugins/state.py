@@ -21,7 +21,7 @@ def config_locked(fn):
     return wrapped
 
 # 插件类别。MCP 还没有具体项。im = 对话渠道（收 + 发），bot = 只发通知。
-PLUGIN_CLASSES = ("cli", "bot", "mail", "mcp", "im")
+PLUGIN_CLASSES = ("cli", "bot", "mail", "mcp", "im", "model")
 
 
 def _f(key: str, label: str, placeholder: str = "", *, secret: bool = False,
@@ -134,6 +134,17 @@ CATALOG: list[dict[str, Any]] = [
         "fields": [
             _f("inbox_address", "收件邮箱", "name@gmail.com"),
             _f("app_password", "应用专用密码", "", secret=True),
+        ],
+    },
+    {
+        "class": "model",
+        "id": "llm",
+        "label": "用例模型",
+        "needs_install": False,
+        "fields": [
+            _f("base_url", "接口地址", "https://api.openai.com/v1"),
+            _f("model", "模型名", "gpt-4o-mini"),
+            _f("api_key", "密钥", "", secret=True),
         ],
     },
     {

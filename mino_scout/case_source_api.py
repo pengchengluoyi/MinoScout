@@ -162,6 +162,6 @@ def read_api(node_id, params):
     if canonical(snapshots[0]) != canonical(snapshots[1]):
         raise ValueError("source_api_changed_during_read")
     if any(inferred_sessions.values()):
-        from mino_scout.log import SLog
+        from mino_scout.tools.keep_alive.log import SLog
         SLog.i("CaseSourceApi", f"会话范围补齐 session_id: missing={inferred_sessions['missing']} null={inferred_sessions['null']}")
     return {"complete": True, "records": snapshots[1], "consistency": "conservative_double_read"}

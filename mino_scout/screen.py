@@ -27,7 +27,7 @@ from io import BytesIO
 from typing import Any, Optional
 
 from mino_scout.executors.base import DeviceRef
-from mino_scout.log import SLog
+from mino_scout.tools.keep_alive.log import SLog
 from mino_scout.schemas import CapturedScreen
 
 TAG = "ScreenCapture"
@@ -60,68 +60,6 @@ def peek_png_size(data: bytes) -> tuple[int, int]:
         return w, h
     except Exception:
         return 0, 0
-
-
-# ---------- ADB 通路 ----------
-
-
-def capture_via_adb(
-    adb_serial: str,
-    *,
-    timeout_sec: float = 15.0,
-    compress_ratio: float = 1.0,
-) -> CapturedScreen:
-    """port: 上游 `screen.py::_capture_via_adb`，逻辑逐条对齐。"""
-    from mino_scout.playwright_hub import is_web_slot
-
-    if not adb_serial or adb_serial.startswith("claw-") or is_web_slot(adb_serial):
-        # claw-* 是 ClawNode 的伪 serial；web 槽也不是 adb 设备
-        return CapturedScreen(ok=False, source="adb", error="invalid adb serial")
-    started = time.time()
-    try:
-        # exec-out 直出二进制比 shell screencap → pull 更快、更稳
-        proc = subprocess.run(
-            ["adb", "-s", adb_serial, "exec-out", "screencap", "-p"],
-            capture_output=True,
-            timeout=timeout_sec,
-        )
-    except FileNotFoundError:
-        return CapturedScreen(ok=False, source="adb", error="adb binary not in PATH")
-    except subprocess.TimeoutExpired:
-        return CapturedScreen(ok=False, source="adb", error=f"adb screencap timeout {timeout_sec}s")
-    except Exception as e:
-        return CapturedScreen(ok=False, source="adb", error=f"adb screencap failed: {e}")
-
-    elapsed_ms = int((time.time() - started) * 1000)
-    if proc.returncode != 0 or not proc.stdout:
-        return CapturedScreen(
-            ok=False,
-            source="adb",
-            error=f"adb screencap rc={proc.returncode} stderr={(proc.stderr or b'')[:200]!r}",
-            elapsed_ms=elapsed_ms,
-        )
-
-    png_bytes = proc.stdout
-    out, mime, width, height = compress_web_png(png_bytes, compress_ratio)
-    suffix = ".jpg" if mime == "image/jpeg" else ".png"
-    # 落盘到 tmp 便于排查。ARCHITECTURE.md §7：原图用后即删，不是持久状态。
-    fd, path = tempfile.mkstemp(prefix=f"screen_{adb_serial}_", suffix=suffix)
-    try:
-        os.write(fd, out)
-    finally:
-        os.close(fd)
-
-    remember_capture_size(adb_serial, width, height)
-    return CapturedScreen(
-        ok=True,
-        source="adb",
-        path=path,
-        image_base64=base64.b64encode(out).decode("ascii"),
-        image_mime=mime,
-        width=width,
-        height=height,
-        elapsed_ms=elapsed_ms,
-    )
 
 
 # ---------- 空白帧检测 ----------
@@ -167,11 +105,8 @@ def png_is_blank(png_bytes: bytes) -> bool:
         return False
 
 
-# ---------- Playwright 通路 ----------
-
-
 def compress_web_png(png_bytes: bytes, ratio: float) -> tuple[bytes, str, int, int]:
-    """按压缩比缩小 Web 截图。返回 (bytes, mime, orig_w, orig_h)。
+    """按压缩比缩小截图。返回 (bytes, mime, orig_w, orig_h)。
 
     port: 上游 `screen.py::_compress_web_png`，逻辑逐条对齐。
 
@@ -198,68 +133,26 @@ def compress_web_png(png_bytes: bytes, ratio: float) -> tuple[bytes, str, int, i
         return png_bytes, "image/png", orig_w, orig_h
 
 
-def capture_via_playwright(
-    sn: str,
-    *,
-    run_id: str = "",
-    timeout_sec: float = 15.0,
-    compress_ratio: float = 2.0,
-    base_url: str = "",
-    device_hint: dict | None = None,
-    screenshot_params: dict[str, Any] | None = None,
-) -> CapturedScreen:
-    """port: 上游 `screen.py::_capture_via_playwright`。
-
-    与上游唯一的差别：压缩比由参数传入（来自 `OBSERVE.compress_ratio`），
-    不再回查 `system_settings_service` —— 那是 Nexus 的设置服务。
-    """
-    started = time.time()
-    try:
-        from mino_scout.playwright_hub import get_hub, headed_from_hint
-
-        png_bytes = get_hub().screenshot_png(
-            str(sn or ""),
-            run_id=str(run_id or ""),
-            timeout_ms=int(timeout_sec * 1000),
-            base_url=base_url,
-            headed=headed_from_hint(device_hint),
-            screenshot_params=screenshot_params,
-        )
-    except Exception as e:
-        return CapturedScreen(
-            ok=False,
-            source="playwright",
-            error=f"playwright screenshot failed: {e}",
-            elapsed_ms=int((time.time() - started) * 1000),
-        )
-
-    elapsed_ms = int((time.time() - started) * 1000)
-    if not png_bytes:
-        return CapturedScreen(
-            ok=False, source="playwright", error="empty screenshot", elapsed_ms=elapsed_ms
-        )
-
-    out, mime, width, height = compress_web_png(png_bytes, compress_ratio)
-    suffix = ".jpg" if mime == "image/jpeg" else ".png"
-    fd, path = tempfile.mkstemp(prefix="screen_web_", suffix=suffix)
-    try:
-        os.write(fd, out)
-    finally:
-        os.close(fd)
-
-    return CapturedScreen(
-        ok=True,
-        source="playwright",
-        path=path,
-        image_base64=base64.b64encode(out).decode("ascii"),
-        image_mime=mime,
-        width=width,
-        height=height,
-        elapsed_ms=elapsed_ms,
-    )
-
-
 # ---------- 对外入口 ----------
+
+
+def _platform_capture(device):
+    import platform as host_platform
+
+    name = str(getattr(device, "platform", "") or "")
+    if name == "android":
+        from mino_scout.platform.android.screen import capture as take
+    elif name == "ios":
+        from mino_scout.platform.ios.screen import capture as take
+    elif getattr(device, "is_web", False) or name == "web":
+        from mino_scout.platform.web.screen import capture as take
+    elif name == "mac" or (name == "desktop" and host_platform.system() == "Darwin"):
+        from mino_scout.platform.mac.actions import capture as take
+    elif name in {"win", "desktop"}:
+        from mino_scout.platform.win.actions import capture as take
+    else:
+        take = None
+    return take
 
 
 def capture(
@@ -271,69 +164,14 @@ def capture(
     allow_blank: bool = False,
     screenshot_params: dict[str, Any] | None = None,
 ) -> CapturedScreen:
-    """按这台 sn 的设备类型截图，不跨设备试通道。
-
-    Web 槽只走 playwright；安卓 sn 只走该 serial 的 adb。
-    `prefer` 保留签名兼容，不再用来把 adb 和 playwright 串成一条 fallback。
-    """
+    """按设备平台调用该平台自己的截图。"""
+    del prefer
     started = time.time()
-    if device.platform in {"desktop", "mac", "win"}:
-        from mino_scout.desktop import get_desktop_runtime
-        try:
-            ratio = float(compress_ratio)
-            if not 1.0 <= ratio <= 10.0:
-                raise ValueError("PC 压缩比必须在 1 到 10 之间")
-            data = get_desktop_runtime().observe(device.extra, str(device.extra.get("run_id") or ""), ratio)
-            shot = CapturedScreen(
-                ok=True, source="desktop", image_base64=data["image_base64"], image_mime=data["image_mime"],
-                width=data["width"], height=data["height"],
-                remote_detail={
-                    "capture_id": data["capture_id"], "session_generation": data["session_generation"],
-                    "capture_width": data["width"], "capture_height": data["height"], "compress_ratio": ratio,
-                    **{key: data[key] for key in ("capture_scope", "target", "pid", "window_id", "snapshot_id",
-                                                  "window_bounds", "screenshot_scale", "native_width", "native_height")},
-                },
-            )
-        except Exception as exc:
-            shot = CapturedScreen(ok=False, source="desktop", error=str(exc))
-    elif device.is_web:
-        from mino_scout.playwright_hub import pick_goto_url
-
-        url = pick_goto_url(
-            device.extra.get("target_package"),
-            device.extra.get("url"),
-        )
-        shot = capture_via_playwright(
-            device.sn,
-            run_id=str(device.extra.get("run_id") or ""),
-            timeout_sec=timeout_sec,
-            compress_ratio=compress_ratio,
-            base_url=url,
-            device_hint=dict(device.extra or {}),
-            screenshot_params=screenshot_params,
-        )
-    elif device.platform == "ios":
-        from mino_scout.wda_session import WdaError, client_for
-
-        try:
-            image = client_for(device.udid or device.sn).screenshot()
-            raw = base64.b64decode(image)
-            width, height = peek_png_size(raw)
-            shot = CapturedScreen(
-                ok=True, source="ios_wda", image_base64=image, image_mime="image/png",
-                width=width, height=height, elapsed_ms=int((time.time() - started) * 1000),
-            )
-        except (WdaError, ValueError) as exc:
-            shot = CapturedScreen(ok=False, source="ios_wda", error=str(exc))
-    elif device.platform == "android":
-        shot = capture_via_adb(
-            device.adb_serial,
-            timeout_sec=timeout_sec,
-            compress_ratio=compress_ratio,
-        )
-
-    else:
+    take = _platform_capture(device)
+    if take is None:
         shot = CapturedScreen(ok=False, source="screen", error="设备平台没有实现截图通道")
+    else:
+        shot = take(device, timeout_sec=timeout_sec, compress_ratio=compress_ratio, screenshot_params=screenshot_params)
 
     if shot.has_image():
         if device.platform in {"desktop", "mac", "win"} or allow_blank or not png_is_blank(base64.b64decode(shot.image_base64)):
@@ -354,8 +192,10 @@ def capture(
     return shot
 
 
+
+
 def cleanup(shot: Optional[CapturedScreen]) -> None:
-    """删掉落盘的原图。ARCHITECTURE.md §7：Scout 不留持久状态。"""
+    """删掉落盘的原图。"""
     if shot is None or not shot.path:
         return
     try:

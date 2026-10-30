@@ -23,7 +23,7 @@ from typing import Any
 
 import httpx
 
-from mino_scout.log import SLog
+from mino_scout.tools.keep_alive.log import SLog
 from mino_scout.plugins import im_bridge
 from mino_scout.plugins import progress as PP
 from mino_scout.plugins.state import IM_PLATFORMS, _item, plugin_dir, plain_value, remember_plain, secret_value
@@ -604,7 +604,7 @@ def _supervise() -> None:
     global _proc, _port, _api_key, _state, _error, _restarts, _started_at, _llm_warning
     fails = 0
     first_run_exit_ok = True  # 首次自动 pip 装依赖后 sys.exit(0) 要求重启，不算失败
-    from mino_scout.power import get_guard
+    from mino_scout.tools.keep_alive.power import get_guard
 
     get_guard().acquire(HOLDER_IM)
     try:

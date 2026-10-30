@@ -6,9 +6,9 @@ import time
 import uuid
 from typing import Any
 
-from mino_scout import protocol as P
+from mino_scout.server_comm import protocol as P
 from mino_scout.executors.base import make_event_result, now_iso
-from mino_scout.log import SLog
+from mino_scout.tools.keep_alive.log import SLog
 from mino_scout.plugins.gmail_otp import GmailOtpError, fetch_otp_via_imap
 from mino_scout.plugins.install import PluginInstallError, install, remove
 from mino_scout.plugins.secret_store import SecretStoreError
@@ -92,6 +92,10 @@ def executor_manifest(*, ready: bool) -> P.ExecutorManifest:
 
 
 def handle_plugin_cap(core: Any, req: P.Execute, cap: str) -> EventResult:
+    params = dict(req.params or {})
+    named = str(params.get("action") or params.get("capability_id") or params.get("op") or "")
+    if cap == "script_run" or named == "script_run":
+        return _fail(_event(req), now_iso(), "这个入口不能提交 script_run", cap)
     if not getattr(core, "_plugins_ready", False):
         return _blocked_plugin(core, _event(req), now_iso())
     from mino_scout.plugins import wechat as wechat_plugin

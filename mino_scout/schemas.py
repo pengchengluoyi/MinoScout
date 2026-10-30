@@ -6,7 +6,7 @@ port(scout): 源自 MiniOrangeServer `server/services/ai/regression/schemas.py`�
 上游那个文件还有 `PlanResult` / `ReplanResult` / `AgentDecision` / `CaseSpec` /
 `RunReport` 等等 —— 那些是 LLM 的输入输出和编排结果，归 Nexus。
 
-`EventStatus` **不在这里定义**，从 `mino_scout.protocol` import —— 一个定义、一处维护，
+`EventStatus` **不在这里定义**，从 `mino_scout.server_comm.protocol` import —— 一个定义、一处维护，
 且 protocol.py 是零依赖的（守门脚本要用裸 python3 跑）。
 
 字段与上游逐字一致（含 `extra="allow"`），这样搬来的 executor 代码不用改。
@@ -17,7 +17,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from mino_scout.protocol import EventStatus
+from mino_scout.server_comm.protocol import EventStatus
 
 __all__ = ["EventStatus", "PlanEvent", "EventResult", "CapturedScreen"]
 
